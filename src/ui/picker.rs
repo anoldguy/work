@@ -2,6 +2,8 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use crate::text::clip;
+
 /// How far `PageUp`/`PageDown` move the cursor.
 const PAGE: usize = 10;
 
@@ -156,7 +158,7 @@ impl<'a> PickerState<'a> {
     }
 
     /// The frame for a `w`×`h` area: the filter line, then the visible window
-    /// of items with the cursor marked. Every line is at most `w` characters
+    /// of items with the cursor marked. Every line is at most `w` display columns
     /// and there are at most `h` lines. The caller draws its prompt text
     /// above the frame.
     #[must_use]
@@ -166,7 +168,7 @@ impl<'a> PickerState<'a> {
             return Vec::new();
         }
         let mut out = Vec::with_capacity(h);
-        out.push(fit(
+        out.push(clip(
             &format!(
                 "> {}  ({}/{})",
                 self.filter,
@@ -180,7 +182,7 @@ impl<'a> PickerState<'a> {
             return out;
         }
         if self.visible.is_empty() {
-            out.push(fit("  (no matches)", w));
+            out.push(clip("  (no matches)", w));
             return out;
         }
         let start = self.cursor.saturating_sub(rows - 1);
@@ -197,7 +199,7 @@ impl<'a> PickerState<'a> {
                         Some(selected) if selected[index] => "[x] ",
                         Some(_) => "[ ] ",
                     };
-                    fit(&format!("{marker} {check}{}", self.items[index]), w)
+                    clip(&format!("{marker} {check}{}", self.items[index]), w)
                 }),
         );
         out
@@ -224,11 +226,6 @@ impl<'a> PickerState<'a> {
     }
 }
 
-/// The first `w` characters of `s`.
-fn fit(s: &str, w: usize) -> String {
-    s.chars().take(w).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
@@ -236,6 +233,24 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
     use super::{PickerKey, PickerState, PickerStep};
+    use crate::text::display_width;
+
+    #[test]
+    fn wide_labels_are_cut_by_display_width_not_chars() {
+        let items = [
+            "acme/日本語のリポジトリ",
+            "acme/🚀🚀🚀🚀🚀🚀",
+            "acme/plain-ascii",
+        ];
+        let state = PickerState::new(&items, None);
+        let lines = state.lines(14, 5);
+        assert!(lines.iter().all(|l| display_width(l) <= 14), "{lines:?}");
+        // Seven ASCII columns leave seven: three two-column glyphs fit, and
+        // a fourth would end on column 15, so it is dropped whole.
+        assert_eq!(lines[1], "> acme/日本語");
+        assert_eq!(lines[2], "  acme/🚀🚀🚀");
+        assert_eq!(lines[3], "  acme/plain-a");
+    }
 
     const ITEMS: &[&str] = &[
         "acme/widgets",
