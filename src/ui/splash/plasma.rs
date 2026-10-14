@@ -122,30 +122,10 @@ fn draw_logo_box(frame: &mut Frame) {
     }
 }
 
-/// Fully saturated colour at `hue` in `[0, 1)` around the wheel.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "bounded colour math: values are clamped to 0..=255 before narrowing"
-)]
+/// Colour at `hue` in `[0, 1)` around the wheel, slightly dimmed so the
+/// white logo stays readable.
 fn hue_to_rgb(hue: f64) -> Rgb {
-    let sector = hue.rem_euclid(1.0) * 6.0;
-    let mid = 1.0 - (sector % 2.0 - 1.0).abs();
-    let (red, green, blue) = match sector as u8 {
-        0 => (1.0, mid, 0.0),
-        1 => (mid, 1.0, 0.0),
-        2 => (0.0, 1.0, mid),
-        3 => (0.0, mid, 1.0),
-        4 => (mid, 0.0, 1.0),
-        _ => (1.0, 0.0, mid),
-    };
-    // Slightly dimmed so the white logo stays readable.
-    let ch = |v: f64| (v * 200.0 + 30.0).round().clamp(0.0, 255.0) as u8;
-    Rgb {
-        r: ch(red),
-        g: ch(green),
-        b: ch(blue),
-    }
+    Rgb::from_hue(hue, 200.0, 30.0)
 }
 
 #[cfg(test)]

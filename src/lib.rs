@@ -39,7 +39,7 @@ pub mod shell;
 pub mod sync;
 #[cfg(test)]
 pub mod testing;
-pub(crate) mod text;
+pub mod text;
 pub mod ui;
 
 pub use error::Error;

@@ -1,9 +1,9 @@
 //! [`HttpGitHub`]: the blocking ureq client.
 
 use std::collections::{BTreeMap, HashSet};
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -29,7 +29,8 @@ const ACCEPT: &str = "application/vnd.github+json";
 /// `User-Agent` on every request.
 const USER_AGENT: &str = concat!("work/", env!("CARGO_PKG_VERSION"));
 
-/// Upper bound on one request, so a stalled server cannot hang `update`.
+/// Upper bound on one logical request (every `EINTR` retry and redirect hop
+/// included), so a stalled server cannot hang `update`.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Longest foreign origin echoed in a [`ApiError::Pagination`].
@@ -40,6 +41,9 @@ const MAX_REDIRECTS: u32 = 5;
 
 /// Statuses whose `Location` is followed (all safe for a `GET`).
 const REDIRECTS: [u16; 5] = [301, 302, 303, 307, 308];
+
+/// Times one request is repeated after an `EINTR` before giving up.
+const MAX_INTERRUPT_RETRIES: u32 = 10;
 
 /// Bytes of a 403 body read to look for a rate-limit message.
 const MAX_ERROR_BODY: u64 = 4096;
@@ -119,25 +123,21 @@ impl HttpGitHub {
             path: path.to_owned(),
             detail: one_line(&redact(&e.to_string(), &[t])),
         };
+        let deadline = Instant::now() + REQUEST_TIMEOUT;
+        let mut remaining = || {
+            deadline
+                .checked_duration_since(Instant::now())
+                .filter(|left| !left.is_zero())
+        };
         let mut url = url.to_owned();
         let mut hops: u32 = 0;
         loop {
-            let mut response = self
-                .agent()
-                .get(&url)
-                .header("Authorization", format!("Bearer {}", t.expose()))
-                .header("Accept", ACCEPT)
-                .header("X-GitHub-Api-Version", API_VERSION)
-                .call()
-                .map_err(|e| transport(&e))?;
-            let status = response.status().as_u16();
-            if (200..300).contains(&status) {
-                let next = next_link(&response);
-                let body = response
-                    .body_mut()
-                    .read_to_string()
+            let (mut response, body) =
+                retry_interrupted(&mut remaining, |left| self.exchange(&url, t, left))
                     .map_err(|e| transport(&e))?;
-                return Ok((body, next));
+            let status = response.status().as_u16();
+            if let Some(body) = body {
+                return Ok((body, next_link(&response)));
             }
             let location = response
                 .headers()
@@ -158,6 +158,33 @@ impl HttpGitHub {
                 _ => return Err(status_error(status, path, d, &mut response)),
             }
         }
+    }
+
+    /// One authenticated request to `url`, allowed at most `budget`, with
+    /// the body read when the status is 2xx (`None` otherwise, leaving the
+    /// body unread).
+    fn exchange(
+        &self,
+        url: &str,
+        t: &SecretToken,
+        budget: Duration,
+    ) -> Result<(Response<Body>, Option<String>), ureq::Error> {
+        let mut response = self
+            .agent()
+            .get(url)
+            .config()
+            .timeout_global(Some(budget))
+            .build()
+            .header("Authorization", format!("Bearer {}", t.expose()))
+            .header("Accept", ACCEPT)
+            .header("X-GitHub-Api-Version", API_VERSION)
+            .call()?;
+        let body = if response.status().is_success() {
+            Some(response.body_mut().read_to_string()?)
+        } else {
+            None
+        };
+        Ok((response, body))
     }
 
     /// `GET` one JSON object.
@@ -292,6 +319,37 @@ impl GitHubApi for HttpGitHub {
         // `Org` is validated (alphanumerics and `-`), so it is path-safe.
         let path = format!("/orgs/{org}/repos");
         self.repos(d, t, &path, "type=all&", on_page)
+    }
+}
+
+/// Runs `attempt` with the time `remaining` reports, and again (up to
+/// [`MAX_INTERRUPT_RETRIES`] times) when it fails with `EINTR`. Once
+/// `remaining` reports `None` (the logical request's deadline has passed),
+/// no further attempt starts and the result is a global timeout, so retries
+/// never extend the overall budget.
+///
+/// A socket read with a timeout (ureq sets `SO_RCVTIMEO`) is not restarted
+/// by `SA_RESTART`, so any signal with a handler — `SIGWINCH` on a terminal
+/// resize (crossterm), or `SIGCHLD` — fails the read with `Interrupted`, and
+/// ureq passes that through. Every request here is an idempotent `GET`, so
+/// repeating the whole exchange is safe.
+fn retry_interrupted<T>(
+    remaining: &mut dyn FnMut() -> Option<Duration>,
+    mut attempt: impl FnMut(Duration) -> Result<T, ureq::Error>,
+) -> Result<T, ureq::Error> {
+    let mut retries: u32 = 0;
+    loop {
+        let Some(left) = remaining() else {
+            return Err(ureq::Error::Timeout(ureq::Timeout::Global));
+        };
+        match attempt(left) {
+            Err(ureq::Error::Io(e))
+                if e.kind() == ErrorKind::Interrupted && retries < MAX_INTERRUPT_RETRIES =>
+            {
+                retries = retries.saturating_add(1);
+            }
+            other => return other,
+        }
     }
 }
 
@@ -436,7 +494,94 @@ fn origin_part(url: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{one_line, origin_of, resolve_location};
+    use std::assert_matches;
+    use std::io::{self, ErrorKind};
+
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    use super::{
+        MAX_INTERRUPT_RETRIES, REQUEST_TIMEOUT, one_line, origin_of, resolve_location,
+        retry_interrupted,
+    };
+
+    fn io_err(kind: ErrorKind) -> ureq::Error {
+        ureq::Error::Io(io::Error::from(kind))
+    }
+
+    /// A clock that never runs out.
+    fn plenty() -> impl FnMut() -> Option<Duration> {
+        || Some(REQUEST_TIMEOUT)
+    }
+
+    #[test]
+    fn interrupted_attempts_are_retried_until_success() {
+        let mut calls = 0;
+        let got = retry_interrupted(&mut plenty(), |_| {
+            calls += 1;
+            if calls < 4 {
+                Err(io_err(ErrorKind::Interrupted))
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_matches!(got, Ok(4));
+    }
+
+    #[test]
+    fn other_errors_are_not_retried() {
+        let mut calls = 0;
+        let got: Result<(), _> = retry_interrupted(&mut plenty(), |_| {
+            calls += 1;
+            Err(io_err(ErrorKind::ConnectionRefused))
+        });
+        assert_matches!(got, Err(ureq::Error::Io(_)));
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn endless_interrupts_give_up_after_the_retry_cap() {
+        let mut calls: u32 = 0;
+        let got: Result<(), _> = retry_interrupted(&mut plenty(), |_| {
+            calls += 1;
+            Err(io_err(ErrorKind::Interrupted))
+        });
+        assert_matches!(got, Err(ureq::Error::Io(e)) if e.kind() == ErrorKind::Interrupted);
+        assert_eq!(calls, MAX_INTERRUPT_RETRIES + 1);
+    }
+
+    #[test]
+    fn retries_share_one_deadline_and_stop_when_it_passes() {
+        // A fake clock: each attempt "takes" 50 s of a 120 s budget.
+        let used = Cell::new(Duration::ZERO);
+        let mut budgets = Vec::new();
+        let got: Result<(), _> = retry_interrupted(
+            &mut || {
+                REQUEST_TIMEOUT
+                    .checked_sub(used.get())
+                    .filter(|left| !left.is_zero())
+            },
+            |left| {
+                budgets.push(left);
+                used.set(used.get() + Duration::from_secs(50));
+                Err(io_err(ErrorKind::Interrupted))
+            },
+        );
+        assert_matches!(got, Err(ureq::Error::Timeout(ureq::Timeout::Global)));
+        // Only three attempts fit, each given just what is left.
+        assert_eq!(budgets, [120, 70, 20].map(Duration::from_secs).to_vec());
+    }
+
+    #[test]
+    fn an_expired_deadline_starts_no_attempt() {
+        let mut calls = 0;
+        let got: Result<(), _> = retry_interrupted(&mut || None, |_| {
+            calls += 1;
+            Ok(())
+        });
+        assert_matches!(got, Err(ureq::Error::Timeout(_)));
+        assert_eq!(calls, 0);
+    }
 
     #[test]
     fn resolve_location_handles_absolute_rooted_and_relative_forms() {

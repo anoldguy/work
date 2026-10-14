@@ -62,6 +62,7 @@ impl Ui {
 
     /// A `Plain`, colourless Ui over the given writers and interaction, for
     /// tests.
+    #[cfg(test)]
     #[must_use]
     pub fn for_test(
         out: Box<dyn Write + Send>,
@@ -73,6 +74,7 @@ impl Ui {
 
     /// Like [`Ui::for_test`] with an explicit `mode`, so the `Tty` redraw
     /// path can be exercised over in-memory writers. Never colourised.
+    #[cfg(test)]
     #[must_use]
     pub fn for_test_mode(
         mode: Mode,

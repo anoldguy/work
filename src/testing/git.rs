@@ -20,8 +20,6 @@ pub enum GitOp {
     Facts,
     /// `fast_forward`.
     FastForward,
-    /// `origin_url`.
-    OriginUrl,
 }
 
 /// One recorded call.
@@ -40,8 +38,6 @@ pub struct GitCall {
 pub struct RepoScript {
     /// What `facts` returns.
     pub facts: RepoFacts,
-    /// What `origin_url` returns.
-    pub origin: Option<String>,
     /// The one operation that fails, and how.
     pub fail: Option<(GitOp, GitError)>,
 }
@@ -60,7 +56,7 @@ const UNSCRIPTED_FACTS: RepoFacts = RepoFacts::Branch {
 ///
 /// `clone_repo` creates `dest/.git` on disk (tests pass a tempdir), so
 /// "already cloned" checks see the result. Unscripted paths behave as a
-/// clean branch that is up to date with no origin.
+/// clean branch that is up to date.
 #[derive(Debug, Default)]
 pub struct FakeGit {
     repos: BTreeMap<PathBuf, RepoScript>,
@@ -187,11 +183,6 @@ impl Git for FakeGit {
         let (_guard, result) = self.begin(GitOp::FastForward, repo, None);
         result.map(drop)
     }
-
-    fn origin_url(&self, repo: &Path) -> Result<Option<String>, GitError> {
-        let (_guard, result) = self.begin(GitOp::OriginUrl, repo, None);
-        Ok(result?.and_then(|s| s.origin.clone()))
-    }
 }
 
 #[cfg(test)]
@@ -204,7 +195,6 @@ mod tests {
     fn failing(op: GitOp) -> RepoScript {
         RepoScript {
             facts: RepoFacts::Detached { dirty: true },
-            origin: Some("https://github.com/acme/foo.git".to_owned()),
             fail: Some((
                 op,
                 GitError::Failed {
@@ -224,13 +214,8 @@ mod tests {
             git.facts(scripted).expect("facts"),
             RepoFacts::Detached { dirty: true }
         );
-        assert_eq!(
-            git.origin_url(scripted).expect("origin").as_deref(),
-            Some("https://github.com/acme/foo.git")
-        );
         let other = Path::new("/w/acme/bar");
         assert_eq!(git.facts(other).expect("facts"), UNSCRIPTED_FACTS);
-        assert_eq!(git.origin_url(other).expect("origin"), None);
         assert_matches!(git.fast_forward(other), Ok(()));
     }
 

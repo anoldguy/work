@@ -108,6 +108,21 @@ impl Gh for FakeGh {
     }
 }
 
+/// Lets a test keep a handle on the `FakeGh` it boxes into an `App`.
+impl Gh for std::sync::Arc<FakeGh> {
+    fn auth_token(&self, host: &Domain) -> Result<Option<SecretToken>, GhError> {
+        (**self).auth_token(host)
+    }
+
+    fn login(&self, host: &Domain) -> Result<(), GhError> {
+        (**self).login(host)
+    }
+
+    fn logout(&self, host: &Domain) -> Result<(), GhError> {
+        (**self).logout(host)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::assert_matches;

@@ -34,6 +34,7 @@ impl StoredTime {
     /// # Errors
     ///
     /// [`NameError::Time`] when `seconds` is outside jiff's supported range.
+    #[cfg(test)]
     pub fn from_unix_seconds(seconds: i64) -> Result<Self, NameError> {
         jiff::Timestamp::from_second(seconds)
             .map(Self)

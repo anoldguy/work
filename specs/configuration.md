@@ -68,7 +68,7 @@ Open the config file in the configured editor (`$WORK_EDITOR`, then `$EDITOR`, t
 
 ### `work config path`
 
-Show the config file location and whether it exists. Useful for debugging and scripting.
+Print the config file location on stdout, and whether it exists (`config file exists` / `config file missing`) on stderr, so `$(work config path)` yields just the path. Useful for debugging and scripting.
 
 ### `work config default [domain]`
 
@@ -76,5 +76,5 @@ Set which domain is the default. If no domain is specified, shows an interactive
 
 ### `work favorite [domain]`
 
-Interactive picker for selecting favorite orgs. Shows all orgs the user has access to on the specified domain and lets them toggle favorites. If no domain is specified, shows an interactive domain picker first.
+Interactive picker for selecting favorite orgs. Shows all orgs the user has access to on the specified domain and lets them toggle favorites. If no domain is specified, it uses the only configured domain, or shows an interactive domain picker when more than one is configured. With no domains configured, it fails and suggests `work setup`.
 

@@ -37,7 +37,7 @@ pub enum Command {
     Open(ResolveArgs),
     /// Fetch and fast-forward one repository
     Pull(ResolveArgs),
-    /// Fetch and fast-forward every cloned repository
+    /// Fetch and fast-forward every cached repository you have cloned
     Sync(SyncArgs),
     /// List cached repositories
     List(ListArgs),
@@ -94,8 +94,17 @@ pub struct CdArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct SyncArgs {
     /// Repositories to sync at once
-    #[arg(long, short = 'j', default_value = "8")]
+    #[arg(long, short = 'j', default_value = "8", value_parser = parse_jobs)]
     pub jobs: NonZeroUsize,
+}
+
+/// `--jobs`: a whole number of at least 1, with a plain-English complaint
+/// (clap's own is "number would be zero for non-zero type").
+fn parse_jobs(raw: &str) -> Result<NonZeroUsize, String> {
+    let n: usize = raw
+        .parse()
+        .map_err(|_| "must be a whole number".to_owned())?;
+    NonZeroUsize::new(n).ok_or_else(|| "must be at least 1".to_owned())
 }
 
 /// `list [query] [--filter]`.

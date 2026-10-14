@@ -32,7 +32,7 @@ Running `work update` always performs a full cache refresh regardless of stalene
 During a cache update:
 
 1. For each configured domain, the tool fetches:
-   - All personal (user-owned) repositories.
+   - All personal repositories: those the user owns and those they're a collaborator on (owned by other users). Global org filters apply to these by owner; favorites do not.
    - All repositories from organizations the user belongs to.
 2. Organization filtering:
    - Global `include_orgs` / `exclude_orgs` filters are applied first.

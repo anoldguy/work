@@ -49,7 +49,7 @@ Results are limited to 20.
 When a command needs a single repository (cd, clone, edit, etc.), the search results are resolved:
 
 - **1 result**: Used directly.
-- **0 results**: Error — "Repository not found: \<query\>"
+- **0 results**: Error — "repository not found: \<query\>"
 - **1 exact match among multiple results**: The exact match is used, even if fuzzy matches also exist.
 - **Multiple results, no single exact match**: Ambiguous — behavior depends on context (see [interactive-selection.md](interactive-selection.md)).
 

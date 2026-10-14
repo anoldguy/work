@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::sync::mpsc;
 
-use crate::text::{display_width, pad_to, plural, truncate};
+use crate::text::{display_width, pad_to, plural, sanitize, truncate};
 
 /// What a progress display counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -457,13 +457,6 @@ fn group(n: u64) -> String {
     out
 }
 
-/// `text` with every control character replaced by a space.
-fn sanitize(text: &str) -> String {
-    text.chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -679,7 +672,7 @@ mod tests {
         let mut view = ProgressView::new("ti\ttle\n", true);
         start(&mut view, 0, "acme/\ra");
         fail(&mut view, 0, "fatal: x\nhint: y\r\tz\x1b[2J");
-        start(&mut view, 1, "acme/b\x07");
+        start(&mut view, 1, "acme/b\x07\u{2028}\u{202e}");
         let mut text = view.lines(80, 24, 0).join("\n");
         text.push_str(&view.summary_line().expect("ran"));
         for sgr in ["\x1b[1m", "\x1b[31m", "\x1b[32m", "\x1b[36m", "\x1b[0m"] {
@@ -687,7 +680,7 @@ mod tests {
         }
         assert_eq!(text.lines().count(), 4, "{text:?}");
         assert!(
-            !text.chars().any(|c| c.is_control() && c != '\n'),
+            !text.chars().any(|c| crate::text::is_unsafe(c) && c != '\n'),
             "{text:?}"
         );
     }

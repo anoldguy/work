@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use crate::cache::{CACHE_FILE, CACHE_VERSION, Cache, CacheError};
 use crate::fsutil::atomic_write;
+use crate::text::one_line;
 
 /// What reading the cache found.
 #[derive(Debug)]
@@ -56,11 +57,6 @@ pub fn load(dir: &Path) -> LoadOutcome {
         Ok(cache) => LoadOutcome::Loaded(cache),
         Err(e) => LoadOutcome::Corrupt(one_line(&format!("invalid cache: {e}"))),
     }
-}
-
-/// Collapses a message onto one line.
-fn one_line(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Writes `cache` to `dir` atomically: a temporary file in `dir`, fsync,

@@ -17,6 +17,16 @@ pub struct FrecencyData {
 
 /// Weight of an access that is `age_days` old: 1.0 up to 7 days, 0.5 up to
 /// 30, 0.2 up to 90, and 0.05 after that.
+///
+/// ```
+/// use work::core::frecency::recency_multiplier;
+///
+/// assert_eq!(recency_multiplier(0), 1.0);
+/// assert_eq!(recency_multiplier(7), 1.0);
+/// assert_eq!(recency_multiplier(8), 0.5);
+/// assert_eq!(recency_multiplier(90), 0.2);
+/// assert_eq!(recency_multiplier(365), 0.05);
+/// ```
 #[must_use]
 pub const fn recency_multiplier(age_days: u64) -> f64 {
     match age_days {
@@ -96,7 +106,8 @@ impl Frecency {
         self.0.retain(|slug, _| live.contains(slug));
     }
 
-    /// The raw entry for `s`, if any.
+    /// The raw entry for `s`, if any (tests).
+    #[cfg(test)]
     #[must_use]
     pub fn get(&self, s: &Slug) -> Option<&FrecencyData> {
         self.0.get(s)

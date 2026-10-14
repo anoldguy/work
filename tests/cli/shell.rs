@@ -1,5 +1,5 @@
 //! The real wrappers in `shell/` evaluating the built binary's `sh-*`
-//! output:`work cd <q>` must change the calling shell's directory,
+//! output: `work cd <q>` must change the calling shell's directory,
 //! including for paths full of quoting hazards.
 
 use std::ffi::OsString;

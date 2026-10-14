@@ -14,7 +14,7 @@ When a token is needed for a given domain, it is resolved in this order:
 1. **`GITHUB_TOKEN` environment variable** — If set and non-empty, this token is used for all domains unconditionally.
 2. **GitHub CLI** — The tool runs `gh auth token --hostname <domain>` to retrieve the token for the specific domain.
 
-The first source that produces a valid token wins. If neither source provides a token, the operation fails.
+If `GITHUB_TOKEN` is set but can't be used as a token (it contains whitespace or control characters), the operation fails with an error naming the variable; it does not fall back to `gh`. If neither source provides a token, the operation fails.
 
 ## Session Caching
 

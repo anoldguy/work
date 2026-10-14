@@ -1,9 +1,11 @@
 //! The `gh` subprocess seam: token lookup, login, logout.
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt::Debug;
 use std::io;
 use std::process::Command;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::auth::SecretToken;
 use crate::domain::Domain;
@@ -51,6 +53,87 @@ impl Gh for ProcessGh {
 
     fn logout(&self, host: &Domain) -> Result<(), GhError> {
         interactive_via(OsStr::new(GH), "logout", host)
+    }
+}
+
+/// Lets a boxed seam stand wherever a `Gh` is expected (so [`MemoGh`] can
+/// wrap the `Box<dyn Gh>` an [`crate::app::App`] is given).
+impl<G: Gh + ?Sized> Gh for Box<G> {
+    fn auth_token(&self, host: &Domain) -> Result<Option<SecretToken>, GhError> {
+        (**self).auth_token(host)
+    }
+
+    fn login(&self, host: &Domain) -> Result<(), GhError> {
+        (**self).login(host)
+    }
+
+    fn logout(&self, host: &Domain) -> Result<(), GhError> {
+        (**self).logout(host)
+    }
+}
+
+/// A `Gh` that remembers each domain's token for the life of the process,
+/// so `gh auth token` runs at most once per domain.
+///
+/// Only successes are remembered: "no token" and errors are asked again
+/// every time, so a retry after `gh auth login` sees the new token. `login`
+/// and `logout` forget the domain's token.
+pub struct MemoGh<G> {
+    inner: G,
+    memo: Mutex<BTreeMap<Domain, SecretToken>>,
+}
+
+impl<G> MemoGh<G> {
+    /// Wraps `inner` with an empty memo.
+    #[must_use]
+    pub const fn new(inner: G) -> Self {
+        Self {
+            inner,
+            memo: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// The wrapped seam.
+    #[must_use]
+    pub const fn inner(&self) -> &G {
+        &self.inner
+    }
+
+    fn memo(&self) -> MutexGuard<'_, BTreeMap<Domain, SecretToken>> {
+        self.memo.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl<G: Debug> Debug for MemoGh<G> {
+    /// The wrapped seam and the remembered hosts; never the tokens.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoGh")
+            .field("inner", &self.inner)
+            .field("hosts", &self.memo().keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<G: Gh> Gh for MemoGh<G> {
+    fn auth_token(&self, host: &Domain) -> Result<Option<SecretToken>, GhError> {
+        if let Some(token) = self.memo().get(host) {
+            return Ok(Some(token.duplicate()));
+        }
+        let token = self.inner.auth_token(host)?;
+        if let Some(token) = &token {
+            self.memo().insert(host.clone(), token.duplicate());
+        }
+        Ok(token)
+    }
+
+    fn login(&self, host: &Domain) -> Result<(), GhError> {
+        self.memo().remove(host);
+        self.inner.login(host)
+    }
+
+    fn logout(&self, host: &Domain) -> Result<(), GhError> {
+        self.memo().remove(host);
+        self.inner.logout(host)
     }
 }
 
@@ -147,6 +230,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
+    use crate::testing::FakeGh;
 
     fn host() -> Domain {
         "github.com".parse().expect("valid domain")
@@ -158,6 +242,47 @@ mod tests {
         let path = dir.join(name);
         crate::testing::install_script(&path, body);
         path
+    }
+
+    #[test]
+    fn memo_runs_gh_once_per_domain_for_a_token() {
+        let other: Domain = "ghe.example.com".parse().expect("valid domain");
+        let gh = MemoGh::new(
+            FakeGh::new()
+                .with_token(host(), "gho_a")
+                .with_token(other.clone(), "gho_b"),
+        );
+        for _ in 0..3 {
+            let token = gh.auth_token(&host()).expect("ok").expect("some");
+            assert_eq!(token.expose(), "gho_a");
+        }
+        let token = gh.auth_token(&other).expect("ok").expect("some");
+        assert_eq!(token.expose(), "gho_b");
+        assert_eq!(gh.inner().calls().len(), 2);
+    }
+
+    #[test]
+    fn memo_never_remembers_a_missing_token_or_an_error() {
+        let gh = MemoGh::new(FakeGh::new().with_token_after_login(host(), "gho_new"));
+        assert_matches!(gh.auth_token(&host()), Ok(None));
+        assert_matches!(gh.auth_token(&host()), Ok(None));
+        gh.login(&host()).expect("login");
+        let token = gh.auth_token(&host()).expect("ok").expect("some");
+        assert_eq!(token.expose(), "gho_new");
+        assert_eq!(gh.inner().calls().len(), 4);
+        let failing = MemoGh::new(FakeGh::new().with_error(host(), GhError::NotInstalled));
+        assert_matches!(failing.auth_token(&host()), Err(GhError::NotInstalled));
+        assert_matches!(failing.auth_token(&host()), Err(GhError::NotInstalled));
+        assert_eq!(failing.inner().calls().len(), 2);
+    }
+
+    #[test]
+    fn memo_forgets_a_token_on_logout_and_hides_it_from_debug() {
+        let gh = MemoGh::new(FakeGh::new().with_token(host(), "gho_topsecret"));
+        gh.auth_token(&host()).expect("ok").expect("some");
+        assert!(!format!("{gh:?}").contains("topsecret"));
+        gh.logout(&host()).expect("logout");
+        assert_matches!(gh.auth_token(&host()), Ok(None));
     }
 
     #[test]

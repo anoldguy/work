@@ -47,6 +47,7 @@ Displays a full-screen animated about screen with project branding, version, and
 - Includes a blinking "press any key to exit" prompt
 - Centers content in the terminal
 - Output goes to stderr
+- Without a terminal on stderr (or with `TERM=dumb`), prints the static logo and footer shown above to stderr and exits instead of animating.
 
 ## Purpose
 

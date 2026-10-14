@@ -163,9 +163,7 @@ fn percent_decode(raw: &str) -> String {
 struct Route {
     path: String,
     param: Option<(String, String)>,
-    /// Served in order; the last one repeats.
-    responses: Vec<Response>,
-    hits: usize,
+    response: Response,
 }
 
 #[derive(Debug, Default)]
@@ -249,28 +247,13 @@ impl FakeApi {
 
     /// Serves `response` for `GET path` (any query).
     pub fn route(&self, path: &str, response: Response) {
-        self.add(path, None, vec![response]);
-    }
-
-    /// Serves `responses` for successive `GET path` requests, then keeps
-    /// repeating the last one (e.g. a 502 followed by a 200).
-    ///
-    /// # Panics
-    ///
-    /// Panics when `responses` is empty.
-    pub fn route_seq(&self, path: &str, responses: Vec<Response>) {
-        assert!(!responses.is_empty(), "route_seq needs a response");
-        self.add(path, None, responses);
+        self.add(path, None, response);
     }
 
     /// Serves `response` for `GET path` when the query has `key=value`.
     /// Takes precedence over plain [`FakeApi::route`] registrations.
     pub fn route_param(&self, path: &str, key: &str, value: &str, response: Response) {
-        self.add(
-            path,
-            Some((key.to_owned(), value.to_owned())),
-            vec![response],
-        );
+        self.add(path, Some((key.to_owned(), value.to_owned())), response);
     }
 
     /// Serves JSON `pages` at `path`: page 1 for any request, page `N` for
@@ -292,12 +275,11 @@ impl FakeApi {
         }
     }
 
-    fn add(&self, path: &str, param: Option<(String, String)>, responses: Vec<Response>) {
+    fn add(&self, path: &str, param: Option<(String, String)>, response: Response) {
         lock(&self.shared.routes).push(Route {
             path: path.to_owned(),
             param,
-            responses,
-            hits: 0,
+            response,
         });
     }
 
@@ -315,6 +297,23 @@ impl FakeApi {
             .filter(|request| request.path == path)
             .collect()
     }
+
+    /// [`FakeApi::requests_to`] with repeats of the same target (path and
+    /// raw query) collapsed into their first occurrence. The client repeats
+    /// a `GET` verbatim after `EINTR`, so count requests with this.
+    #[must_use]
+    pub fn distinct_requests_to(&self, path: &str) -> Vec<RecordedRequest> {
+        distinct(self.requests_to(path))
+    }
+}
+
+/// Keeps the first request for each (path, query), in arrival order.
+fn distinct(requests: Vec<RecordedRequest>) -> Vec<RecordedRequest> {
+    let mut seen = std::collections::HashSet::new();
+    requests
+        .into_iter()
+        .filter(|request| seen.insert((request.path.clone(), request.query.clone())))
+        .collect()
 }
 
 /// Routes and request log for one domain; see [`FakeApi::host`].
@@ -328,12 +327,6 @@ impl HostApi<'_> {
     /// [`FakeApi::route`] under this host.
     pub fn route(&self, path: &str, response: Response) {
         self.api.route(&format!("{}{path}", self.prefix), response);
-    }
-
-    /// [`FakeApi::route_seq`] under this host.
-    pub fn route_seq(&self, path: &str, responses: Vec<Response>) {
-        self.api
-            .route_seq(&format!("{}{path}", self.prefix), responses);
     }
 
     /// [`FakeApi::route_param`] under this host.
@@ -372,6 +365,12 @@ impl HostApi<'_> {
             .into_iter()
             .filter(|request| request.path == path)
             .collect()
+    }
+
+    /// [`FakeApi::distinct_requests_to`] under this host.
+    #[must_use]
+    pub fn distinct_requests_to(&self, path: &str) -> Vec<RecordedRequest> {
+        distinct(self.requests_to(path))
     }
 }
 
@@ -437,7 +436,7 @@ fn lookup(shared: &Shared, request: &RecordedRequest) -> Response {
     if request.method != "GET" {
         return Response::status(404);
     }
-    let mut routes = lock(&shared.routes);
+    let routes = lock(&shared.routes);
     let on_path = |route: &Route| route.path == request.path;
     let index = routes
         .iter()
@@ -455,10 +454,7 @@ fn lookup(shared: &Shared, request: &RecordedRequest) -> Response {
     let Some(index) = index else {
         return Response::status(404);
     };
-    let route = &mut routes[index];
-    let pick = route.hits.min(route.responses.len() - 1);
-    route.hits = route.hits.saturating_add(1);
-    route.responses[pick].clone()
+    routes[index].response.clone()
 }
 
 fn write_response(writer: &mut TcpStream, response: &Response) -> std::io::Result<()> {
@@ -600,12 +596,20 @@ mod tests {
     }
 
     #[test]
-    fn route_seq_serves_in_order_then_repeats_the_last() {
+    fn distinct_requests_collapse_repeats_of_the_same_target() {
         let api = FakeApi::start();
-        api.route_seq("/flaky", vec![Response::status(502), Response::json("ok")]);
-        assert_eq!(get(&api, "/flaky", &[]).0, "HTTP/1.1 502 Bad Gateway");
-        assert_eq!(get(&api, "/flaky", &[]).2, "ok");
-        assert_eq!(get(&api, "/flaky", &[]).2, "ok");
+        api.route("/r", Response::json("[]"));
+        for target in ["/r?page=1", "/r?page=1", "/r?page=2", "/r", "/r?page=1"] {
+            get(&api, target, &[]);
+        }
+        assert_eq!(api.requests_to("/r").len(), 5);
+        let queries: Vec<String> = api
+            .distinct_requests_to("/r")
+            .into_iter()
+            .map(|request| request.query)
+            .collect();
+        assert_eq!(queries, ["page=1", "page=2", ""]);
+        assert_eq!(api.host("h").distinct_requests_to("/r").len(), 0);
     }
 
     #[test]
@@ -639,15 +643,14 @@ mod tests {
         let (_, headers, body) = get(&api, "/ghe.test/user/orgs?page=2", &[]);
         assert_eq!(body, "[2]");
         assert!(!headers.contains("Link"));
-        com.route_seq("/seq", vec![Response::status(502), Response::json("up")]);
+        com.route("/seq", Response::status(502));
         com.route_param("/seq", "x", "1", Response::json("param"));
         assert_eq!(
             get_host("github.com", "/seq"),
             r#"{"message":"Bad Gateway"}"#
         );
-        assert_eq!(get_host("github.com", "/seq"), "up");
         assert_eq!(get_host("github.com", "/seq?x=1"), "param");
-        assert_eq!(com.requests().len(), 4);
+        assert_eq!(com.requests().len(), 3);
         assert_eq!(ghe.requests_to("/user/orgs").len(), 2);
         assert_eq!(ghe.requests()[0].path, "/user");
         assert_eq!(

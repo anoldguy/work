@@ -22,10 +22,11 @@ Sync a single repository.
 
 Sync ALL locally-cloned repositories.
 
-- Walks the work directory to find all cloned repositories (directories containing `.git`)
+- Syncs every repository that is both in the cache and cloned in the work directory (its expected path contains `.git`). Directories under the work directory that are not in the cache are ignored, as are cached repos that aren't cloned.
+- Requires the cache. With no cache, it fails and suggests `work update`.
 - Performs the same fetch + conditional fast-forward on each
 - Reports status for each repository:
-  - "pulled (N commits)" — fast-forwarded successfully
+  - "pulled (N commits)" — fast-forwarded successfully ("pulled (1 commit)" when N is 1)
   - "up to date" — already at the latest commit
   - "fetched (\<reason\>)" — fetched but did not fast-forward; the reason is one of "dirty worktree", "diverged", "detached HEAD", or "no upstream"
   - "error: \<message\>" — something went wrong
@@ -40,10 +41,6 @@ For each repository, the outcome is one of:
 3. **Fetched** — Fetch completed but no merge attempted, with a reason: dirty worktree, diverged, detached HEAD, or no upstream configured (a local-only branch). None of these is an error; the repo simply has nothing safe to fast-forward.
 4. **Error** — Something failed (not a git repo, network error, etc.)
 
-## Nested Repositories
-
-When walking the work directory, `sync` stops descending into a directory once it finds a `.git` folder. Nested repositories (e.g., git submodules, vendored repos) inside an already-discovered repo are not synced independently.
-
 ## Safety Guarantees
 
 - Never modifies files in a dirty worktree
@@ -57,4 +54,5 @@ When walking the work directory, `sync` stops descending into a directory once i
 Sync operations use the same auth token resolution as other operations. Tokens are passed to git via HTTP authorization headers for fetching from private repositories.
 
 - `pull`: resolves the token from the repo's domain (known from the cache).
-- `sync`: determines each repo's domain by reading its `origin` remote URL and extracting the hostname. If the domain cannot be determined or no token is available, the fetch proceeds without authentication (may still work for public repos or when git has stored credentials).
+- `sync`: resolves each repo's token from its domain (known from the cache), the same as `pull`.
+- The token is scoped to `https://<domain>`, so git never sends it to another host, even if `origin` points elsewhere. If no token is available, the fetch proceeds without authentication (may still work for public repos, ssh remotes, or when git has stored credentials).

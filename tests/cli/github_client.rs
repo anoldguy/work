@@ -72,7 +72,7 @@ fn three_page_listing_calls_on_page_once_per_page() {
     assert_eq!(listing.skipped, 0);
     assert!(!listing.truncated);
 
-    let requests = api.requests_to("/orgs/acme/repos");
+    let requests = api.distinct_requests_to("/orgs/acme/repos");
     assert_eq!(requests.len(), 3);
     assert_eq!(requests[0].query_param("type").as_deref(), Some("all"));
     assert_eq!(requests[0].query_param("per_page").as_deref(), Some("100"));
@@ -191,7 +191,7 @@ fn renamed_org_redirect_keeps_auth_and_returns_private_repos() {
         listing.repos[0].slug.to_string(),
         "github.com/new/private-thing"
     );
-    let followed = api.requests_to("/organizations/42/repos");
+    let followed = api.distinct_requests_to("/organizations/42/repos");
     assert_eq!(followed.len(), 1);
     let auth = format!("Bearer {TOKEN}");
     assert_eq!(followed[0].authorization(), Some(auth.as_str()));
@@ -200,10 +200,16 @@ fn renamed_org_redirect_keeps_auth_and_returns_private_repos() {
 #[test]
 fn redirect_loop_stops_after_a_few_hops() {
     let api = FakeApi::start();
-    api.route("/user", Response::redirect("/user"));
+    // `/user` -> `?hop=1` -> ... -> `?hop=5` -> `?hop=5`: every hop has its
+    // own target, so counting distinct targets is immune to EINTR retries.
+    api.route("/user", Response::redirect("/user?hop=1"));
+    for hop in 1..=5 {
+        let next = format!("/user?hop={}", (hop + 1).min(5));
+        api.route_param("/user", "hop", &hop.to_string(), Response::redirect(&next));
+    }
     let err = client(&api).viewer(&dom(), &token()).unwrap_err();
     assert_matches!(&err, ApiError::Status { status: 302, .. });
-    assert_eq!(api.requests_to("/user").len(), 6);
+    assert_eq!(api.distinct_requests_to("/user").len(), 6);
 }
 
 fn status_error(response: Response) -> ApiError {
@@ -418,18 +424,22 @@ fn listing_is_truncated_at_the_page_cap() {
     let api = FakeApi::start();
     // Page N links to page N + 1, forever; the last page served before the
     // cap links off-origin, which the cap reports as truncation, not an error.
+    // Pages are routed by their `page` parameter (not served in sequence),
+    // so a request the client repeats after an EINTR gets the same page.
     let base = api.base_url();
-    let responses = (1..=MAX_PAGES)
-        .map(|n| {
-            let next = if n == MAX_PAGES {
-                "https://elsewhere.invalid/user/repos?page=101".to_owned()
-            } else {
-                format!("{base}/user/repos?page={}", n + 1)
-            };
-            Response::json(&page(&[repo_json("me", &format!("r{n}"))])).link_next(&next)
-        })
-        .collect();
-    api.route_seq("/user/repos", responses);
+    for n in 1..=MAX_PAGES {
+        let next = if n == MAX_PAGES {
+            "https://elsewhere.invalid/user/repos?page=101".to_owned()
+        } else {
+            format!("{base}/user/repos?page={}", n + 1)
+        };
+        let response = Response::json(&page(&[repo_json("me", &format!("r{n}"))])).link_next(&next);
+        if n == 1 {
+            api.route("/user/repos", response);
+        } else {
+            api.route_param("/user/repos", "page", &n.to_string(), response);
+        }
+    }
     let mut pages = 0;
     let listing = client(&api)
         .user_repos(&dom(), &token(), &mut |_| pages += 1)
@@ -438,7 +448,7 @@ fn listing_is_truncated_at_the_page_cap() {
     assert_eq!(pages, MAX_PAGES);
     let expected = usize::try_from(MAX_PAGES).unwrap();
     assert_eq!(listing.repos.len(), expected);
-    assert_eq!(api.requests_to("/user/repos").len(), expected);
+    assert_eq!(api.distinct_requests_to("/user/repos").len(), expected);
 }
 
 #[test]
@@ -461,5 +471,5 @@ fn a_next_link_back_to_a_fetched_page_is_a_loop_error() {
         .user_repos(&dom(), &token(), &mut |_| {})
         .unwrap_err();
     assert_matches!(&err, ApiError::PaginationLoop { path } if path == "/user/repos");
-    assert_eq!(api.requests_to("/user/repos").len(), 2);
+    assert_eq!(api.distinct_requests_to("/user/repos").len(), 2);
 }

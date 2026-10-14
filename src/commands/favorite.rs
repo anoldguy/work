@@ -42,27 +42,25 @@ pub fn run(app: &mut App, args: &FavoriteArgs) -> Result<ExitCode, Error> {
     let Some(domain) = select_domain(app, domain.as_ref())? else {
         return Ok(ExitCode::SUCCESS);
     };
-    let (extras, current) = {
-        let cfg = app
-            .config
-            .domains()
-            .get(&domain)
-            .ok_or_else(|| ConfigError::UnknownDomain {
-                domain: domain.clone(),
-            })?;
-        (cfg.extra_orgs.clone(), cfg.favorite_orgs.clone())
-    };
+    // Borrowed from `app.config` while `app.ui` is used mutably: the fields
+    // are disjoint.
+    let cfg = app
+        .config
+        .domains()
+        .get(&domain)
+        .ok_or_else(|| ConfigError::UnknownDomain {
+            domain: domain.clone(),
+        })?;
 
-    let domains = [domain.clone()];
-    let tokens = Tokens::resolve(&*app.gh, &app.env.github_token, &domains);
+    let tokens = Tokens::resolve(&*app.gh, &app.env.github_token, [&domain]);
     let (token, _) = tokens.get(&domain)?;
     let api = &*app.api;
     let mut orgs = app
         .ui
         .with_progress(PROGRESS_TITLE, |_| api.member_orgs(&domain, token))?;
-    orgs.extend(extras);
+    orgs.extend_from_slice(&cfg.extra_orgs);
 
-    match choose_favorites(app.ui.interact(), &domain, &orgs, &current)? {
+    match choose_favorites(app.ui.interact(), &domain, &orgs, &cfg.favorite_orgs)? {
         Choice::NoOrgs => {
             app.ui.warn(&format!("no organizations found for {domain}"));
         }

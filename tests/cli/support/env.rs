@@ -240,6 +240,37 @@ impl TestEnv {
         git(&dest, &["config", "user.email", "test@example.invalid"]);
         dest
     }
+
+    /// From now on, every `git` the command runs appends one line to the
+    /// returned log: its arguments, then ` |`, then each `GIT_CONFIG_KEY_n`
+    /// it received (space-separated). Keys only: values carry the token.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the shim dir cannot be rewritten.
+    #[must_use]
+    pub fn record_git_config_keys(&self) -> PathBuf {
+        let shim = self.shim_dir().join("git");
+        let real = self.shim_dir().join("git-real");
+        fs::rename(&shim, &real).expect("move git wrapper aside");
+        let log = self.root().join("git-config-keys.log");
+        let script = format!(
+            "#!/bin/sh\n\
+             if [ -n \"$WORK_SHIM_PROBE\" ]; then exit 0; fi\n\
+             keys=\n\
+             i=0\n\
+             while [ \"$i\" -lt \"${{GIT_CONFIG_COUNT:-0}}\" ]; do\n\
+             \x20 eval \"keys=\\\"\\$keys \\${{GIT_CONFIG_KEY_$i}}\\\"\"\n\
+             \x20 i=$((i + 1))\n\
+             done\n\
+             printf '%s |%s\\n' \"$*\" \"$keys\" >> {log}\n\
+             exec {real} \"$@\"\n",
+            log = sh_quote(&log.display().to_string()),
+            real = sh_quote(&real.display().to_string()),
+        );
+        install_script(&shim, &script);
+        log
+    }
 }
 
 /// One `[domains."<host>"]` section for [`ConfigSeed`].

@@ -5,7 +5,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Domain, NameError};
+use super::NameError;
 
 /// The parts of an absolute `scheme://authority...` URL.
 struct Origin<'a> {
@@ -61,11 +61,11 @@ fn split_origin(url: &str) -> Option<Origin<'_>> {
     })
 }
 
-/// True when `s` has a control character, whitespace or a backslash
-/// (browsers read `\` as `/` in https URLs) anywhere.
+/// True when `s` has a control or invisible format character, whitespace or
+/// a backslash (browsers read `\` as `/` in https URLs) anywhere.
 fn has_unsafe_chars(s: &str) -> bool {
     s.chars()
-        .any(|c| c.is_control() || c.is_whitespace() || c == '\\')
+        .any(|c| crate::text::is_unsafe(c) || c.is_whitespace() || c == '\\')
 }
 
 /// True when `host` is a bracketed IPv6 literal (`[` hex digits, ':' and '.'
@@ -208,13 +208,6 @@ impl HtmlUrl {
     pub fn as_str(&self) -> &str {
         &self.0
     }
-
-    /// True when the URL's host (ignoring ASCII case and any port) is `d`.
-    /// The DTO check that a repo's web page is on its own domain.
-    #[must_use]
-    pub fn host_matches(&self, d: &Domain) -> bool {
-        split_origin(&self.0).is_some_and(|o| o.host.eq_ignore_ascii_case(d.as_str()))
-    }
 }
 
 impl TryFrom<String> for HtmlUrl {
@@ -275,7 +268,8 @@ impl fmt::Display for HtmlUrl {
 pub struct ApiUrl(String);
 
 impl ApiUrl {
-    /// The URL as a string slice, without a trailing slash.
+    /// The URL as a string slice, without a trailing slash (tests).
+    #[cfg(test)]
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -369,7 +363,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::{ApiUrl, CloneUrl, HtmlUrl};
-    use crate::domain::{Domain, NameError};
+    use crate::domain::NameError;
 
     fn clone(s: &str) -> Result<CloneUrl, NameError> {
         CloneUrl::try_from(s.to_owned())
@@ -443,28 +437,6 @@ mod tests {
     }
 
     #[test]
-    fn html_host_matches_ignores_case_port_and_user_info() {
-        let d: Domain = "github.com".parse().unwrap();
-        assert!(html("https://GitHub.com/a/b").unwrap().host_matches(&d));
-        assert!(
-            html("https://github.com:8443/a/b")
-                .unwrap()
-                .host_matches(&d)
-        );
-        assert!(
-            !html("https://evil.com/github.com")
-                .unwrap()
-                .host_matches(&d)
-        );
-        assert!(
-            !html("https://github.com.evil.com/a")
-                .unwrap()
-                .host_matches(&d)
-        );
-        assert!(!html("https://sub.github.com/a").unwrap().host_matches(&d));
-    }
-
-    #[test]
     fn api_url_allows_https_and_loopback_http_only() {
         for ok in [
             "https://api.github.com",
@@ -494,7 +466,6 @@ mod tests {
 
     #[test]
     fn backslash_cannot_smuggle_a_different_host() {
-        let d: Domain = "github.com".parse().unwrap();
         for bad in [
             "https://evil.com\\@github.com/x",
             "https://github.com\\@evil.com/x",
@@ -509,7 +480,6 @@ mod tests {
                 .unwrap()
                 .same_origin("https://evil.com\\@api.github.com/x")
         );
-        assert!(html("https://github.com/x").unwrap().host_matches(&d));
     }
 
     #[test]

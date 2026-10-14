@@ -3,7 +3,7 @@
 use std::process::ExitCode;
 
 use crate::app::App;
-use crate::auth::{AuthError, Tokens};
+use crate::auth::{AuthError, Tokens, login_hint};
 use crate::cli::{AuthAction, AuthArgs};
 use crate::domain::Domain;
 use crate::error::Error;
@@ -83,7 +83,7 @@ fn status(app: &mut App) -> Result<ExitCode, Error> {
 fn failure_line(domain: &Domain, err: &AuthError) -> String {
     match err {
         AuthError::NoToken { .. } => {
-            format!("{domain}: no token (run 'gh auth login --hostname {domain}')")
+            format!("{domain}: no token ({})", login_hint(domain))
         }
         AuthError::InvalidEnvToken => format!("{domain}: GITHUB_TOKEN is set but invalid"),
         AuthError::Gh(gh) => format!("{domain}: no token ({gh})"),

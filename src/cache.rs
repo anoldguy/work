@@ -21,14 +21,6 @@ pub enum CacheError {
     /// refresh (`pull`).
     #[error("no usable repository cache (run 'work update')")]
     Missing,
-    /// The cache file or its directory cannot be read.
-    #[error("cannot read cache {path:?}: {source}")]
-    Read {
-        /// The file or directory.
-        path: PathBuf,
-        /// The I/O error.
-        source: io::Error,
-    },
     /// Writing, renaming, or creating the cache directory failed.
     #[error("cannot write cache {path:?}: {source}")]
     Write {

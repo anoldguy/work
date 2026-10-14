@@ -1,14 +1,12 @@
-//! `pull` and `sync`: find cloned repos, fetch, and fast-forward when safe.
+//! `pull` and `sync`: fetch cloned repos and fast-forward when safe.
 //!
-//! `sync` never loads the cache; it walks the work directory.
+//! Both act only on repos that are in the cache and cloned at their expected
+//! path; `sync` never walks the work directory.
 
 pub mod run;
-pub mod walk;
 
-pub use run::{SyncReport, failures, pull_one, sync_all};
-pub use walk::find_repos;
+pub use run::{SyncReport, SyncTarget, failures, pull_one, sync_all};
 
-use std::io;
 use std::path::PathBuf;
 
 /// A sync failure.
@@ -22,14 +20,6 @@ pub enum SyncError {
         failed: Vec<PathBuf>,
         /// Repos attempted.
         total: usize,
-    },
-    /// The work directory could not be walked.
-    #[error("cannot read work directory {path:?}: {source}")]
-    WorkDir {
-        /// The directory that failed.
-        path: PathBuf,
-        /// The I/O error.
-        source: io::Error,
     },
     /// `pull` ended in an error outcome.
     #[error("could not pull {repo}: {detail}")]
