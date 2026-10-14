@@ -26,6 +26,10 @@ pub struct Target {
     pub index: usize,
     /// Where it lives (or will live) on disk.
     pub path: PathBuf,
+    /// The query whose pick [`record_access`] saves to query frecency: set
+    /// after an automatic answer or a picker choice, `None` for a unique
+    /// match.
+    pub picked_for: Option<QueryKey>,
 }
 
 /// What [`ensure_cloned`] did.
@@ -69,24 +73,20 @@ pub fn resolve_target(
             now,
         )
     };
-    let index = match decision {
-        Decision::Unique(index) => index,
+    let (index, picked) = match decision {
+        Decision::Unique(index) => (index, false),
         Decision::NotFound => return Err(ResolveError::NotFound { query: key.clone() }.into()),
-        Decision::Auto(index) => {
-            cache
-                .query_frecency
-                .record(key, &cache.repos[index].slug, now);
-            index
-        }
-        Decision::Ask(candidates) => {
-            let index = ask(app, cache, key, &candidates, interactive)?;
-            cache
-                .query_frecency
-                .record(key, &cache.repos[index].slug, now);
-            index
-        }
+        Decision::Auto(index) => (index, true),
+        Decision::Ask(candidates) => (ask(app, cache, key, &candidates, interactive)?, true),
     };
-    Ok(target_for(app, cache, index))
+    if picked {
+        cache
+            .query_frecency
+            .record(key, &cache.repos[index].slug, now);
+    }
+    let mut target = target_for(app, cache, index);
+    target.picked_for = picked.then(|| key.clone());
+    Ok(target)
 }
 
 /// Shows the picker over `candidates` (repo indices, rank order) and returns
@@ -126,7 +126,11 @@ fn ask(
 fn target_for(app: &App, cache: &Cache, index: usize) -> Target {
     let slug = &cache.repos[index].slug;
     let path = repo_path(app.config.work_dir(), app.config.default_domain(), slug);
-    Target { index, path }
+    Target {
+        index,
+        path,
+        picked_for: None,
+    }
 }
 
 /// `org/name` for the default domain, the full slug otherwise.
@@ -188,6 +192,13 @@ pub fn ensure_cloned(app: &mut App, cache: &Cache, target: &Target) -> Result<Cl
 /// Records repo frecency for the target and saves the cache. Called once the
 /// command's action has succeeded.
 ///
+/// `cache` gets the repo access (its query pick was recorded by
+/// [`resolve_target`]). The save goes through [`store::update`]: under the
+/// cache lock, the access and the query pick are re-applied to the newest
+/// copy on disk, so a refresh or another access saved meanwhile is kept. If
+/// that copy no longer lists the repo, nothing is recorded in it; if there
+/// is no readable copy, `cache` is written.
+///
 /// # Errors
 ///
 /// Saving the cache failed.
@@ -200,8 +211,23 @@ pub fn record_access(app: &App, cache: &mut Cache, target: &Target) -> Result<()
     let Cache {
         repos, frecency, ..
     } = cache;
-    frecency.record(&repos[target.index].slug, app.now);
-    store::save(app.config.cache_dir(), cache)?;
+    let now = app.now;
+    frecency.record(&repos[target.index].slug, now);
+    let cache = &*cache;
+    let slug = &cache.repos[target.index].slug;
+    store::update(app.config.cache_dir(), |latest| {
+        let Some(mut latest) = latest else {
+            // Nothing readable on disk: write the caller's copy.
+            return cache.clone();
+        };
+        if latest.repos.iter().any(|r| &r.slug == slug) {
+            latest.frecency.record(slug, now);
+            if let Some(key) = &target.picked_for {
+                latest.query_frecency.record(key, slug, now);
+            }
+        }
+        latest
+    })?;
     Ok(())
 }
 
@@ -727,6 +753,52 @@ mod tests {
         );
         let saved = store::load(h.app.config.cache_dir());
         assert_matches!(saved, store::LoadOutcome::Loaded(ref c) if *c == cache);
+    }
+
+    #[test]
+    fn record_access_keeps_what_another_process_saved_meanwhile() {
+        let mut h = harness(true, vec![Answer::Pick(Some(1))]);
+        let dir = h.app.config.cache_dir().to_path_buf();
+        let mut cache = cache();
+        store::save(&dir, &cache).expect("seed");
+        let target = resolve_target(&mut h.app, &mut cache, &args("foob", false)).expect("pick");
+        assert_eq!(target.picked_for, Some(key("foob")));
+        // Another `work` process records an access and saves first.
+        let other = cache.repos[2].slug.clone();
+        store::update(&dir, |latest| {
+            let mut latest = latest.expect("seeded");
+            latest.frecency.record(&other, now());
+            latest
+        })
+        .expect("other writer");
+        record_access(&h.app, &mut cache, &target).expect("save");
+        let store::LoadOutcome::Loaded(saved) = store::load(&dir) else {
+            panic!("cache should load");
+        };
+        let count = |i: usize| {
+            saved
+                .frecency
+                .get(&saved.repos[i].slug)
+                .map(|d| d.access_count)
+        };
+        assert_eq!((count(1), count(2)), (Some(1), Some(1)));
+        assert_eq!(query_count(&saved, "foob", 1), 1);
+    }
+
+    #[test]
+    fn record_access_skips_a_repo_the_newest_cache_dropped() {
+        let mut h = plain();
+        let dir = h.app.config.cache_dir().to_path_buf();
+        let mut cache = cache();
+        let target = resolve_target(&mut h.app, &mut cache, &args("foobar", false)).expect("ok");
+        assert_eq!(target.picked_for, None);
+        // A refresh elsewhere removed every repo.
+        store::save(&dir, &Cache::new(vec![], now())).expect("refresh");
+        record_access(&h.app, &mut cache, &target).expect("save");
+        assert_matches!(
+            store::load(&dir),
+            store::LoadOutcome::Loaded(c) if c.repos.is_empty() && c.frecency.is_empty()
+        );
     }
 
     #[test]

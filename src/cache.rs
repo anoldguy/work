@@ -12,11 +12,14 @@ pub use model::{CACHE_FILE, CACHE_VERSION, Cache, STALE_AFTER};
 use std::io;
 use std::path::PathBuf;
 
+use crate::auth::AuthError;
+
 /// A cache failure. Paths render with `{:?}` to stay on one line.
 #[derive(Debug, thiserror::Error)]
 pub enum CacheError {
-    /// No cache file, in a mode that does not refresh (`pull`).
-    #[error("no repository cache yet (run 'work update')")]
+    /// No readable cache file (missing or corrupt), in a mode that does not
+    /// refresh (`pull`).
+    #[error("no usable repository cache (run 'work update')")]
     Missing,
     /// The cache file or its directory cannot be read.
     #[error("cannot read cache {path:?}: {source}")]
@@ -44,4 +47,8 @@ pub enum CacheError {
     /// causes were already printed as warnings.
     #[error("could not fetch repositories from any domain (see the warnings above)")]
     AllFailed,
+    /// A needed refresh could not start (an invalid `GITHUB_TOKEN`); nothing
+    /// was fetched or written. Folds into `Error::Auth`.
+    #[error(transparent)]
+    Auth(#[from] AuthError),
 }
