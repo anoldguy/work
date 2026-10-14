@@ -4,6 +4,15 @@
 /// Quotes `s` as a single shell word: ordinary characters inside `'…'`, each
 /// `'` as `\'` and each `\` as `\\` outside the quotes. `a'b\c` becomes
 /// `'a'\''b'\\'c'`. The input must not contain a newline (callers check).
+///
+/// ```
+/// use work::shell::quote;
+///
+/// assert_eq!(quote("plain"), "'plain'");
+/// assert_eq!(quote("it's"), r"'it'\''s'");
+/// assert_eq!(quote(r"a'b\c"), r"'a'\''b'\\'c'");
+/// assert_eq!(quote("$HOME; rm -rf /"), "'$HOME; rm -rf /'");
+/// ```
 #[must_use]
 pub fn quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);

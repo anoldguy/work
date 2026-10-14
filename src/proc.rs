@@ -6,6 +6,8 @@
 use std::io;
 use std::process::{Command, ExitStatus, Output, Stdio};
 
+use crate::text;
+
 /// Runs `cmd` with stdin closed and stdout/stderr captured, and waits.
 ///
 /// # Errors
@@ -42,9 +44,10 @@ pub fn run_inherit(cmd: &mut Command) -> io::Result<ExitStatus> {
 #[must_use]
 pub fn one_line(stderr: &[u8]) -> String {
     let text = strip_escapes(&String::from_utf8_lossy(stderr));
-    // `\r` also separates lines so progress redraws yield their final state.
+    // `\r` also separates lines so progress redraws yield their final state,
+    // and so do the Unicode line and paragraph separators.
     let lines: Vec<String> = text
-        .split(['\n', '\r'])
+        .split(['\n', '\r', '\u{2028}', '\u{2029}'])
         .map(clean)
         .filter(|l| !l.is_empty())
         .collect();
@@ -100,19 +103,13 @@ fn strip_escapes(text: &str) -> String {
     out
 }
 
-/// True for invisible format characters (bidi overrides, zero-width marks).
-const fn is_format_char(c: char) -> bool {
-    matches!(c,
-        '\u{ad}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}'
-        | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
-}
-
-/// Maps tabs to spaces, drops control and format characters, and trims.
+/// Maps tabs to spaces, drops control and invisible format characters
+/// ([`text::is_unsafe`]), and trims.
 fn clean(line: &str) -> String {
     line.chars()
         .filter_map(|c| match c {
             '\t' => Some(' '),
-            c if c.is_control() || is_format_char(c) => None,
+            c if text::is_unsafe(c) => None,
             c => Some(c),
         })
         .collect::<String>()
@@ -169,6 +166,20 @@ mod tests {
     #[test]
     fn one_line_drops_bidi_overrides() {
         assert_eq!(one_line("a\u{202e}b\u{200b}c".as_bytes()), "abc");
+        for c in [
+            '\u{061c}', '\u{200e}', '\u{202a}', '\u{2066}', '\u{2069}', '\u{206f}',
+        ] {
+            assert_eq!(one_line(format!("x{c}y").as_bytes()), "xy", "{c:?}");
+        }
+    }
+
+    #[test]
+    fn one_line_treats_line_and_paragraph_separators_as_line_breaks() {
+        assert_eq!(one_line("first\u{2028}fatal: last".as_bytes()), "last");
+        assert_eq!(one_line("a\u{2029}b".as_bytes()), "b");
+        assert_eq!(one_line("x\u{2028}\u{2029}".as_bytes()), "x");
+        let line = one_line("fatal: a\u{2028}b\u{2029}c".as_bytes());
+        assert!(!line.contains(['\u{2028}', '\u{2029}']), "{line:?}");
     }
 
     #[test]

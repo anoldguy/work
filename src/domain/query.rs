@@ -5,6 +5,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use super::NameError;
+use crate::text;
 
 /// A normalised query string: trimmed and lowercased.
 ///
@@ -19,6 +20,16 @@ pub struct QueryKey(String);
 impl QueryKey {
     /// Trims and lowercases `raw`.
     ///
+    /// ```
+    /// use work::domain::QueryKey;
+    ///
+    /// let key = QueryKey::new("  Acme/API ").unwrap();
+    /// assert_eq!(key.as_str(), "acme/api");
+    /// assert_eq!(QueryKey::new(key.as_str()).unwrap(), key);
+    /// assert!(QueryKey::new("   ").is_err());
+    /// assert!(QueryKey::new("api\u{2028}x").is_err());
+    /// ```
+    ///
     /// # Errors
     ///
     /// [`NameError::Query`] when the result is empty or contains control
@@ -27,10 +38,7 @@ impl QueryKey {
         let key = raw.trim().to_lowercase();
         let reason = if key.is_empty() {
             "empty"
-        } else if key
-            .chars()
-            .any(|c| c.is_control() || is_invisible_format(c))
-        {
+        } else if key.chars().any(text::is_unsafe) {
             "control characters are not allowed"
         } else {
             return Ok(Self(key));
@@ -46,20 +54,6 @@ impl QueryKey {
     pub fn as_str(&self) -> &str {
         &self.0
     }
-}
-
-/// Bidi controls, zero-width characters and line/paragraph separators:
-/// invisible characters that could disguise a key in a one-line message.
-const fn is_invisible_format(c: char) -> bool {
-    matches!(
-        c,
-        '\u{AD}'
-            | '\u{200B}'..='\u{200F}'
-            | '\u{2028}'..='\u{202E}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{206F}'
-            | '\u{FEFF}'
-    )
 }
 
 impl TryFrom<String> for QueryKey {
@@ -112,6 +106,12 @@ mod tests {
             "a\u{2028}b",
             "a\u{200B}b",
             "a\u{2029}b",
+            "a\u{061C}b",
+            "a\u{200E}b",
+            "a\u{202A}b",
+            "a\u{2066}b",
+            "a\u{2069}b",
+            "a\u{206F}b",
         ] {
             assert_matches!(QueryKey::new(bad), Err(NameError::Query { .. }), "{bad:?}");
         }

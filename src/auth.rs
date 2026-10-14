@@ -9,6 +9,21 @@ pub use tokens::{TokenSource, Tokens};
 use crate::domain::Domain;
 use crate::gh::GhError;
 
+/// The fix for a missing token, for use inside a message's parentheses:
+/// `run 'gh auth login --hostname <domain>'`.
+///
+/// ```
+/// use work::auth::login_hint;
+/// use work::domain::Domain;
+///
+/// let domain: Domain = "github.com".parse().unwrap();
+/// assert_eq!(login_hint(&domain), "run 'gh auth login --hostname github.com'");
+/// ```
+#[must_use]
+pub fn login_hint(domain: &Domain) -> String {
+    format!("run 'gh auth login --hostname {domain}'")
+}
+
 /// Why no token is available for a domain.
 ///
 /// `Clone`, because [`Tokens`] keeps each domain's failure and hands callers
@@ -16,7 +31,7 @@ use crate::gh::GhError;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AuthError {
     /// `GITHUB_TOKEN` is unset and `gh` has no token for the host.
-    #[error("no GitHub token for {domain} (run 'gh auth login --hostname {domain}')")]
+    #[error("no GitHub token for {domain} ({})", login_hint(domain))]
     NoToken {
         /// The host that has no token.
         domain: Domain,

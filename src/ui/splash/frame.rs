@@ -11,6 +11,36 @@ pub struct Rgb {
     pub b: u8,
 }
 
+impl Rgb {
+    /// A fully saturated colour at `hue` (wrapped into `[0, 1)`) around the
+    /// colour wheel, each channel mapped as `channel * scale + offset` from
+    /// `0.0..=1.0` and clamped to `0..=255`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "bounded colour math: values are clamped to 0..=255 before narrowing"
+    )]
+    #[must_use]
+    pub fn from_hue(hue: f64, scale: f64, offset: f64) -> Self {
+        let sector = hue.rem_euclid(1.0) * 6.0;
+        let mid = 1.0 - (sector % 2.0 - 1.0).abs();
+        let (red, green, blue) = match sector as u8 {
+            0 => (1.0, mid, 0.0),
+            1 => (mid, 1.0, 0.0),
+            2 => (0.0, 1.0, mid),
+            3 => (0.0, mid, 1.0),
+            4 => (mid, 0.0, 1.0),
+            _ => (1.0, 0.0, mid),
+        };
+        let ch = |v: f64| (v * scale + offset).round().clamp(0.0, 255.0) as u8;
+        Self {
+            r: ch(red),
+            g: ch(green),
+            b: ch(blue),
+        }
+    }
+}
+
 /// One terminal cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cell {
@@ -108,8 +138,9 @@ impl Frame {
     }
 
     /// The characters only, one line per row (for snapshots).
+    #[cfg(test)]
     #[must_use]
-    pub fn to_text(&self) -> String {
+    pub(crate) fn to_text(&self) -> String {
         let mut out = String::with_capacity(self.cells.len() + usize::from(self.height));
         for row in self.cells.chunks(usize::from(self.width).max(1)) {
             out.extend(row.iter().map(|c| c.ch));
@@ -160,6 +191,17 @@ mod tests {
     use std::assert_matches;
 
     use super::{Cell, Frame, Rgb, center, to_u16};
+
+    #[test]
+    fn from_hue_walks_the_wheel_and_wraps() {
+        let rgb = |r, g, b| Rgb { r, g, b };
+        assert_eq!(Rgb::from_hue(0.0, 255.0, 0.0), rgb(255, 0, 0));
+        assert_eq!(Rgb::from_hue(1.0 / 3.0, 255.0, 0.0), rgb(0, 255, 0));
+        assert_eq!(Rgb::from_hue(2.0 / 3.0, 255.0, 0.0), rgb(0, 0, 255));
+        assert_eq!(Rgb::from_hue(1.0, 255.0, 0.0), rgb(255, 0, 0));
+        assert_eq!(Rgb::from_hue(-0.5, 255.0, 0.0), rgb(0, 255, 255));
+        assert_eq!(Rgb::from_hue(0.0, 200.0, 30.0), rgb(230, 30, 30));
+    }
 
     #[test]
     fn center_splits_the_slack_and_clamps_at_zero() {

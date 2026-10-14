@@ -7,7 +7,6 @@
 //! `GitAuth::redact` before it can reach an error.
 
 pub mod auth_env;
-pub mod remote;
 pub mod runner;
 pub mod status;
 
@@ -58,17 +57,6 @@ pub trait Git: Sync + Debug {
     ///
     /// Any [`GitError`].
     fn fast_forward(&self, repo: &Path) -> Result<(), GitError>;
-
-    /// `git remote get-url origin`; `Ok(None)` when there is no `origin`.
-    ///
-    /// The URL is returned as configured and may carry credentials
-    /// (`https://user:token@host/…`). Use it for [`remote::host_of`] and
-    /// [`remote::is_https`] only; never show it to the user.
-    ///
-    /// # Errors
-    ///
-    /// Any [`GitError`] other than a missing remote.
-    fn origin_url(&self, repo: &Path) -> Result<Option<String>, GitError>;
 }
 
 /// A failure running git. Every `detail` is one line and already redacted.
@@ -92,7 +80,7 @@ pub enum GitError {
     /// `git <action>` ran and failed.
     #[error("git {action} failed: {detail}")]
     Failed {
-        /// `clone`, `fetch`, `status`, `merge`, or `remote`.
+        /// `clone`, `fetch`, `status`, or `merge`.
         action: &'static str,
         /// git's stderr, reduced to one line and redacted.
         detail: String,

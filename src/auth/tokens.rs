@@ -31,7 +31,9 @@ impl TokenSource {
 /// Immutable and `Sync`, so fetch and sync workers share it by reference.
 /// When `GITHUB_TOKEN` is set it answers for every domain and `gh` is never
 /// run. Failures are kept per domain but never memoised across builds: after
-/// `gh auth login`, build a new `Tokens`.
+/// `gh auth login`, build a new `Tokens`. (Successes are memoised for the
+/// whole process by the `App`'s [`crate::gh::MemoGh`], so rebuilding is
+/// cheap.)
 #[derive(Debug)]
 pub struct Tokens<'e> {
     env: &'e EnvToken,
@@ -42,10 +44,14 @@ impl<'e> Tokens<'e> {
     /// Resolves a token for each of `domains`: `env` when present (without
     /// running `gh`), otherwise `gh.auth_token(domain)`.
     #[must_use]
-    pub fn resolve(gh: &dyn Gh, env: &'e EnvToken, domains: &[Domain]) -> Self {
+    pub fn resolve<'d>(
+        gh: &dyn Gh,
+        env: &'e EnvToken,
+        domains: impl IntoIterator<Item = &'d Domain>,
+    ) -> Self {
         let by_domain = if matches!(env, EnvToken::Unset) {
             domains
-                .iter()
+                .into_iter()
                 .map(|d| {
                     let result = match gh.auth_token(d) {
                         Ok(Some(token)) => Ok(token),

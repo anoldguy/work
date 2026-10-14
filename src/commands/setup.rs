@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use crate::app::App;
-use crate::auth::{AuthError, Tokens};
+use crate::auth::{AuthError, Tokens, login_hint};
 use crate::cache::refresh::{Freshness, load_or_refresh};
 use crate::cli::SetupArgs;
 use crate::config::locations::ExpandedPath;
@@ -117,7 +117,8 @@ fn ensure_token(app: &mut App, domain: &Domain) -> Result<bool, Error> {
         }
         Probe::NeedsLogin => {
             app.ui.warn(&format!(
-                "no token for {domain} (run 'gh auth login --hostname {domain}' later)"
+                "no token for {domain} ({} later)",
+                login_hint(domain)
             ));
             Ok(false)
         }
@@ -132,11 +133,7 @@ fn ensure_token(app: &mut App, domain: &Domain) -> Result<bool, Error> {
 /// Resolves afresh (failures are never remembered) and tests the token with
 /// `GET /user` under a spinner.
 fn probe(app: &mut App, domain: &Domain) -> Result<Probe, Error> {
-    let tokens = Tokens::resolve(
-        &*app.gh,
-        &app.env.github_token,
-        std::slice::from_ref(domain),
-    );
+    let tokens = Tokens::resolve(&*app.gh, &app.env.github_token, [domain]);
     let token = match tokens.get(domain) {
         Ok((token, _)) => token,
         Err(err @ (AuthError::InvalidEnvToken | AuthError::Gh(GhError::NotInstalled))) => {

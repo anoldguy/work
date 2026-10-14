@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::core::frecency::Frecency;
 use crate::core::query_frecency::QueryFrecency;
@@ -21,8 +21,8 @@ pub const CLOCK_SKEW: Duration = Duration::from_mins(5);
 /// File name inside the cache directory.
 pub const CACHE_FILE: &str = "cache.json";
 
-/// Everything in `cache.json`. Unknown fields are ignored; missing frecency
-/// maps default to empty.
+/// Everything in `cache.json`. Unknown fields are ignored; missing or `null`
+/// frecency maps default to empty.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Cache {
     /// Always [`CACHE_VERSION`] when written by this build.
@@ -32,15 +32,26 @@ pub struct Cache {
     /// Every cached repo, de-duplicated by slug.
     pub repos: Vec<Repo>,
     /// Repo frecency.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub frecency: Frecency,
     /// Query-to-repo frecency.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub query_frecency: QueryFrecency,
 }
 
+/// Reads `null` as `T::default()`, so a nulled-out map is empty rather than
+/// making the whole cache corrupt.
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
+}
+
 impl Cache {
-    /// A fresh cache with no history.
+    /// A fresh cache with no history (tests).
+    #[cfg(test)]
     #[must_use]
     pub fn new(repos: Vec<Repo>, now: StoredTime) -> Self {
         Self {
@@ -99,6 +110,26 @@ mod tests {
             serde_json::from_str(r#"{"version":1,"updated_at":"2025-01-01T00:00:00Z","repos":[]}"#)
                 .unwrap();
         assert!(c.frecency.is_empty());
+        assert!(c.query_frecency.is_empty());
+    }
+
+    #[test]
+    fn null_frecency_maps_are_empty_not_corrupt() {
+        let c: Cache = serde_json::from_str(
+            r#"{"version":1,"updated_at":"2025-01-01T00:00:00Z","repos":[],"frecency":null,"query_frecency":null}"#,
+        )
+        .unwrap();
+        assert!(c.frecency.is_empty());
+        assert!(c.query_frecency.is_empty());
+    }
+
+    #[test]
+    fn a_null_query_map_keeps_the_repo_frecency() {
+        let c: Cache = serde_json::from_str(
+            r#"{"version":1,"updated_at":"2025-01-01T00:00:00Z","repos":[],"frecency":{"github.com/acme/api":{"access_count":3,"last_access":"2025-01-01T00:00:00Z"}},"query_frecency":null}"#,
+        )
+        .unwrap();
+        assert!(!c.frecency.is_empty());
         assert!(c.query_frecency.is_empty());
     }
 

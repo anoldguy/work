@@ -17,6 +17,24 @@ No database, no daemon, no cloud sync that stops working when your wifi hiccups.
 - You already have a system that works (don't fix what isn't broken, I'm not your mom)
 - You want something battle-tested by thousands of users (this is a hobby project, there are dozens of us)
 
+## Install
+
+The easy way is the shell installer from the latest release:
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/anoldguy/work/releases/latest/download/work-installer.sh | sh
+```
+
+Prebuilt binaries exist for Linux and macOS, on x86_64 and aarch64. Prefer to build it yourself:
+
+```bash
+cargo install --git https://github.com/anoldguy/work
+# or, from a checkout:
+cargo build --release   # binary at target/release/work
+```
+
+Make sure the binary is on your `PATH` before moving on to shell integration; `work activate` can't wrap what it can't find.
+
 ## Prerequisites
 
 - [GitHub CLI (`gh`)](https://cli.github.com/) (authentication -- implementing OAuth device flow just to avoid typing `gh auth login` seemed like the wrong kind of yak shaving)
@@ -48,7 +66,7 @@ work completions zsh --install
 work completions fish --install
 ```
 
-Tab completion turns `work cd my<TAB>` into something useful. Without it you're just typing full repo names like an animal.
+For zsh, `--install` also prints an `fpath` hint on stderr, because a child process can't see your `fpath`; follow it. Tab completion turns `work cd my<TAB>` into something useful. Without it you're just typing full repo names like an animal.
 
 ## Quick Start
 
@@ -68,7 +86,7 @@ work edit myrepo
 work browse myrepo
 ```
 
-Repository lists are cached locally and refresh automatically when stale. Hitting the GitHub API on every typo would be excessive, and typos happen more than anyone wants to admit. You never need to think about the cache -- it updates itself in the background the first time a command notices it's stale. If you're impatient, `work update` forces a refresh, but you probably won't need it.
+Repository lists are cached locally and refresh automatically when stale. Hitting the GitHub API on every typo would be excessive, and typos happen more than anyone wants to admit. You never need to think about the cache -- it refreshes itself (under a spinner, in the foreground; there is no daemon) the first time a command notices it's stale. If you're impatient, `work update` forces a refresh, but you probably won't need it.
 
 ## Search & Frecency
 
@@ -97,7 +115,7 @@ Type to filter, Backspace to edit what you typed. Arrow keys or Ctrl-n/Ctrl-p mo
 | `work clone <query>` | Clone a repository into the work directory |
 | `work list [query]` | List cached repositories, ranked by relevance (`--filter` for a plain substring match on the full slug, without frecency) |
 | `work pull <query>` | Fetch and fast-forward one repository |
-| `work sync [--jobs <n>]` | Fetch and fast-forward every cloned repository (8 at a time by default). Go get coffee. Exits 1 if any repo failed |
+| `work sync [--jobs <n>]` | Fetch and fast-forward every cached repository you have cloned (8 at a time by default). Go get coffee. Exits 1 if any repo failed |
 | `work update [--all-orgs]` | Refresh the repository cache (usually unnecessary; `--all-orgs` fetches every org, ignoring favourites) |
 | `work config` | Show or change configuration (bare, it shows the current one) |
 | `work config path` | Show the config file location and whether it exists (path on stdout, existence on stderr) |
@@ -116,7 +134,7 @@ Type to filter, Backspace to edit what you typed. Arrow keys or Ctrl-n/Ctrl-p mo
 
 Configuration is optional. Defaults work for most people: `~/code` for repositories, `~/.local/state/work` for cache. XDG conventions are followed; somebody should.
 
-Config lives at `~/.config/work/config.toml`. The tool creates it on first run if needed. Edit it by hand if you prefer (`work config --edit` opens it in `$WORK_EDITOR`, then `$EDITOR`, then `vi`); it's just TOML. `work config path` prints the bare path on stdout and says whether the file exists on stderr, so `cat "$(work config path)"` behaves.
+Config lives at `~/.config/work/config.toml`. `work setup` creates it; until then, the defaults apply, with an implicit `github.com` as the default domain. Edit it by hand if you prefer (`work config --edit` opens it in `$WORK_EDITOR`, then `$EDITOR`, then `vi`); it's just TOML. `work config path` prints the bare path on stdout and says whether the file exists on stderr, so `cat "$(work config path)"` behaves.
 
 ```toml
 work_dir = "~/code"
@@ -192,11 +210,13 @@ gh auth login
 gh auth login --host github.enterprise.com
 ```
 
-Run `gh auth login` once; everything else works. Check `work auth status` if things seem broken.
+Run `gh auth login` once; everything else works.
+
+If `GITHUB_TOKEN` is set, it is used for every domain and `gh` is not consulted. That includes your GitHub Enterprise host, so a token exported for some other tool will be sent there, and an invalid one is a hard error with no fallback to `gh`. Unset it to use your per-host `gh` logins. Check `work auth status` if things seem broken.
 
 ## How It Works
 
-`work` maintains a local JSON cache of repo metadata fetched from the GitHub API via `gh`. When you run `work cd foo`, it:
+`work` maintains a local JSON cache of repo metadata fetched from the GitHub REST API. `work` makes those HTTPS calls itself; `gh` only supplies the token. When you run `work cd foo`, it:
 
 1. Fuzzy-matches "foo" against all cached repos
 2. Ranks results by frecency (repos you use often float to the top)
@@ -224,7 +244,7 @@ The local directory structure mirrors GitHub's hierarchy:
 
 ## Troubleshooting
 
-**"No matching repository found"**
+**"repository not found: <query>"**
 Stale cache. Run `work update` to force a refresh. This happens when you join new organizations or when your coworker creates another microservice at 4pm on Friday.
 
 **Shell integration not working**

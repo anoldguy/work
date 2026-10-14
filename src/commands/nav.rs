@@ -111,10 +111,14 @@ pub fn clone(app: &mut App, args: &ResolveArgs) -> Result<ExitCode, Error> {
 /// # Errors
 ///
 /// Resolution, opener, or cache failures.
+///
+/// # Panics
+///
+/// Only on a broken [`Target`] invariant (see [`Target::repo`]).
 pub fn browse(app: &mut App, args: &ResolveArgs) -> Result<ExitCode, Error> {
     let (mut cache, target) = prepare(app, args, Local::NotNeeded)?;
     app.ui.flush()?;
-    platform::open_url(&cache.repos[target.index].html_url)?;
+    platform::open_url(&target.repo(&cache.repos).html_url)?;
     record_access(app, &mut cache, &target)?;
     Ok(ExitCode::SUCCESS)
 }

@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use crate::text::plural;
+
 /// The current branch's relation to its configured upstream (`@{u}`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Upstream {
@@ -75,11 +77,14 @@ pub enum SyncOutcome {
 }
 
 impl fmt::Display for SyncOutcome {
-    /// The report text: `pulled (N commits)`, `up to date`,
+    /// The report text: `pulled (1 commit)` or `pulled (N commits)`, `up to date`,
     /// `fetched (<reason>)`, or `error: <message>`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Pulled { commits } => write!(f, "pulled ({commits} commits)"),
+            Self::Pulled { commits } => {
+                let noun = plural(*commits, "commit", "commits");
+                write!(f, "pulled ({commits} {noun})")
+            }
             Self::UpToDate => f.write_str("up to date"),
             Self::Fetched(reason) => write!(f, "fetched ({reason})"),
             Self::Error(message) => write!(f, "error: {message}"),
@@ -186,6 +191,10 @@ mod tests {
         assert_eq!(
             SyncOutcome::Pulled { commits: 3 }.to_string(),
             "pulled (3 commits)"
+        );
+        assert_eq!(
+            SyncOutcome::Pulled { commits: 1 }.to_string(),
+            "pulled (1 commit)"
         );
         assert_eq!(SyncOutcome::UpToDate.to_string(), "up to date");
         assert_eq!(SyncOutcome::Error("boom".into()).to_string(), "error: boom");

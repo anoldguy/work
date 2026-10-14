@@ -2,7 +2,7 @@
 source: tests/cli/invariants.rs
 expression: help(args)
 ---
-Fetch and fast-forward every cloned repository
+Fetch and fast-forward every cached repository you have cloned
 
 Usage: work sync [OPTIONS]
 

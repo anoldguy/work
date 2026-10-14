@@ -62,7 +62,7 @@ fn parse_document(text: &str, path: &Path) -> Result<DocumentMut, ConfigError> {
 /// A TOML error reduced to one line: the message, then the 1-based line and
 /// column of `span` in `text` when known.
 fn one_line(message: &str, span: Option<Range<usize>>, text: &str) -> String {
-    let message = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    let message = crate::text::one_line(message);
     let Some(start) = span.map(|s| s.start.min(text.len())) else {
         return message;
     };
@@ -159,7 +159,8 @@ impl ConfigDoc {
         })
     }
 
-    /// The file this document saves to.
+    /// The file this document saves to (tests).
+    #[cfg(test)]
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path

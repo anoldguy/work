@@ -231,12 +231,13 @@ fn first_line(rendered: &str) -> String {
     line.strip_prefix("error: ").unwrap_or(line).to_owned()
 }
 
-/// `s` with every control character replaced by its `\u{..}`/`\n` escape,
-/// so it cannot break a line.
+/// `s` with every control and invisible format character
+/// ([`crate::text::is_unsafe`]) replaced by its `\u{..}`/`\n` escape, so it
+/// cannot break a line or hide text.
 fn escape_controls(s: &str) -> String {
     s.chars()
         .map(|c| {
-            if c.is_control() {
+            if crate::text::is_unsafe(c) {
                 c.escape_default().to_string()
             } else {
                 c.to_string()
@@ -301,6 +302,14 @@ mod tests {
         assert!(!text.chars().any(char::is_control), "{text:?}");
         assert!(text.contains("(see 'work"), "{text}");
         text
+    }
+
+    #[test]
+    fn clap_errors_escape_line_separators_and_bidi_controls() {
+        let text = usage_text(&["work", "--a\u{2028}b\u{202e}c"]);
+        assert!(!text.contains(['\u{2028}', '\u{202e}']), "{text:?}");
+        assert!(text.contains(r"\u{2028}"), "{text}");
+        assert!(text.contains(r"\u{202e}"), "{text}");
     }
 
     #[test]

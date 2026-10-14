@@ -44,8 +44,8 @@ Query frecency participates in resolution, not search ranking. The check happens
 
 1. `Resolve` returns `ErrAmbiguous` with multiple candidates.
 2. Look up the query in `QueryFrecency`.
-3. Among the ambiguous candidates, find the one with the highest query-specific frecency score (same formula: `access_count * recency_multiplier`).
-4. If the top candidate's query frecency score exceeds a confidence threshold, auto-resolve to that repo.
+3. Rank the query's history entries by query-specific frecency score (same formula: `access_count * recency_multiplier`). If the top entry is not among the current candidates, show the selector.
+4. If the top entry's query frecency score exceeds a confidence threshold, auto-resolve to that repo.
 5. Otherwise, fall through to the interactive selector as today.
 
 This keeps query frecency out of the general search scoring path. It acts as a disambiguation override, not a ranking factor. The search results, their order, and the selector contents remain unchanged; only the "do we need to ask?" decision is affected.
@@ -55,7 +55,7 @@ This keeps query frecency out of the general search scoring path. It acts as a d
 A query-level association should only auto-resolve when the signal is strong enough that the user would be surprised if the selector appeared. The threshold has two components:
 
 1. Minimum access count: the query must have been resolved to the top candidate at least 3 times. This prevents a single accidental selection from creating a permanent binding.
-2. Dominance ratio: the top candidate's query frecency score must be at least 3x the second-highest candidate's score (if any second candidate exists in the query history). This handles the case where the user has selected different repos for the same query over time.
+2. Dominance ratio: the top entry's query frecency score must be at least 3x the second-highest entry in the query's history, whether or not that repo is a current candidate. If there is no second entry, or its score is 0, this check passes. This handles the case where the user has selected different repos for the same query over time.
 
 Both conditions must be met. If either fails, the selector is shown.
 

@@ -4,14 +4,22 @@
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
-use crate::auth::{GitAuth, Tokens};
+use crate::auth::GitAuth;
 use crate::core::sync_outcome::{Plan, SyncOutcome, classify};
-use crate::domain::Domain;
-use crate::git::remote::{host_of, is_https};
 use crate::git::{Git, GitError};
 use crate::pool::run_bounded;
 use crate::progress::{Header, Noun, ProgressSink, Step, TaskDetail, TaskOutcome, UiEvent, Verb};
 use crate::sync::SyncError;
+
+/// One repo for [`sync_all`]: where it is and the auth to fetch it with.
+#[derive(Debug)]
+pub struct SyncTarget<'t> {
+    /// The repo's path relative to `work_dir`.
+    pub path: PathBuf,
+    /// The header for the repo's cached domain, scoped to that host; `None`
+    /// fetches unauthenticated.
+    pub auth: Option<GitAuth<'t>>,
+}
 
 /// One line of the `sync` report.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,28 +68,7 @@ fn error_outcome(err: &GitError, auth: Option<&GitAuth<'_>>) -> SyncOutcome {
         Some(a) => a.redact(&text),
         None => text,
     };
-    SyncOutcome::Error(text.replace(char::is_control, " "))
-}
-
-/// The auth for `path`: only when `origin` is https, its host is one of
-/// `configured`, and a token resolved for it.
-fn auth_for<'t>(
-    git: &dyn Git,
-    path: &Path,
-    tokens: &'t Tokens<'_>,
-    configured: &[Domain],
-) -> Option<GitAuth<'t>> {
-    // An unreadable origin means the domain is unknown: fetch without auth
-    // and let fetch/facts report a genuinely broken repo.
-    let origin = git.origin_url(path).ok().flatten();
-    let host = origin
-        .as_deref()
-        .filter(|url| is_https(url))
-        .and_then(host_of)
-        .filter(|host| configured.contains(host))?;
-    // No usable token (an invalid `GITHUB_TOKEN` included) means no auth:
-    // the fetch still works for public repos and stored credentials.
-    tokens.git_auth(&host).ok().flatten()
+    SyncOutcome::Error(crate::text::sanitize(&text))
 }
 
 /// The `SomeFailed` error for `reports`, or `None` when no repo errored.
@@ -104,16 +91,13 @@ pub fn failures(reports: &[SyncReport]) -> Option<SyncError> {
 }
 
 /// Runs [`pull_one`] over `repos` with `jobs` workers, reporting a `Header`
-/// and per-repo task events to `sink`. A repo gets a token only when its
-/// `origin` is https and its host is in `configured`. Results are sorted by
-/// relative path.
+/// and per-repo task events to `sink`. Each repo is fetched with its own
+/// [`SyncTarget::auth`]. Results are sorted by relative path.
 #[must_use]
 pub fn sync_all(
     git: &dyn Git,
     work_dir: &Path,
-    repos: &[PathBuf],
-    tokens: &Tokens<'_>,
-    configured: &[Domain],
+    repos: &[SyncTarget<'_>],
     jobs: NonZeroUsize,
     sink: &ProgressSink,
 ) -> Vec<SyncReport> {
@@ -123,21 +107,20 @@ pub fn sync_all(
         noun: Noun::Repositories,
         domains: None,
     }));
-    let indexed: Vec<(u32, &PathBuf)> = (0..).zip(repos).collect();
-    let mut reports = run_bounded(&indexed, jobs, |&(id, rel)| {
+    let indexed: Vec<(u32, &SyncTarget<'_>)> = (0..).zip(repos).collect();
+    let mut reports = run_bounded(&indexed, jobs, |&(id, target)| {
         sink.send(UiEvent::TaskStarted {
             id,
-            label: rel.display().to_string(),
+            label: target.path.display().to_string(),
         });
-        let path = work_dir.join(rel);
+        let path = work_dir.join(&target.path);
         let on_step = |step| {
             sink.send(UiEvent::TaskProgress {
                 id,
                 detail: TaskDetail::Step(step),
             });
         };
-        let auth = auth_for(git, &path, tokens, configured);
-        let outcome = pull_one(git, &path, auth.as_ref(), &on_step);
+        let outcome = pull_one(git, &path, target.auth.as_ref(), &on_step);
         let task_outcome = match &outcome {
             SyncOutcome::Error(reason) => TaskOutcome::Failed {
                 reason: reason.clone(),
@@ -149,7 +132,7 @@ pub fn sync_all(
             outcome: task_outcome,
         });
         SyncReport {
-            path: rel.clone(),
+            path: target.path.clone(),
             outcome,
         }
     });
@@ -163,9 +146,9 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
-    use crate::auth::{EnvToken, SecretToken};
+    use crate::auth::SecretToken;
     use crate::core::sync_outcome::{FetchedReason, RepoFacts, Upstream};
-    use crate::testing::gh::FakeGh;
+    use crate::domain::Domain;
     use crate::testing::git::{FakeGit, GitOp, RepoScript};
 
     fn dom(s: &str) -> Domain {
@@ -182,12 +165,8 @@ mod tests {
         }
     }
 
-    fn script(facts: RepoFacts, origin: Option<&str>) -> RepoScript {
-        RepoScript {
-            facts,
-            origin: origin.map(str::to_owned),
-            fail: None,
-        }
+    fn script(facts: RepoFacts) -> RepoScript {
+        RepoScript { facts, fail: None }
     }
 
     fn failing(op: GitOp, detail: &str) -> (GitOp, GitError) {
@@ -208,12 +187,23 @@ mod tests {
         names.iter().map(PathBuf::from).collect()
     }
 
+    /// Unauthenticated targets for `names`.
+    fn targets(names: &[&str]) -> Vec<SyncTarget<'static>> {
+        names
+            .iter()
+            .map(|n| SyncTarget {
+                path: PathBuf::from(n),
+                auth: None,
+            })
+            .collect()
+    }
+
     #[test]
     fn pull_one_fast_forwards_only_when_behind() {
         let w = Path::new("/w");
         let git = FakeGit::new()
-            .with_repo(&w.join("a"), script(behind(3), None))
-            .with_repo(&w.join("b"), script(behind(0), None));
+            .with_repo(&w.join("a"), script(behind(3)))
+            .with_repo(&w.join("b"), script(behind(0)));
         let steps = RefCell::new(Vec::new());
         let on_step = |s| steps.borrow_mut().push(s);
         assert_eq!(
@@ -243,7 +233,7 @@ mod tests {
                 behind: 2,
             },
         };
-        let git = FakeGit::new().with_repo(w, script(facts, None));
+        let git = FakeGit::new().with_repo(w, script(facts));
         assert_eq!(
             pull_one(&git, w, None, &|_| {}),
             SyncOutcome::Fetched(FetchedReason::DirtyWorktree)
@@ -259,7 +249,7 @@ mod tests {
             (GitOp::FastForward, 3),
         ] {
             let w = Path::new("/w/a");
-            let mut s = script(behind(1), None);
+            let mut s = script(behind(1));
             s.fail = Some(failing(op, "boom"));
             let git = FakeGit::new().with_repo(w, s);
             let outcome = pull_one(&git, w, None, &|_| {});
@@ -273,7 +263,7 @@ mod tests {
         let token = SecretToken::new("gho_supersecret").expect("token");
         let auth = GitAuth::new(dom("github.com"), &token);
         let w = Path::new("/w/a");
-        let mut s = script(behind(1), None);
+        let mut s = script(behind(1));
         s.fail = Some(failing(GitOp::Fetch, "bad gho_supersecret\nline2"));
         let git = FakeGit::new().with_repo(w, s);
         let outcome = pull_one(&git, w, Some(&auth), &|_| {});
@@ -282,53 +272,57 @@ mod tests {
     }
 
     #[test]
-    fn token_only_for_configured_https_hosts() {
-        let env = EnvToken::Valid(SecretToken::new("gho_tok").expect("token"));
-        let tokens = Tokens::resolve(&FakeGh::new(), &env, &[]);
+    fn each_repo_is_fetched_with_its_own_auth() {
+        let token = SecretToken::new("gho_tok").expect("token");
         let w = Path::new("/w");
-        let git = FakeGit::new()
-            .with_repo(
-                &w.join("https"),
-                script(behind(0), Some("https://github.com/a/https.git")),
-            )
-            .with_repo(
-                &w.join("ssh"),
-                script(behind(0), Some("git@github.com:a/ssh.git")),
-            )
-            .with_repo(
-                &w.join("other"),
-                script(behind(0), Some("https://example.com/a/other.git")),
-            )
-            .with_repo(&w.join("none"), script(behind(0), None));
+        let repos = [
+            SyncTarget {
+                path: PathBuf::from("acme/a"),
+                auth: Some(GitAuth::new(dom("github.com"), &token)),
+            },
+            SyncTarget {
+                path: PathBuf::from("ghe.example.com/acme/b"),
+                auth: Some(GitAuth::new(dom("ghe.example.com"), &token)),
+            },
+            SyncTarget {
+                path: PathBuf::from("other.example.com/acme/c"),
+                auth: None,
+            },
+        ];
+        let git = FakeGit::new();
         let (sink, _rx) = ProgressSink::channel();
-        let repos = rels(&["https", "none", "other", "ssh"]);
-        let reports = sync_all(&git, w, &repos, &tokens, &[dom("github.com")], one(), &sink);
-        assert_eq!(reports.len(), 4);
+        let reports = sync_all(&git, w, &repos, one(), &sink);
+        assert_eq!(reports.len(), 3);
         let fetches: Vec<_> = git
             .calls()
             .into_iter()
             .filter(|c| c.op == GitOp::Fetch)
+            .map(|c| (c.path, c.auth_host))
             .collect();
-        assert_eq!(fetches.len(), 4);
-        for call in fetches {
-            let expected = (call.path == w.join("https")).then(|| dom("github.com"));
-            assert_eq!(call.auth_host, expected, "{:?}", call.path);
-        }
+        assert_eq!(
+            fetches,
+            [
+                (w.join("acme/a"), Some(dom("github.com"))),
+                (
+                    w.join("ghe.example.com/acme/b"),
+                    Some(dom("ghe.example.com"))
+                ),
+                (w.join("other.example.com/acme/c"), None),
+            ]
+        );
     }
 
     #[test]
     fn errors_are_isolated_sorted_and_events_emitted() {
-        let env = EnvToken::Unset;
-        let tokens = Tokens::resolve(&FakeGh::new(), &env, &[]);
         let w = Path::new("/w");
-        let mut bad = script(behind(1), None);
+        let mut bad = script(behind(1));
         bad.fail = Some(failing(GitOp::Fetch, "boom"));
         let git = FakeGit::new()
             .with_repo(&w.join("b/bad"), bad)
-            .with_repo(&w.join("a/ok"), script(behind(2), None));
+            .with_repo(&w.join("a/ok"), script(behind(2)));
         let (sink, rx) = ProgressSink::channel();
-        let repos = rels(&["b/bad", "a/ok"]);
-        let reports = sync_all(&git, w, &repos, &tokens, &[], one(), &sink);
+        let repos = targets(&["b/bad", "a/ok"]);
+        let reports = sync_all(&git, w, &repos, one(), &sink);
         drop(sink);
         assert_eq!(reports[0].path, PathBuf::from("a/ok"));
         assert_eq!(reports[0].outcome, SyncOutcome::Pulled { commits: 2 });
@@ -379,101 +373,17 @@ mod tests {
 
     #[test]
     fn pool_limit_is_respected_and_order_is_deterministic() {
-        let env = EnvToken::Unset;
-        let tokens = Tokens::resolve(&FakeGh::new(), &env, &[]);
         let names: Vec<String> = (0..24).map(|i| format!("o/r{i:02}")).collect();
-        let repos: Vec<PathBuf> = names.iter().map(PathBuf::from).collect();
+        let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let repos = targets(&name_refs);
         let (sink, _rx) = ProgressSink::channel();
         let git = FakeGit::new();
         let jobs = NonZeroUsize::new(3).expect("nonzero");
-        let reports = sync_all(&git, Path::new("/w"), &repos, &tokens, &[], jobs, &sink);
+        let reports = sync_all(&git, Path::new("/w"), &repos, jobs, &sink);
         assert_eq!(reports.len(), 24);
         assert!(git.max_in_flight() <= 3);
         let paths: Vec<_> = reports.into_iter().map(|r| r.path).collect();
-        assert_eq!(paths, repos);
-    }
-
-    #[test]
-    fn origin_url_failure_still_fetches_without_auth() {
-        let env = EnvToken::Valid(SecretToken::new("gho_tok").expect("token"));
-        let tokens = Tokens::resolve(&FakeGh::new(), &env, &[]);
-        let w = Path::new("/w");
-        let mut s = script(behind(0), Some("https://github.com/a/x.git"));
-        s.fail = Some((
-            GitOp::OriginUrl,
-            GitError::Failed {
-                action: "remote",
-                detail: "broken".to_owned(),
-            },
-        ));
-        let git = FakeGit::new().with_repo(&w.join("x"), s);
-        let (sink, _rx) = ProgressSink::channel();
-        let repos = rels(&["x"]);
-        let reports = sync_all(&git, w, &repos, &tokens, &[dom("github.com")], one(), &sink);
-        assert_eq!(reports[0].outcome, SyncOutcome::UpToDate);
-        let fetch = git.calls().into_iter().find(|c| c.op == GitOp::Fetch);
-        assert_matches!(fetch, Some(c) if c.auth_host.is_none());
-    }
-
-    #[test]
-    fn upstream_only_repo_fetches_without_auth() {
-        // `origin_url` reports `Ok(None)` when there is no `origin` remote.
-        let env = EnvToken::Valid(SecretToken::new("gho_tok").expect("token"));
-        let tokens = Tokens::resolve(&FakeGh::new(), &env, &[]);
-        let w = Path::new("/w");
-        let git = FakeGit::new().with_repo(&w.join("u"), script(behind(1), None));
-        let (sink, _rx) = ProgressSink::channel();
-        let repos = rels(&["u"]);
-        let reports = sync_all(&git, w, &repos, &tokens, &[dom("github.com")], one(), &sink);
-        assert_eq!(reports[0].outcome, SyncOutcome::Pulled { commits: 1 });
-        assert!(git.calls().iter().all(|c| c.auth_host.is_none()));
-    }
-
-    #[test]
-    fn http_is_unauthenticated_and_uppercase_https_host_matches() {
-        let w = Path::new("/w");
-        let git = FakeGit::new()
-            .with_repo(
-                &w.join("plain"),
-                script(behind(0), Some("http://github.com/a/p.git")),
-            )
-            .with_repo(
-                &w.join("upper"),
-                script(behind(0), Some("HTTPS://GitHub.com/a/u.git")),
-            );
-        let (sink, _rx) = ProgressSink::channel();
-        let repos = rels(&["plain", "upper"]);
-        let env = EnvToken::Valid(SecretToken::new("gho_tok").expect("token"));
-        let tokens = Tokens::resolve(&FakeGh::new(), &env, &[]);
-        let _ = sync_all(&git, w, &repos, &tokens, &[dom("github.com")], one(), &sink);
-        let hosts: Vec<_> = git
-            .calls()
-            .into_iter()
-            .filter(|c| c.op == GitOp::Fetch)
-            .map(|c| (c.path, c.auth_host))
-            .collect();
-        assert_eq!(
-            hosts,
-            [
-                (w.join("plain"), None),
-                (w.join("upper"), Some(dom("github.com")))
-            ]
-        );
-    }
-
-    #[test]
-    fn failed_token_lookup_still_fetches_without_auth() {
-        let w = Path::new("/w");
-        let git = FakeGit::new().with_repo(
-            &w.join("r"),
-            script(behind(0), Some("https://github.com/a/r.git")),
-        );
-        let (sink, _rx) = ProgressSink::channel();
-        let tokens = Tokens::resolve(&FakeGh::new(), &EnvToken::Invalid, &[]);
-        let repos = rels(&["r"]);
-        let reports = sync_all(&git, w, &repos, &tokens, &[dom("github.com")], one(), &sink);
-        assert_eq!(reports[0].outcome, SyncOutcome::UpToDate);
-        assert!(git.calls().iter().all(|c| c.auth_host.is_none()));
+        assert_eq!(paths, rels(&name_refs));
     }
 
     #[test]

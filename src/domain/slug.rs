@@ -14,6 +14,18 @@ use super::{Domain, NameError, Org, RepoName};
 /// key in the frecency maps.
 /// Ordering compares domain, then org, then name; this is the tie-break
 /// order for search results.
+///
+/// ```
+/// use work::domain::Slug;
+///
+/// let slug: Slug = "github.com/acme/api".parse().unwrap();
+/// assert_eq!(slug.domain().as_str(), "github.com");
+/// assert_eq!(slug.org().as_str(), "acme");
+/// assert_eq!(slug.to_string(), "github.com/acme/api");
+///
+/// assert!("acme/api".parse::<Slug>().is_err()); // no domain
+/// assert!("github.com/acme/../x".parse::<Slug>().is_err()); // four segments
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize)]
 #[serde(try_from = "String")]
 pub struct Slug {

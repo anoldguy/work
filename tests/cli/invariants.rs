@@ -111,18 +111,27 @@ enum Fixture {
 enum Want {
     /// Exit 0; stderr holds only `warning: ` lines.
     Ok,
-    /// Exit 0; stderr carries informational output by design, keeping
-    /// stdout clean for scripts. Used only for `about` (its static logo
-    /// when stderr is not a terminal), `config path` (`config file
-    /// exists|missing`) and `config default <d>` (`default domain is now
-    /// <d>`).
-    OkWithStderrOutput,
+    /// Exit 0; stderr carries exactly this informational output (by design,
+    /// keeping stdout clean for scripts) and nothing else.
+    OkWithStderr(Info),
     /// Exit 2, one `work: ` line.
     Usage,
     /// Exit 1, one `work: ` line.
     Error,
     /// Exit 1, one `work: ` line plus exactly this many `  - ` items.
     List(usize),
+}
+
+/// The informational stderr a successful command writes on purpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Info {
+    /// Exactly this text, after the test home is replaced by `<HOME>`:
+    /// `config path` (`config file exists|missing`), `config default <d>`
+    /// (`default domain is now <d>`), `completions <sh> --install`.
+    Exact(&'static str),
+    /// `about` without a terminal: the static logo and footer, compared
+    /// against the `about_static_logo` snapshot (version redacted).
+    AboutLogo,
 }
 
 /// One row of a table: `work <args>` in `fixture` must give `want`.
@@ -276,18 +285,19 @@ fn check(case: &Case) {
     let env = build(case.fixture);
     let out = env.command().args(&case.args).output().expect("run work");
     let ctx = format!("{case:?}");
-    check_shape(&out, case.want, &ctx);
+    check_shape(&env, &out, case.want, &ctx);
     check_sh_script(&out, &case.args, &ctx);
     check_no_leak(&env, &out, &ctx);
 }
 
 /// Rules 1, 2 and 5: exit code, empty stdout on failure, and the stderr
-/// shape via [`assert_stderr_shape`].
-fn check_shape(out: &Output, want: Want, ctx: &str) {
+/// shape via [`assert_stderr_shape`] (with the test home shown as
+/// `<HOME>`).
+fn check_shape(env: &TestEnv, out: &Output, want: Want, ctx: &str) {
     let stdout = text(&out.stdout);
-    let stderr = text(&out.stderr);
+    let stderr = text(&out.stderr).replace(&env.home().display().to_string(), "<HOME>");
     let expected = match want {
-        Want::Ok | Want::OkWithStderrOutput => 0,
+        Want::Ok | Want::OkWithStderr(_) => 0,
         Want::Usage => 2,
         Want::Error | Want::List(_) => 1,
     };
@@ -296,7 +306,7 @@ fn check_shape(out: &Output, want: Want, ctx: &str) {
         Some(expected),
         "{ctx}: exit code\nstdout: {stdout:?}\nstderr: {stderr:?}"
     );
-    if !matches!(want, Want::Ok | Want::OkWithStderrOutput) {
+    if !matches!(want, Want::Ok | Want::OkWithStderr(_)) {
         assert_eq!(stdout, "", "{ctx}: a failure must not write to stdout");
     }
     assert_stderr_shape(&stderr, want, ctx);
@@ -309,11 +319,27 @@ fn check_shape(out: &Output, want: Want, ctx: &str) {
 /// - for a list error, exactly the expected number of `  - <item>` lines.
 ///
 /// Nothing else, and every line ends in a newline. On success there is no
-/// `work: ` line, so stderr is warnings only (`OkWithStderrOutput` is the
-/// exemption, for three informational messages; see its doc).
+/// `work: ` line, so stderr is warnings only, except that
+/// [`Want::OkWithStderr`] demands its exact informational text instead.
 fn assert_stderr_shape(stderr: &str, want: Want, ctx: &str) {
-    if want == Want::OkWithStderrOutput {
-        return;
+    match want {
+        Want::OkWithStderr(Info::Exact(expected)) => {
+            assert_eq!(stderr, expected, "{ctx}: informational stderr");
+            return;
+        }
+        Want::OkWithStderr(Info::AboutLogo) => {
+            assert!(
+                stderr
+                    .lines()
+                    .all(|line| !line.starts_with("work: ") && !line.starts_with("warning: ")),
+                "{ctx}: the logo must not carry errors or warnings: {stderr:?}"
+            );
+            let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+            assert!(stderr.contains(&version), "{ctx}: no {version}: {stderr:?}");
+            insta::assert_snapshot!("about_static_logo", stderr.replace(&version, "v<VERSION>"));
+            return;
+        }
+        _ => {}
     }
     assert!(
         stderr.is_empty() || stderr.ends_with('\n'),
@@ -391,6 +417,27 @@ fn the_stderr_shape_rejects_every_malformed_layout() {
     assert!(
         !ok("work: boom\n  - x\nwarning: z\n", Want::List(1)),
         "trailing warning"
+    );
+    let info = |text: &'static str| Want::OkWithStderr(Info::Exact(text));
+    assert!(ok("config file exists\n", info("config file exists\n")));
+    assert!(!ok("", info("config file exists\n")), "missing info");
+    assert!(
+        !ok(
+            "config file exists\nwork: boom\n",
+            info("config file exists\n")
+        ),
+        "extra error line"
+    );
+    assert!(
+        !ok(
+            "warning: a\nconfig file exists\n",
+            info("config file exists\n")
+        ),
+        "extra warning"
+    );
+    assert!(
+        !ok("work: boom\n", Want::OkWithStderr(Info::AboutLogo)),
+        "error in logo"
     );
 }
 
@@ -525,6 +572,22 @@ const VISIBLE_COMMANDS: &[&[&str]] = &[
 
 const HIDDEN_COMMANDS: &[&str] = &["sh-cd", "sh-on", "commands"];
 
+/// `config path` when the config file exists.
+const CONFIG_EXISTS: Want = Want::OkWithStderr(Info::Exact("config file exists\n"));
+
+/// `completions <shell> --install` (no Homebrew: `PATH` is the shim dir).
+const BASH_INSTALLED: Want = Want::OkWithStderr(Info::Exact(
+    "installed bash completions to <HOME>/.local/share/bash-completion/completions/work\n",
+));
+const ZSH_INSTALLED: Want = Want::OkWithStderr(Info::Exact(concat!(
+    "installed zsh completions to <HOME>/.local/share/zsh/site-functions/_work\n",
+    "add the directory to your fpath before compinit: ",
+    "fpath=(<HOME>/.local/share/zsh/site-functions $fpath)\n",
+)));
+const FISH_INSTALLED: Want = Want::OkWithStderr(Info::Exact(
+    "installed fish completions to <HOME>/.config/fish/completions/work.fish\n",
+));
+
 #[test]
 fn a_bad_flag_is_a_one_line_usage_error_for_every_command() {
     for prefix in ALL_COMMANDS {
@@ -533,7 +596,7 @@ fn a_bad_flag_is_a_one_line_usage_error_for_every_command() {
         let env = build(Fixture::Bare);
         let out = env.command().args(&args).output().expect("run work");
         let ctx = format!("{args:?}");
-        check_shape(&out, Want::Usage, &ctx);
+        check_shape(&env, &out, Want::Usage, &ctx);
         check_sh_script(&out, &args, &ctx);
         check_no_leak(&env, &out, &ctx);
     }
@@ -604,12 +667,12 @@ fn successful_runs_never_leak_the_token_and_sh_prints_one_line() {
             case(fixture, &["update"], Ok),
             case(fixture, &["update", "--all-orgs"], Ok),
             case(fixture, &["config"], Ok),
-            case(fixture, &["config", "path"], Want::OkWithStderrOutput),
+            case(fixture, &["config", "path"], CONFIG_EXISTS),
             case(fixture, &["config", "--edit"], Ok),
             case(
                 fixture,
                 &["config", "default", "github.com"],
-                Want::OkWithStderrOutput,
+                Want::OkWithStderr(Info::Exact("default domain is now github.com\n")),
             ),
             case(fixture, &["auth", "status"], Ok),
             case(fixture, &["auth", "login"], Ok),
@@ -619,20 +682,37 @@ fn successful_runs_never_leak_the_token_and_sh_prints_one_line() {
                 Ok,
             ),
             case(fixture, &["completions", "bash"], Ok),
+            case(
+                fixture,
+                &["completions", "bash", "--install"],
+                BASH_INSTALLED,
+            ),
+            case(fixture, &["completions", "zsh", "--install"], ZSH_INSTALLED),
+            case(
+                fixture,
+                &["completions", "fish", "--install"],
+                FISH_INSTALLED,
+            ),
             case(fixture, &["activate", "fish"], Ok),
             case(fixture, &["version"], Ok),
             // Without a terminal, `about` prints a static logo to stderr.
-            case(fixture, &["about"], Want::OkWithStderrOutput),
+            case(fixture, &["about"], Want::OkWithStderr(Info::AboutLogo)),
             case(
                 fixture,
                 &["about", "--style", "fire"],
-                Want::OkWithStderrOutput,
+                Want::OkWithStderr(Info::AboutLogo),
             ),
             case(fixture, &["commands", "--sh"], Ok),
             case(fixture, &["--version"], Ok),
             case(fixture, &[], Ok),
         ]);
     }
+    // With no config file, `config path` says so.
+    cases.push(case(
+        Fixture::Bare,
+        &["config", "path"],
+        Want::OkWithStderr(Info::Exact("config file missing\n")),
+    ));
     // A stale cache with the API down warns and still navigates.
     cases.push(case(Fixture::StaleApiDown, &["sh-cd", "foo"], Ok));
     cases.push(case(Fixture::StaleApiDown, &["sh-on", "foo"], Ok));
@@ -650,7 +730,7 @@ fn browse_launches_the_opener_without_leaking_the_token() {
             .args(["browse", "foo"])
             .output()
             .expect("run work");
-        check_shape(&out, Want::Ok, "browse foo");
+        check_shape(&env, &out, Want::Ok, "browse foo");
         // The opener is detached: wait for it before scanning its log.
         let calls = env.opener.wait_for_calls(1);
         assert_eq!(calls, [["https://github.com/acme/foo"]]);
@@ -704,7 +784,7 @@ fn an_invalid_config_is_one_line_for_every_command_that_reads_it() {
         cases.extend(stage2.iter().map(|args| case(fixture, args, Want::Error)));
         // Commands that never parse the config still work.
         cases.extend([
-            case(fixture, &["config", "path"], Want::OkWithStderrOutput),
+            case(fixture, &["config", "path"], CONFIG_EXISTS),
             case(fixture, &["config", "--edit"], Want::Ok),
             case(fixture, &["list", "--complete"], Want::Ok),
             case(fixture, &["version"], Want::Ok),
@@ -877,7 +957,7 @@ fn the_sentinel_really_reaches_the_api_from_both_token_sources() {
     for fixture in [Fixture::Ready, Fixture::GhToken] {
         let env = build(fixture);
         let out = env.command().arg("update").output().expect("run work");
-        check_shape(&out, Want::Ok, "update");
+        check_shape(&env, &out, Want::Ok, "update");
         let requests = env.api.host("github.com").requests();
         assert!(!requests.is_empty(), "{fixture:?}: no API calls");
         for request in requests {
@@ -906,4 +986,47 @@ fn the_leak_scan_finds_every_encoding_of_the_sentinel() {
     assert_eq!(base64(b"foobar"), "Zm9vYmFy");
     assert_eq!(base64(b"fooba"), "Zm9vYmE=");
     assert_eq!(base64(b"foob"), "Zm9vYg==");
+}
+
+/// The subcommands listed under `Commands:` in `work <prefix> --help`,
+/// without clap's own `help`.
+fn listed_subcommands(prefix: &[&str]) -> Vec<String> {
+    help(prefix)
+        .lines()
+        .skip_while(|line| *line != "Commands:")
+        .skip(1)
+        .take_while(|line| !line.is_empty())
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|name| *name != "help")
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn the_command_tables_match_the_commands_help_lists() {
+    let mut walked: Vec<Vec<String>> = Vec::new();
+    let mut queue: Vec<Vec<String>> = vec![Vec::new()];
+    while let Some(prefix) = queue.pop() {
+        let args: Vec<&str> = prefix.iter().map(String::as_str).collect();
+        for name in listed_subcommands(&args) {
+            let mut path = prefix.clone();
+            path.push(name);
+            walked.push(path.clone());
+            queue.push(path);
+        }
+    }
+    let mut walked: Vec<String> = walked.iter().map(|path| path.join(" ")).collect();
+    walked.sort();
+    let mut visible: Vec<String> = VISIBLE_COMMANDS.iter().map(|path| path.join(" ")).collect();
+    visible.sort();
+    assert_eq!(walked, visible, "VISIBLE_COMMANDS is out of date");
+    let mut all: Vec<String> = ALL_COMMANDS.iter().map(|path| path.join(" ")).collect();
+    all.sort();
+    let mut expected = visible;
+    expected.extend(HIDDEN_COMMANDS.iter().map(|name| (*name).to_owned()));
+    expected.sort();
+    assert_eq!(
+        all, expected,
+        "ALL_COMMANDS must be the visible plus the hidden commands"
+    );
 }

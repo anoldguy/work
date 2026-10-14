@@ -6,7 +6,7 @@ When a repo query is ambiguous (multiple matches, no single exact match), the to
 
 ## Interactive Mode (TTY)
 
-When stdin is connected to a terminal, ambiguous queries present a TUI selector instead of an error. The selector shows all matching repositories ranked by score, and the user picks one.
+When stdin and stderr are both connected to a terminal, ambiguous queries present a TUI selector instead of an error. The selector shows all matching repositories ranked by score, and the user picks one.
 
 - Typing filters the list: printable characters narrow it to entries containing the typed text (case-insensitive), keeping score order. Backspace edits the filter.
 - Up/Down arrows (or Ctrl-p/Ctrl-n) move the selection. Letters such as `j`/`k` are not navigation keys, because they're part of the filter.
@@ -17,7 +17,7 @@ When stdin is connected to a terminal, ambiguous queries present a TUI selector 
 
 ## Non-Interactive Mode (piped/scripted)
 
-When stdin is not a terminal (piped input, cron, scripts), ambiguous queries produce an error listing the matching repositories: a one-line summary followed by one `  - <slug>` line per match. The user must re-run with a more specific query.
+When stdin or stderr is not a terminal (piped input, redirected stderr, cron, scripts), ambiguous queries produce an error listing the matching repositories: a one-line summary followed by one `  - <slug>` line per match. The user must re-run with a more specific query.
 
 ## Applies To
 

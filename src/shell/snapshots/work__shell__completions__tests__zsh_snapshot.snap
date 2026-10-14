@@ -435,7 +435,7 @@ _work_commands() {
 'browse:Open a repository'\''s page in the browser' \
 'open:Open a repository'\''s directory in the file manager' \
 'pull:Fetch and fast-forward one repository' \
-'sync:Fetch and fast-forward every cloned repository' \
+'sync:Fetch and fast-forward every cached repository you have cloned' \
 'list:List cached repositories' \
 'update:Refresh the repository cache' \
 'favorite:Pick favourite organisations for a domain' \
@@ -598,7 +598,7 @@ _work__subcmd__help_commands() {
 'browse:Open a repository'\''s page in the browser' \
 'open:Open a repository'\''s directory in the file manager' \
 'pull:Fetch and fast-forward one repository' \
-'sync:Fetch and fast-forward every cloned repository' \
+'sync:Fetch and fast-forward every cached repository you have cloned' \
 'list:List cached repositories' \
 'update:Refresh the repository cache' \
 'favorite:Pick favourite organisations for a domain' \

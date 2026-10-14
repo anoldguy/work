@@ -60,7 +60,8 @@ impl QueryFrecency {
         self.0.get(k)
     }
 
-    /// True when no query has any history.
+    /// True when no query has any history (tests).
+    #[cfg(test)]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()

@@ -21,7 +21,7 @@ pub enum Freshness {
     /// stale. If every domain fails and a stale cache exists, warn and use
     /// it.
     AutoUpdate,
-    /// `pull`: load only; a missing or corrupt cache is
+    /// `pull` and `sync`: load only; a missing or corrupt cache is
     /// [`CacheError::Missing`].
     NoUpdate,
     /// `update`: always refresh; on total failure, error and keep the
@@ -139,7 +139,6 @@ mod tests {
     use crate::config::{self, Locations};
     use crate::domain::{Domain, Org, Repo, StoredTime};
     use crate::env::EnvSnapshot;
-    use crate::gh::{Gh, GhError};
     use crate::github::{ApiError, GitHubApi, Listing, Page};
     use crate::testing::{
         ApiCall, Endpoint, FakeGh, FakeGit, FakeGitHub, NullGitHub, ScriptedInteraction, SharedBuf,
@@ -203,22 +202,6 @@ mod tests {
             on_page: &mut dyn FnMut(Page),
         ) -> Result<Listing, ApiError> {
             self.0.org_repos(d, t, org, on_page)
-        }
-    }
-
-    /// Lets a test keep a handle on the `FakeGh` it gives the `App`.
-    #[derive(Debug)]
-    struct SharedGh(Arc<FakeGh>);
-
-    impl Gh for SharedGh {
-        fn auth_token(&self, d: &Domain) -> Result<Option<SecretToken>, GhError> {
-            self.0.auth_token(d)
-        }
-        fn login(&self, d: &Domain) -> Result<(), GhError> {
-            self.0.login(d)
-        }
-        fn logout(&self, d: &Domain) -> Result<(), GhError> {
-            self.0.logout(d)
         }
     }
 
@@ -287,7 +270,7 @@ mod tests {
             let gh = Arc::new(self.gh);
             let adapters = Adapters {
                 git: Box::new(FakeGit::new()),
-                gh: Box::new(SharedGh(Arc::clone(&gh))),
+                gh: Box::new(Arc::clone(&gh)),
                 api: self.api,
             };
             let app = App::with_parts(env, locations, config, ui, adapters, t(NOW));

@@ -17,9 +17,6 @@ use crate::proc;
 /// The oldest git that reads config from `GIT_CONFIG_COUNT` (2.31).
 const MIN_VERSION: (u32, u32) = (2, 31);
 
-/// Exit code of `git remote get-url` for a missing remote.
-const NO_SUCH_REMOTE: i32 = 2;
-
 /// Runs `git` from `PATH` with the environment from `git::auth_env`.
 ///
 /// The first call checks `git --version` (2.31 or later) once per process.
@@ -231,21 +228,6 @@ impl Git for ProcessGit {
         )
         .map(drop)
     }
-
-    fn origin_url(&self, repo: &Path) -> Result<Option<String>, GitError> {
-        let args = ["remote", "get-url", "origin"].map(OsStr::new);
-        let out = self.run_raw(Some(repo), &args, None)?;
-        if out.status.success() {
-            let url = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-            return Ok((!url.is_empty()).then_some(url));
-        }
-        if out.status.code() == Some(NO_SUCH_REMOTE)
-            && String::from_utf8_lossy(&out.stderr).contains("No such remote")
-        {
-            return Ok(None);
-        }
-        Err(failed("remote", &out, None))
-    }
 }
 
 #[cfg(test)]
@@ -367,10 +349,6 @@ mod tests {
         let fx = Fixture::new();
         assert!(fx.local.join(".git").is_dir());
         assert_eq!(fx.facts(), branch(false, 0, 0));
-        assert_eq!(
-            fx.git.origin_url(&fx.local).expect("origin"),
-            Some(file_url(&fx.origin).as_str().to_owned())
-        );
     }
 
     #[test]
@@ -500,22 +478,12 @@ mod tests {
             .fetch(&fx.local, None)
             .expect("fetch via branch remote");
         assert_eq!(fx.facts(), branch(false, 0, 1));
-        assert_eq!(fx.git.origin_url(&fx.local).expect("no error"), None);
     }
 
     #[test]
-    fn missing_origin_is_none_and_other_failures_are_errors() {
+    fn facts_outside_a_repo_is_a_status_error() {
         let fx = Fixture::new();
-        git(&fx.local, &["remote", "remove", "origin"]);
-        assert_eq!(fx.git.origin_url(&fx.local).expect("no error"), None);
         let not_repo = fx.local.join("no-such-dir");
-        assert_matches!(
-            fx.git.origin_url(&not_repo),
-            Err(GitError::Failed {
-                action: "remote",
-                ..
-            })
-        );
         assert_matches!(
             fx.git.facts(&not_repo),
             Err(GitError::Failed {

@@ -1,8 +1,7 @@
 //! The shared pipeline behind `cd`, `on`, `edit`, `clone`, `browse`, `open`
 //! and `pull`: resolve a query, clone if needed, record the access.
 
-use std::path::PathBuf;
-use std::slice;
+use std::path::{Path, PathBuf};
 
 use crate::app::App;
 use crate::auth::Tokens;
@@ -11,7 +10,7 @@ use crate::core::paths::repo_path;
 use crate::core::query_frecency::{Decision, decide};
 use crate::core::resolve::resolve;
 use crate::core::search::{Query, search};
-use crate::domain::{Domain, QueryKey, Slug};
+use crate::domain::{Domain, QueryKey, Repo, Slug};
 use crate::error::Error;
 use crate::ui::UiError;
 
@@ -29,6 +28,19 @@ pub struct Target {
     /// after an automatic answer or a picker choice, `None` for a unique
     /// match.
     pub picked_for: Option<QueryKey>,
+}
+
+impl Target {
+    /// The resolved repo in `repos` (the cache's `repos`).
+    ///
+    /// # Panics
+    ///
+    /// If `self.index` is not an index into `repos` (a [`Target`] from
+    /// [`resolve_target`] against the same cache always is).
+    #[must_use]
+    pub fn repo<'r>(&self, repos: &'r [Repo]) -> &'r Repo {
+        &repos[self.index]
+    }
 }
 
 /// What [`ensure_cloned`] did.
@@ -134,6 +146,14 @@ fn target_for(app: &App, cache: &Cache, index: usize) -> Target {
     }
 }
 
+/// Whether the repo directory at `path` is a clone: it contains `.git` (a
+/// directory, or a file as in a worktree). The one check `clone`, `pull`
+/// and `sync` share.
+#[must_use]
+pub(crate) fn is_cloned(path: &Path) -> bool {
+    path.join(".git").exists()
+}
+
 /// `org/name` for the default domain, the full slug otherwise.
 pub(crate) fn short_name(slug: &Slug, default: Option<&Domain>) -> String {
     if default == Some(slug.domain()) {
@@ -143,10 +163,12 @@ pub(crate) fn short_name(slug: &Slug, default: Option<&Domain>) -> String {
     }
 }
 
-/// Clones the target unless `.git` exists: creates the parent directories,
-/// resolves a token for the repo's domain, and runs `git clone` under a
+/// Clones the target unless `.git` exists: resolves a token for the repo's
+/// domain, creates the parent directories, and runs `git clone` under a
 /// progress title. With no token for the domain, git clones without auth
-/// (public repos, ssh `insteadOf`, credential helpers).
+/// (public repos, ssh `insteadOf`, credential helpers). When the clone
+/// fails, the parent directories it created are removed again (if still
+/// empty).
 ///
 /// # Errors
 ///
@@ -159,31 +181,52 @@ pub(crate) fn short_name(slug: &Slug, default: Option<&Domain>) -> String {
 /// If `target.index` is not an index into `cache.repos` (a [`Target`] from
 /// [`resolve_target`] against the same cache always is).
 pub fn ensure_cloned(app: &mut App, cache: &Cache, target: &Target) -> Result<CloneStatus, Error> {
-    if target.path.join(".git").exists() {
+    if is_cloned(&target.path) {
         return Ok(CloneStatus::Already);
     }
-    let repo = &cache.repos[target.index];
-    if let Some(parent) = target.path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| Error::CreateDir {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
+    let repo = target.repo(&cache.repos);
     let domain = repo.slug.domain();
-    let tokens = Tokens::resolve(&*app.gh, &app.env.github_token, slice::from_ref(domain));
+    let tokens = Tokens::resolve(&*app.gh, &app.env.github_token, [domain]);
     let auth = tokens.git_auth(domain)?;
     // Pending stdout must land before git (which may inherit it) runs.
     app.ui.flush()?;
+    let created = match target.path.parent() {
+        Some(parent) => {
+            let missing = missing_dirs(parent);
+            std::fs::create_dir_all(parent).map_err(|source| Error::CreateDir {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+            missing
+        }
+        None => Vec::new(),
+    };
     let title = format!(
         "cloning {}",
         short_name(&repo.slug, app.config.default_domain())
     );
     let git = &*app.git;
     let dest = target.path.as_path();
-    app.ui.with_progress(&title, |_| {
+    let cloned = app.ui.with_progress(&title, |_| {
         git.clone_repo(&repo.clone_url, dest, auth.as_ref())
-    })?;
+    });
+    if cloned.is_err() {
+        // Best effort: `remove_dir` refuses a directory that is not empty,
+        // so nothing that was already there (or appeared since) is lost.
+        for dir in &created {
+            let _ = std::fs::remove_dir(dir);
+        }
+    }
+    cloned?;
     Ok(CloneStatus::Cloned)
+}
+
+/// The directories `create_dir_all(dir)` would create, deepest first.
+fn missing_dirs(dir: &Path) -> Vec<PathBuf> {
+    dir.ancestors()
+        .take_while(|d| !d.as_os_str().is_empty() && !d.exists())
+        .map(Path::to_path_buf)
+        .collect()
 }
 
 /// Records repo frecency for the target and saves the cache. Called once the
@@ -209,9 +252,9 @@ pub fn record_access(app: &App, cache: &mut Cache, target: &Target) -> Result<()
         repos, frecency, ..
     } = cache;
     let now = app.now;
-    frecency.record(&repos[target.index].slug, now);
+    frecency.record(&target.repo(repos).slug, now);
     let cache = &*cache;
-    let slug = &cache.repos[target.index].slug;
+    let slug = &target.repo(&cache.repos).slug;
     store::update(app.config.cache_dir(), |latest| {
         let Some(mut latest) = latest else {
             // Nothing readable on disk: write the caller's copy.
@@ -307,9 +350,6 @@ mod tests {
         }
         fn fast_forward(&self, repo: &Path) -> Result<(), GitError> {
             self.inner.fast_forward(repo)
-        }
-        fn origin_url(&self, repo: &Path) -> Result<Option<String>, GitError> {
-            self.inner.origin_url(repo)
         }
     }
 
@@ -694,7 +734,6 @@ mod tests {
                 dirty: false,
                 upstream: Upstream::None,
             },
-            origin: None,
             fail: Some((GitOp::Clone, failure.clone())),
         };
         let git = Arc::new(FakeGit::new().with_repo(&dest, script));
@@ -710,6 +749,21 @@ mod tests {
         let err = ensure_cloned(&mut h.app, &cache, &target).expect_err("git failed");
         assert_matches!(err, Error::Git(ref e) if *e == failure);
         assert!(!dest.join(".git").exists());
+        let org_dir = dest.parent().expect("org dir");
+        assert!(!org_dir.exists(), "the org dir it created is removed");
+    }
+
+    #[test]
+    fn missing_dirs_lists_only_what_does_not_exist_deepest_first() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let deep = dir.path().join("a/b/c");
+        assert_eq!(
+            missing_dirs(&deep),
+            [deep.clone(), dir.path().join("a/b"), dir.path().join("a")]
+        );
+        std::fs::create_dir_all(dir.path().join("a")).expect("mkdir");
+        assert_eq!(missing_dirs(&deep), [deep.clone(), dir.path().join("a/b")]);
+        assert_eq!(missing_dirs(dir.path()), Vec::<PathBuf>::new());
     }
 
     #[test]
@@ -791,5 +845,19 @@ mod tests {
         let slug = repo("github.com/acme/foo").slug;
         assert_eq!(short_name(&slug, Some(&github())), "acme/foo");
         assert_eq!(short_name(&slug, None), "github.com/acme/foo");
+    }
+
+    #[test]
+    fn is_cloned_needs_a_git_dir_or_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("acme/foo");
+        assert!(!is_cloned(&repo));
+        std::fs::create_dir_all(&repo).expect("mkdir");
+        assert!(!is_cloned(&repo));
+        std::fs::write(repo.join(".git"), "gitdir: elsewhere\n").expect("write");
+        assert!(is_cloned(&repo));
+        std::fs::remove_file(repo.join(".git")).expect("rm");
+        std::fs::create_dir(repo.join(".git")).expect("mkdir .git");
+        assert!(is_cloned(&repo));
     }
 }
