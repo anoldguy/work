@@ -15,6 +15,9 @@ pub const CACHE_VERSION: u32 = 1;
 /// A cache older than this is refreshed by `Freshness::AutoUpdate`.
 pub const STALE_AFTER: Duration = Duration::from_hours(24);
 
+/// How far in the future `updated_at` may be before the cache counts as stale.
+pub const CLOCK_SKEW: Duration = Duration::from_mins(5);
+
 /// File name inside the cache directory.
 pub const CACHE_FILE: &str = "cache.json";
 
@@ -49,10 +52,61 @@ impl Cache {
         }
     }
 
-    /// True when `updated_at` is more than [`STALE_AFTER`] before `now`.
+    /// True when `updated_at` is more than [`STALE_AFTER`] before `now`, or
+    /// more than [`CLOCK_SKEW`] after it (a wrong clock or a restored file),
+    /// so such a cache is refreshed instead of staying "fresh" forever.
     #[must_use]
     pub fn is_stale(&self, now: StoredTime) -> bool {
-        let _ = (self, now);
-        unimplemented!("W2.5")
+        now.age_at(self.updated_at) > CLOCK_SKEW || self.updated_at.age_at(now) > STALE_AFTER
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn t(secs: i64) -> StoredTime {
+        StoredTime::from_unix_seconds(secs).unwrap()
+    }
+
+    #[test]
+    fn exactly_24_hours_old_is_fresh() {
+        let c = Cache::new(vec![], t(1_000));
+        assert!(!c.is_stale(t(1_000 + 86_400)));
+    }
+
+    #[test]
+    fn older_than_24_hours_is_stale() {
+        let c = Cache::new(vec![], t(1_000));
+        assert!(c.is_stale(t(1_000 + 86_401)));
+    }
+
+    #[test]
+    fn small_clock_skew_is_fresh() {
+        let c = Cache::new(vec![], t(1_000 + 299));
+        assert!(!c.is_stale(t(1_000)));
+    }
+
+    #[test]
+    fn far_future_updated_at_is_stale() {
+        let c = Cache::new(vec![], t(1_000 + 301));
+        assert!(c.is_stale(t(1_000)));
+    }
+
+    #[test]
+    fn missing_frecency_maps_default_to_empty() {
+        let c: Cache =
+            serde_json::from_str(r#"{"version":1,"updated_at":"2025-01-01T00:00:00Z","repos":[]}"#)
+                .unwrap();
+        assert!(c.frecency.is_empty());
+        assert!(c.query_frecency.is_empty());
+    }
+
+    #[test]
+    fn unknown_fields_are_ignored() {
+        let c: Result<Cache, _> = serde_json::from_str(
+            r#"{"version":1,"updated_at":"2025-01-01T00:00:00Z","repos":[],"extra":1}"#,
+        );
+        assert!(c.is_ok());
     }
 }

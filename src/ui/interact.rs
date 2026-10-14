@@ -5,11 +5,10 @@ use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Write};
 use std::time::Duration;
 
-use crossterm::event::KeyEvent;
-
 use crate::env::EnvSnapshot;
 use crate::ui::picker::{PickerKey, PickerState, PickerStep};
 use crate::ui::prompt::{Confirm, LineInput, Step};
+use crate::ui::terminal::Term;
 use crate::ui::{Interaction, Screen, TerminalGuard, Ui, UiError};
 
 /// How long one `read_key` waits before the loop re-reads the terminal size
@@ -143,23 +142,6 @@ impl Ui {
 /// Whether a terminal of type `term` can redraw in place.
 fn can_redraw(term: Option<&str>) -> bool {
     term != Some("dumb")
-}
-
-/// The terminal as the interaction loops see it, so they run against a fake
-/// in tests.
-trait Term: Write {
-    fn read_key(&mut self, timeout: Duration) -> Result<Option<KeyEvent>, UiError>;
-    fn size(&self) -> Result<(u16, u16), UiError>;
-}
-
-impl Term for TerminalGuard<'_> {
-    fn read_key(&mut self, timeout: Duration) -> Result<Option<KeyEvent>, UiError> {
-        TerminalGuard::read_key(self, timeout)
-    }
-
-    fn size(&self) -> Result<(u16, u16), UiError> {
-        TerminalGuard::size(self)
-    }
 }
 
 /// Waits up to [`KEY_WAIT`] for a key the picker understands; `None` on a
@@ -303,76 +285,21 @@ fn frame_text(prev: usize, lines: &[String], suffix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
-    use std::collections::VecDeque;
-    use std::io::{self, Write};
-    use std::time::Duration;
+    use std::io;
 
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::KeyCode;
 
-    use super::{Term, TtyInteraction, can_redraw, frame_text, run_confirm, run_input, run_picker};
+    use super::{TtyInteraction, can_redraw, frame_text, run_confirm, run_input, run_picker};
     use crate::env::EnvSnapshot;
     use crate::testing::{Answer, ScriptedInteraction, SharedBuf};
     use crate::ui::picker::{PickerState, PickerStep};
+    use crate::ui::terminal::fake::FakeTerm;
     use crate::ui::{Interaction, Ui, UiError};
 
-    /// A scripted terminal: replays keys (with a timeout first, to exercise
-    /// the wait loop) and records what was drawn. On a timeout it applies
-    /// `resize`, if set, as if the window had changed meanwhile.
-    struct FakeTerm {
-        keys: VecDeque<Option<KeyEvent>>,
-        out: Vec<u8>,
-        size: (u16, u16),
-        resize: Option<(u16, u16)>,
-    }
-
-    impl FakeTerm {
-        fn new(keys: &[KeyCode]) -> Self {
-            let mut queue = VecDeque::from([None]);
-            queue.extend(
-                keys.iter()
-                    .map(|&code| Some(KeyEvent::new(code, KeyModifiers::NONE))),
-            );
-            Self {
-                keys: queue,
-                out: Vec::new(),
-                size: (40, 10),
-                resize: None,
-            }
-        }
-
-        fn ctrl(mut self, c: char) -> Self {
-            self.keys
-                .push_back(Some(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)));
-            self
-        }
-
-        fn output(&self) -> String {
-            String::from_utf8_lossy(&self.out).into_owned()
-        }
-    }
-
-    impl Write for FakeTerm {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.out.write(buf)
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl Term for FakeTerm {
-        fn read_key(&mut self, _: Duration) -> Result<Option<KeyEvent>, UiError> {
-            let key = self.keys.pop_front().expect("the script ran out of keys");
-            if key.is_none()
-                && let Some(size) = self.resize.take()
-            {
-                self.size = size;
-            }
-            Ok(key)
-        }
-        fn size(&self) -> Result<(u16, u16), UiError> {
-            Ok(self.size)
-        }
+    /// A 40×10 terminal that times out once (to exercise the wait loop) and
+    /// then presses `keys`.
+    fn script(keys: &[KeyCode]) -> FakeTerm {
+        FakeTerm::new((40, 10)).timeouts(1).keys(keys)
     }
 
     fn chars(text: &str) -> Vec<KeyCode> {
@@ -385,7 +312,7 @@ mod tests {
     fn picker_filters_chooses_and_erases_its_frame() {
         let mut keys = chars("gad");
         keys.push(KeyCode::Enter);
-        let mut term = FakeTerm::new(&keys);
+        let mut term = script(&keys);
         let mut state = PickerState::new(ITEMS, None);
         let step = run_picker(&mut term, "Pick a repo", &mut state).expect("picker");
         assert_eq!(step, PickerStep::Chosen(vec![1]));
@@ -397,13 +324,13 @@ mod tests {
 
     #[test]
     fn picker_esc_cancels_and_ctrl_c_interrupts() {
-        let mut term = FakeTerm::new(&[KeyCode::Esc]);
+        let mut term = script(&[KeyCode::Esc]);
         let mut state = PickerState::new(ITEMS, None);
         assert_matches!(
             run_picker(&mut term, "Pick", &mut state),
             Ok(PickerStep::Cancelled)
         );
-        let mut term = FakeTerm::new(&[]).ctrl('c');
+        let mut term = script(&[]).ctrl('c');
         assert_matches!(
             run_picker(&mut term, "Pick", &mut state),
             Err(UiError::Interrupted)
@@ -412,8 +339,10 @@ mod tests {
 
     #[test]
     fn picker_redraws_after_a_resize_without_waiting_for_a_key() {
-        let mut term = FakeTerm::new(&[KeyCode::Esc]);
-        term.resize = Some((8, 10));
+        let mut term = FakeTerm::new((40, 10))
+            .resize_on_timeout((8, 10))
+            .timeouts(1)
+            .keys(&[KeyCode::Esc]);
         let mut state = PickerState::new(ITEMS, None);
         run_picker(&mut term, "Pick a repo", &mut state).expect("picker");
         let out = term.output();
@@ -423,7 +352,7 @@ mod tests {
 
     #[test]
     fn picker_does_not_redraw_an_unchanged_frame_on_a_timeout() {
-        let mut term = FakeTerm::new(&[KeyCode::Esc]);
+        let mut term = script(&[KeyCode::Esc]);
         let mut state = PickerState::new(ITEMS, None);
         run_picker(&mut term, "Pick a repo", &mut state).expect("picker");
         assert_eq!(term.output().matches("Pick a repo").count(), 1);
@@ -458,8 +387,7 @@ mod tests {
 
     #[test]
     fn picker_lines_fit_inside_the_terminal() {
-        let mut term = FakeTerm::new(&[KeyCode::Esc]);
-        term.size = (6, 3);
+        let mut term = FakeTerm::new((6, 3)).timeouts(1).keys(&[KeyCode::Esc]);
         let mut state = PickerState::new(ITEMS, None);
         run_picker(&mut term, "Pick a repo", &mut state).expect("picker");
         assert!(term.output().starts_with("\r\x1b[JPick \r\n>   (\r\n> acm"));
@@ -469,7 +397,7 @@ mod tests {
     fn input_reads_a_line_and_leaves_it_in_scrollback() {
         let mut keys = chars("~/src");
         keys.push(KeyCode::Enter);
-        let mut term = FakeTerm::new(&keys);
+        let mut term = script(&keys);
         assert_eq!(
             run_input(&mut term, "Work dir", "~/work").expect("input"),
             Some("~/src".to_owned())
@@ -482,18 +410,18 @@ mod tests {
 
     #[test]
     fn input_cancel_and_interrupt() {
-        let mut term = FakeTerm::new(&[KeyCode::Esc]);
+        let mut term = script(&[KeyCode::Esc]);
         assert_matches!(run_input(&mut term, "Name", ""), Ok(None));
-        let mut term = FakeTerm::new(&[]).ctrl('c');
+        let mut term = script(&[]).ctrl('c');
         assert_matches!(run_input(&mut term, "Name", ""), Err(UiError::Interrupted));
     }
 
     #[test]
     fn confirm_shows_the_answer() {
-        let mut term = FakeTerm::new(&[KeyCode::Char('x'), KeyCode::Enter]);
+        let mut term = script(&[KeyCode::Char('x'), KeyCode::Enter]);
         assert!(run_confirm(&mut term, "Update now?", true).expect("confirm"));
         assert!(term.output().ends_with("\r\x1b[JUpdate now? [Y/n] yes\r\n"));
-        let mut term = FakeTerm::new(&[]).ctrl('c');
+        let mut term = script(&[]).ctrl('c');
         assert_matches!(
             run_confirm(&mut term, "Update now?", true),
             Err(UiError::Interrupted)

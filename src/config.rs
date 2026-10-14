@@ -52,6 +52,17 @@ pub enum ConfigError {
         /// The dotted key as written, e.g. `github.com`.
         host: String,
     },
+    /// A domain key under `[domains]` is not lowercase.
+    #[error(
+        "invalid config {path:?}: domain {given:?} must be lowercase (write [domains.{lower:?}])",
+        lower = given.to_ascii_lowercase()
+    )]
+    DomainCase {
+        /// The config file.
+        path: PathBuf,
+        /// The key as written.
+        given: String,
+    },
     /// More than one domain has `is_default = true`.
     #[error("invalid config {path:?}: more than one default domain ({first} and {second})")]
     MultipleDefaults {

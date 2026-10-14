@@ -3,7 +3,8 @@
 //!
 //! Styles are time-based (a dropped frame skips ahead) and draw randomness
 //! only from the seed they are started with, so tests render deterministic
-//! frames at a fixed seed, time and size.
+//! frames at a fixed seed, time and size. `Ui::splash` (in `splash/run.rs`)
+//! plays one on the terminal.
 
 pub mod classic;
 pub mod decode;
@@ -14,6 +15,7 @@ pub mod logo;
 pub mod plasma;
 pub mod renderer;
 pub mod rng;
+mod run;
 
 pub use frame::{Cell, Frame, Rgb};
 

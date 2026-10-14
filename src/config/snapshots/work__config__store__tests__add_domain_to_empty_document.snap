@@ -1,0 +1,6 @@
+---
+source: src/config/store.rs
+expression: doc.doc.to_string()
+---
+[domains."github.com"]
+is_default = true

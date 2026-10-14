@@ -7,7 +7,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use crate::auth::SecretToken;
+use crate::auth::{EnvToken, SecretToken};
 
 /// The environment variables `work` reads.
 ///
@@ -31,12 +31,10 @@ pub struct EnvSnapshot {
     pub work_editor: Option<String>,
     /// `EDITOR`, the second choice for the editor.
     pub editor: Option<String>,
-    /// `GITHUB_TOKEN`, used for every domain when present.
-    pub github_token: Option<SecretToken>,
-    /// `GITHUB_TOKEN` is set and non-empty but unusable (interior whitespace
-    /// or control characters, or not UTF-8). Then `github_token` is `None`
-    /// and the command must fail rather than fall back to `gh`.
-    pub github_token_invalid: bool,
+    /// `GITHUB_TOKEN`, used for every domain when valid. An unusable value
+    /// is [`EnvToken::Invalid`], which `Tokens` turns into an error rather
+    /// than a fallback to `gh`.
+    pub github_token: EnvToken,
     /// `TERM`; `dumb` disables live progress.
     pub term: Option<String>,
     /// `HOMEBREW_PREFIX`, for completion install paths.
@@ -96,8 +94,10 @@ impl EnvSnapshot {
                 "WORK_EDITOR" => env.work_editor = value.into_string().ok(),
                 "EDITOR" => env.editor = value.into_string().ok(),
                 "GITHUB_TOKEN" => {
-                    env.github_token = value.to_str().and_then(SecretToken::new);
-                    env.github_token_invalid = env.github_token.is_none();
+                    env.github_token = value
+                        .to_str()
+                        .and_then(SecretToken::new)
+                        .map_or(EnvToken::Invalid, EnvToken::Valid);
                 }
                 "TERM" => env.term = value.into_string().ok(),
                 "HOMEBREW_PREFIX" => env.homebrew_prefix = Some(PathBuf::from(value)),
@@ -123,7 +123,7 @@ mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;
 
-    use super::{EnvSnapshot, GitConfigCount};
+    use super::{EnvSnapshot, EnvToken, GitConfigCount};
 
     fn snapshot(pairs: &[(&str, &str)]) -> EnvSnapshot {
         EnvSnapshot::from_vars(
@@ -153,17 +153,16 @@ mod tests {
         assert_eq!(env.work_editor.as_deref(), Some("code -w"));
         assert!(env.no_color);
         assert_eq!(env.path, Some(OsString::from("/usr/bin")));
-        assert_matches!(env.github_token, Some(_));
+        assert_matches!(env.github_token, EnvToken::Valid(_));
         assert!(!format!("{env:?}").contains("ghp_abc"));
     }
 
     #[test]
     fn an_unusable_github_token_is_flagged_not_dropped_silently() {
         let env = snapshot(&[("GITHUB_TOKEN", "ghp abc")]);
-        assert_matches!(env.github_token, None);
-        assert!(env.github_token_invalid);
+        assert_matches!(env.github_token, EnvToken::Invalid);
         let env = snapshot(&[("GITHUB_TOKEN", "ghp_abc"), ("TERM", "dumb")]);
-        assert!(!env.github_token_invalid);
+        assert_matches!(env.github_token, EnvToken::Valid(_));
         assert_eq!(env.term.as_deref(), Some("dumb"));
     }
 
@@ -178,7 +177,7 @@ mod tests {
         ]);
         assert_eq!(env.home, None);
         assert_eq!(env.xdg_state_home, None);
-        assert_matches!(env.github_token, None);
+        assert_matches!(env.github_token, EnvToken::Unset);
         assert!(!env.no_color);
         assert_eq!(env.git_config_count, GitConfigCount::Unset);
     }

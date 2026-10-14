@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
-use crate::ui::splash::frame::{Frame, Rgb};
-use crate::ui::splash::logo::{LOGO, footer};
+use crate::ui::splash::frame::{Frame, Rgb, center, to_u16};
+use crate::ui::splash::logo::{BLOCK_HEIGHT, LOGO, WIDTH, footer, footer_pad};
 use crate::ui::splash::{Style, StyleRun};
 
 /// Milliseconds the gradient takes to scroll one row.
@@ -35,13 +35,11 @@ impl StyleRun for ClassicRun {
         frame.clear();
         let phase = (t.as_millis() / STEP_MS) % PERIOD_ROWS;
         let footer = footer(env!("CARGO_PKG_VERSION"));
-        let total = LOGO.len() + 1 + footer.len();
-        let top = center(frame.height(), total);
-        let logo_width = LOGO.iter().map(|l| l.chars().count()).max().unwrap_or(0);
-        let logo_x = center(frame.width(), logo_width);
+        let top = center(frame.height(), BLOCK_HEIGHT);
+        let logo_x = center(frame.width(), WIDTH);
 
         for (i, line) in LOGO.iter().enumerate() {
-            let y = top.saturating_add(u16::try_from(i).unwrap_or(0));
+            let y = top.saturating_add(to_u16(i));
             // Colours move one row per step: logo row `i` shows the hue
             // that row `i - phase` showed at t=0.
             let row = u128::try_from(i).unwrap_or(0);
@@ -55,19 +53,12 @@ impl StyleRun for ClassicRun {
             b: 200,
         };
         for (i, line) in footer.iter().enumerate() {
-            let y = top.saturating_add(u16::try_from(LOGO.len() + 1 + i).unwrap_or(u16::MAX));
+            let y = top.saturating_add(to_u16(LOGO.len() + 1 + i));
             // Centred under the logo's own width, as in the spec.
-            let pad = logo_width.saturating_sub(line.chars().count()) / 2;
-            let x = logo_x.saturating_add(u16::try_from(pad).unwrap_or(0));
+            let x = logo_x.saturating_add(to_u16(footer_pad(line)));
             frame.put_str(x, y, line, Some(grey), None);
         }
     }
-}
-
-/// The offset that centres `inner` cells in `outer` (0 when it does not fit).
-fn center(outer: u16, inner: usize) -> u16 {
-    let inner = u16::try_from(inner).unwrap_or(u16::MAX);
-    outer.saturating_sub(inner) / 2
 }
 
 /// Fully saturated colour for step `step` of `PERIOD_ROWS` around the wheel.
@@ -103,11 +94,15 @@ mod tests {
     use super::Classic;
     use crate::ui::splash::{Frame, Rgb, Style};
 
-    fn render_at(ms: u64) -> Frame {
-        let mut run = Classic.start(1, 50, 14);
-        let mut f = Frame::new(50, 14);
+    fn render_sized(ms: u64, w: u16, h: u16) -> Frame {
+        let mut run = Classic.start(1, w, h);
+        let mut f = Frame::new(w, h);
         run.render(Duration::from_millis(ms), &mut f);
         f
+    }
+
+    fn render_at(ms: u64) -> Frame {
+        render_sized(ms, 50, 14)
     }
 
     /// Foreground of the first logo column that is drawn on each logo row.
@@ -146,6 +141,11 @@ mod tests {
     #[test]
     fn snapshot_after_one_step() {
         insta::assert_snapshot!(text_with_colors(&render_at(150)));
+    }
+
+    #[test]
+    fn snapshot_80x24() {
+        insta::assert_snapshot!(text_with_colors(&render_sized(300, 80, 24)));
     }
 
     #[test]

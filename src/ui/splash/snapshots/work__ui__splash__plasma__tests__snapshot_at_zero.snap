@@ -1,0 +1,28 @@
+---
+source: src/ui/splash/plasma.rs
+expression: "render(1, 0, 80, 24).to_color_map()"
+---
+bfffeeddcccssIIYYYYUUUUUQQQQQQUUUUUYYYYIIIsssccccdddddddeeeeeeddddddddcccccccccc
+bfffeeddcccssIIIYYYYUUUUUUUUUUUUYYYYIIIssscccddddeeeeeeeffffeeeeeeeeddddddcccccc
+bfffeeeddccsssIIIYYYYYYYYYYYYYYYYIIIssscccdddeeefffffffffffffffffffeeeeedddddddc
+bbfffeedddccsssIIIIIYYYYYYYYIIIIssssccdddeeeffffbbbbb7777777bbbbbfffffeeeeeddddd
+bbfffeeedddcccssssIIIIIIIIIIsssscccdddeefffbbb7777333333333337777bbbbffffeeeeedd
+bbbfffeeedddccccssssssssssssccccdddeefffbb7773333jjjjjjjjjjjj3333777bbbffffeeeee
+7bbffffeeedddccccccc0000000000000000000000000000000000000000jjjj333777bbbffffeee
+7bbbfffeeeeddddccccc000██╗0000██╗0██████╗0██████╗0██╗00██╗00zzzjjj33777bbffffeee
+7bbbffffeeeddddddddd000██║0000██║██╔═══██╗██╔══██╗██║0██╔╝00Pzzzjj33377bbbfffeee
+bbbffffeeeeddddddddd000██║0█╗0██║██║000██║██████╔╝█████╔╝000PPzzjjj3377bbffffeee
+bbffffeeeeeddddddddd000██║███╗██║██║000██║██╔══██╗██╔═██╗000PPzzjj33377bbfffeeed
+fffffeeeeddddddddddd000╚███╔███╔╝╚██████╔╝██║00██║██║00██╗00Pzzzjj3377bbffeeeddd
+ffeeeeedddddddcccddd0000╚══╝╚══╝00╚═════╝0╚═╝00╚═╝╚═╝00╚═╝00zzjj3337bbfffeedddcc
+eeeedddddccccccccccc0000000000000000000000000000000000000000zjj3377bbffeeddccccs
+dddddccccccccccccccc00000000000000000v0.1.000000000000000000j3377bbffeeddcccsssI
+ddccccccssssssssssss0000000Made0with0love0by0anoldguy0000000377bbffeeddccsssIIIY
+ccccssssssssssssssss00000000github.com/anoldguy/work000000007bbffeeddccssIIIYYYY
+csssssssIIIIIIIIIIIs0000000000000000000000000000000000000000bfffeddccssIIIYYYUUU
+sssssIIIIIIIIIIIIIIIIsssscccdddeeefffbbb77773333333337777bbfffeeddccssIIYYYUUUQQ
+ssssIIIIIIIIIIIIIIIIIIssssccccddeeeffffbbbb77777777777bbbfffeeddccssIIYYYUUUQQQQ
+sssssIIIIIIIIIIIIIIIIIssssscccdddeeeeffffbbbbbbbbbbbbbbfffeeeddccssIIYYYUUUQQQQQ
+ssssssssIIIIIIIIIIIIIIsssssccccdddeeeefffffbbbbbbbbbfffffeedddccssIIYYYUUUQQQQQQ
+ccccsssssssssssIIIsssssssssccccddddeeeeffffffffffffffffeeeeddcccssIIYYYUUUUQQQQQ
+dcccccccccsssssssssssssssccccccddddeeeeeffffffffffffffeeeedddccsssIIYYYYUUUUUUUU

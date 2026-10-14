@@ -27,6 +27,7 @@ pub mod core;
 pub mod domain;
 pub mod env;
 pub mod error;
+pub(crate) mod fsutil;
 pub mod gh;
 pub mod git;
 pub mod github;
@@ -103,9 +104,6 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> Result<ExitCode, Error> 
     };
 
     // Stage 2: everything else runs with an `App`.
-    if env.github_token_invalid {
-        return Err(auth::AuthError::InvalidEnvToken.into());
-    }
     let mut app = app::App::new(env, locations, ui)?;
     let code = stage2(&mut app, command)?;
     app.ui.flush()?;
@@ -148,7 +146,7 @@ fn stage1(command: Command, env: &env::EnvSnapshot, ui: &mut ui::Ui) -> Result<S
         Command::Version => return meta::version(ui).map(Stage::Done),
         Command::Commands(args) => return meta::commands(ui, args).map(Stage::Done),
         Command::Activate(args) => return meta::activate(env, ui, args).map(Stage::Done),
-        Command::About(args) => return about::run(env, ui, args).map(Stage::Done),
+        Command::About(args) => return about::run(ui, args).map(Stage::Done),
         Command::Completions(args) => {
             let locations = Locations::from_env(env)?;
             return completions::run(env, &locations, ui, args).map(Stage::Done);

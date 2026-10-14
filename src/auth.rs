@@ -3,7 +3,7 @@
 pub mod secret;
 pub mod tokens;
 
-pub use secret::{GitAuth, SecretToken, redact};
+pub use secret::{EnvToken, GitAuth, SecretToken, redact};
 pub use tokens::{TokenSource, Tokens};
 
 use crate::domain::Domain;

@@ -1,0 +1,7 @@
+---
+source: src/config/store.rs
+expression: doc.doc.to_string()
+---
+work_dir = "~/src"
+
+[domains."a.com"]

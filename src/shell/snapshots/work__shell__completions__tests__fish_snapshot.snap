@@ -1,0 +1,129 @@
+---
+source: src/shell/completions.rs
+expression: "script(Shell::Fish)"
+---
+# Print an optspec for argparse to handle cmd's options that are independent of any subcommand.
+function __fish_work_global_optspecs
+    string join \n h/help
+end
+
+function __fish_work_needs_command
+    # Figure out if the current invocation already has a command.
+    set -l cmd (commandline -opc)
+    set -e cmd[1]
+    argparse -s (__fish_work_global_optspecs) -- $cmd 2>/dev/null
+    or return
+    if set -q argv[1]
+        # Also print the command, so this can be used to figure out what it is.
+        echo $argv[1]
+        return 1
+    end
+    return 0
+end
+
+function __fish_work_using_subcommand
+    set -l cmd (__fish_work_needs_command)
+    test -z "$cmd"
+    and return 1
+    contains -- $cmd[1] $argv
+end
+
+complete -c work -n "__fish_work_needs_command" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_needs_command" -f -a "cd" -d 'Jump to a repository (needs shell integration)'
+complete -c work -n "__fish_work_needs_command" -f -a "on" -d 'Jump to a repository and open it in your editor (needs shell integration)'
+complete -c work -n "__fish_work_needs_command" -f -a "edit" -d 'Open a repository in your editor'
+complete -c work -n "__fish_work_needs_command" -f -a "clone" -d 'Clone a repository into the work directory'
+complete -c work -n "__fish_work_needs_command" -f -a "browse" -d 'Open a repository\'s page in the browser'
+complete -c work -n "__fish_work_needs_command" -f -a "open" -d 'Open a repository\'s directory in the file manager'
+complete -c work -n "__fish_work_needs_command" -f -a "pull" -d 'Fetch and fast-forward one repository'
+complete -c work -n "__fish_work_needs_command" -f -a "sync" -d 'Fetch and fast-forward every cloned repository'
+complete -c work -n "__fish_work_needs_command" -f -a "list" -d 'List cached repositories'
+complete -c work -n "__fish_work_needs_command" -f -a "update" -d 'Refresh the repository cache'
+complete -c work -n "__fish_work_needs_command" -f -a "favorite" -d 'Pick favourite organisations for a domain'
+complete -c work -n "__fish_work_needs_command" -f -a "setup" -d 'Interactive first-time setup'
+complete -c work -n "__fish_work_needs_command" -f -a "config" -d 'Show or change configuration'
+complete -c work -n "__fish_work_needs_command" -f -a "auth" -d 'Manage GitHub authentication through gh'
+complete -c work -n "__fish_work_needs_command" -f -a "completions" -d 'Print or install shell completions'
+complete -c work -n "__fish_work_needs_command" -f -a "activate" -d 'Print the shell integration script'
+complete -c work -n "__fish_work_needs_command" -f -a "version" -d 'Print the version'
+complete -c work -n "__fish_work_needs_command" -f -a "about" -d 'Show the animated about screen'
+complete -c work -n "__fish_work_needs_command" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
+complete -c work -n "__fish_work_using_subcommand cd" -l pick -d 'Always show the picker when several repositories match'
+complete -c work -n "__fish_work_using_subcommand cd" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand on" -l pick -d 'Always show the picker when several repositories match'
+complete -c work -n "__fish_work_using_subcommand on" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand edit" -l pick -d 'Always show the picker when several repositories match'
+complete -c work -n "__fish_work_using_subcommand edit" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand clone" -l pick -d 'Always show the picker when several repositories match'
+complete -c work -n "__fish_work_using_subcommand clone" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand browse" -l pick -d 'Always show the picker when several repositories match'
+complete -c work -n "__fish_work_using_subcommand browse" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand open" -l pick -d 'Always show the picker when several repositories match'
+complete -c work -n "__fish_work_using_subcommand open" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand pull" -l pick -d 'Always show the picker when several repositories match'
+complete -c work -n "__fish_work_using_subcommand pull" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand sync" -s j -l jobs -d 'Repositories to sync at once' -r
+complete -c work -n "__fish_work_using_subcommand sync" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand list" -l filter -d 'Plain substring match on the full slug, without frecency'
+complete -c work -n "__fish_work_using_subcommand list" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand update" -l all-orgs -d 'Fetch every org, ignoring favourites'
+complete -c work -n "__fish_work_using_subcommand update" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand favorite" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand setup" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand config; and not __fish_seen_subcommand_from path default help" -l edit -d 'Open the config file in your editor'
+complete -c work -n "__fish_work_using_subcommand config; and not __fish_seen_subcommand_from path default help" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand config; and not __fish_seen_subcommand_from path default help" -f -a "path" -d 'Show the config file location and whether it exists'
+complete -c work -n "__fish_work_using_subcommand config; and not __fish_seen_subcommand_from path default help" -f -a "default" -d 'Set the default domain (asks when omitted)'
+complete -c work -n "__fish_work_using_subcommand config; and not __fish_seen_subcommand_from path default help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
+complete -c work -n "__fish_work_using_subcommand config; and __fish_seen_subcommand_from path" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand config; and __fish_seen_subcommand_from default" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand config; and __fish_seen_subcommand_from help" -f -a "path" -d 'Show the config file location and whether it exists'
+complete -c work -n "__fish_work_using_subcommand config; and __fish_seen_subcommand_from help" -f -a "default" -d 'Set the default domain (asks when omitted)'
+complete -c work -n "__fish_work_using_subcommand config; and __fish_seen_subcommand_from help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
+complete -c work -n "__fish_work_using_subcommand auth; and not __fish_seen_subcommand_from login logout status help" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand auth; and not __fish_seen_subcommand_from login logout status help" -f -a "login" -d 'Log in with gh'
+complete -c work -n "__fish_work_using_subcommand auth; and not __fish_seen_subcommand_from login logout status help" -f -a "logout" -d 'Log out with gh'
+complete -c work -n "__fish_work_using_subcommand auth; and not __fish_seen_subcommand_from login logout status help" -f -a "status" -d 'Show token status for every domain'
+complete -c work -n "__fish_work_using_subcommand auth; and not __fish_seen_subcommand_from login logout status help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
+complete -c work -n "__fish_work_using_subcommand auth; and __fish_seen_subcommand_from login" -l domain -d 'GitHub host' -r
+complete -c work -n "__fish_work_using_subcommand auth; and __fish_seen_subcommand_from login" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand auth; and __fish_seen_subcommand_from logout" -l domain -d 'GitHub host' -r
+complete -c work -n "__fish_work_using_subcommand auth; and __fish_seen_subcommand_from logout" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand auth; and __fish_seen_subcommand_from status" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand auth; and __fish_seen_subcommand_from help" -f -a "login" -d 'Log in with gh'
+complete -c work -n "__fish_work_using_subcommand auth; and __fish_seen_subcommand_from help" -f -a "logout" -d 'Log out with gh'
+complete -c work -n "__fish_work_using_subcommand auth; and __fish_seen_subcommand_from help" -f -a "status" -d 'Show token status for every domain'
+complete -c work -n "__fish_work_using_subcommand auth; and __fish_seen_subcommand_from help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
+complete -c work -n "__fish_work_using_subcommand completions" -l install -d 'Write the script to the shell\'s completion directory'
+complete -c work -n "__fish_work_using_subcommand completions" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c work -n "__fish_work_using_subcommand activate" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c work -n "__fish_work_using_subcommand version" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand about" -s h -l help -d 'Print help'
+complete -c work -n "__fish_work_using_subcommand help; and not __fish_seen_subcommand_from cd on edit clone browse open pull sync list update favorite setup config auth completions activate version about help" -f -a "cd" -d 'Jump to a repository (needs shell integration)'
+complete -c work -n "__fish_work_using_subcommand help; and not __fish_seen_subcommand_from cd on edit clone browse open pull sync list update favorite setup config auth completions activate version about help" -f -a "on" -d 'Jump to a repository and open it in your editor (needs shell integration)'
+complete -c work -n "__fish_work_using_subcommand help; and not __fish_seen_subcommand_from cd on edit clone browse open pull sync list update favorite setup config auth completions activate version about help" -f -a "edit" -d 'Open a repository in your editor'
+complete -c work -n "__fish_work_using_subcommand help; and not __fish_seen_subcommand_from cd on edit clone browse open pull sync list update favorite setup config auth completions activate version about help" -f -a "clone" -d 'Clone a repository into the work directory'
+complete -c work -n "__fish_work_using_subcommand help; and not __fish_seen_subcommand_from cd on edit clone browse open pull sync list update favorite setup config auth completions activate version about help" -f -a "browse" -d 'Open a repository\'s page in the browser'
+complete -c work -n "__fish_work_using_subcommand help; and not __fish_seen_subcommand_from cd on edit clone browse open pull sync list update favorite setup config auth completions activate version about help" -f -a "open" -d 'Open a repository\'s directory in the file manager'
+complete -c work -n "__fish_work_using_subcommand help; and not __fish_seen_subcommand_from cd on edit clone browse open pull sync list update favorite setup config auth completions activate version about help" -f -a "pull" -d 'Fetch and fast-forward one repository'
+complete -c work -n "__fish_work_using_subcommand help; and not __fish_seen_subcommand_from cd on edit clone browse open pull sync list update favorite setup config auth completions activate version about help" -f -a "sync" -d 'Fetch and fast-forward every cloned repository'
+complete -c work -n "__fish_work_using_subcommand help; and not __fish_seen_subcommand_from cd on edit clone browse open pull sync list update favorite setup config auth completions activate version about help" -f -a "list" -d 'List cached repositories'
+complete -c work -n "__fish_work_using_subcommand help; and not __fish_seen_subcommand_from cd on edit clone browse open pull sync list update favorite setup config auth completions activate version about help" -f -a "update" -d 'Refresh the repository cache'
+complete -c work -n "__fish_work_using_subcommand help; and not __fish_seen_subcommand_from cd on edit clone browse open pull sync list update favorite setup config auth completions activate version about help" -f -a "favorite" -d 'Pick favourite organisations for a domain'
+complete -c work -n "__fish_work_using_subcommand help; and not __fish_seen_subcommand_from cd on edit clone browse open pull sync list update favorite setup config auth completions activate version about help" -f -a "setup" -d 'Interactive first-time setup'
+complete -c work -n "__fish_work_using_subcommand help; and not __fish_seen_subcommand_from cd on edit clone browse open pull sync list update favorite setup config auth completions activate version about help" -f -a "config" -d 'Show or change configuration'
+complete -c work -n "__fish_work_using_subcommand help; and not __fish_seen_subcommand_from cd on edit clone browse open pull sync list update favorite setup config auth completions activate version about help" -f -a "auth" -d 'Manage GitHub authentication through gh'
+complete -c work -n "__fish_work_using_subcommand help; and not __fish_seen_subcommand_from cd on edit clone browse open pull sync list update favorite setup config auth completions activate version about help" -f -a "completions" -d 'Print or install shell completions'
+complete -c work -n "__fish_work_using_subcommand help; and not __fish_seen_subcommand_from cd on edit clone browse open pull sync list update favorite setup config auth completions activate version about help" -f -a "activate" -d 'Print the shell integration script'
+complete -c work -n "__fish_work_using_subcommand help; and not __fish_seen_subcommand_from cd on edit clone browse open pull sync list update favorite setup config auth completions activate version about help" -f -a "version" -d 'Print the version'
+complete -c work -n "__fish_work_using_subcommand help; and not __fish_seen_subcommand_from cd on edit clone browse open pull sync list update favorite setup config auth completions activate version about help" -f -a "about" -d 'Show the animated about screen'
+complete -c work -n "__fish_work_using_subcommand help; and not __fish_seen_subcommand_from cd on edit clone browse open pull sync list update favorite setup config auth completions activate version about help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
+complete -c work -n "__fish_work_using_subcommand help; and __fish_seen_subcommand_from config" -f -a "path" -d 'Show the config file location and whether it exists'
+complete -c work -n "__fish_work_using_subcommand help; and __fish_seen_subcommand_from config" -f -a "default" -d 'Set the default domain (asks when omitted)'
+complete -c work -n "__fish_work_using_subcommand help; and __fish_seen_subcommand_from auth" -f -a "login" -d 'Log in with gh'
+complete -c work -n "__fish_work_using_subcommand help; and __fish_seen_subcommand_from auth" -f -a "logout" -d 'Log out with gh'
+complete -c work -n "__fish_work_using_subcommand help; and __fish_seen_subcommand_from auth" -f -a "status" -d 'Show token status for every domain'
+
+# Repo names from the cache for commands that resolve a repo.
+complete -c work -n '__fish_seen_subcommand_from cd on edit clone browse open pull list' -f -a '(work list --complete 2>/dev/null)'
+complete -c work -n '__fish_work_using_subcommand completions' -f -a 'bash zsh fish'

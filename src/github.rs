@@ -123,6 +123,23 @@ pub enum ApiError {
         /// with `{:?}`).
         origin: String,
     },
+    /// A `rel="next"` link pointed at a page already fetched; following it
+    /// would loop.
+    #[error("pagination of {path} looped back to a page already fetched")]
+    PaginationLoop {
+        /// Request path.
+        path: String,
+    },
+    /// A redirect pointed at a different scheme, host or port than the API
+    /// base; it was not followed, so the token was not sent there.
+    #[error("refusing to follow a redirect from {path} to another origin ({origin:?})")]
+    Redirect {
+        /// Request path.
+        path: String,
+        /// The foreign `scheme://host:port` (server-supplied, so rendered
+        /// with `{:?}`).
+        origin: String,
+    },
 }
 
 /// The parenthesised hint on [`ApiError::Status`].
@@ -135,8 +152,21 @@ pub enum StatusHint {
         /// The host to log in to.
         domain: Domain,
     },
-    /// 403 with `x-ratelimit-remaining: 0`.
+    /// 429, or 403 with `x-ratelimit-remaining: 0`, `retry-after`, or a
+    /// (secondary) rate-limit message.
     RateLimit,
+    /// 403 with `X-GitHub-SSO`: the token is not authorized for the org's
+    /// SAML single sign-on.
+    Sso {
+        /// The host whose token needs authorizing.
+        domain: Domain,
+    },
+    /// Any other 403.
+    Forbidden,
+    /// 404 on an `/orgs/...` path.
+    OrgNotFound,
+    /// 500 to 599.
+    ServerError,
 }
 
 impl fmt::Display for StatusHint {
@@ -146,6 +176,13 @@ impl fmt::Display for StatusHint {
             Self::None => Ok(()),
             Self::Login { domain } => write!(f, " (run 'gh auth login --hostname {domain}')"),
             Self::RateLimit => f.write_str(" (API rate limit exceeded; try again later)"),
+            Self::Sso { domain } => write!(
+                f,
+                " (authorize the token for this org's SAML SSO, e.g. 'gh auth refresh --hostname {domain}')"
+            ),
+            Self::Forbidden => f.write_str(" (the token lacks access to this resource)"),
+            Self::OrgNotFound => f.write_str(" (org not found or not visible to this token)"),
+            Self::ServerError => f.write_str(" (GitHub server error; try again later)"),
         }
     }
 }
