@@ -1,0 +1,10 @@
+---
+source: tests/cli/invariants.rs
+expression: help(args)
+---
+Show the config file location and whether it exists
+
+Usage: work config path
+
+Options:
+  -h, --help  Print help

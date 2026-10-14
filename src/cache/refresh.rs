@@ -9,6 +9,7 @@ use crate::cache::merge::{all_failed, merge};
 use crate::cache::store::{self, LoadOutcome};
 use crate::cache::{Cache, CacheError};
 use crate::domain::{Domain, StoredTime};
+use crate::text::plural;
 
 /// Shown by the progress display until the fetch sends its header.
 const PROGRESS_TITLE: &str = "Updating repositories";
@@ -99,10 +100,11 @@ fn refresh(
     }
 
     let now = app.now;
+    let filters = app.config.filters();
     store::update(app.config.cache_dir(), |latest| {
         // The newest copy wins; if it vanished or broke meanwhile, fall back
         // to what was read before the fetch so nothing is dropped.
-        merge(latest.or(previous), outcomes, &domains, now)
+        merge(latest.or(previous), outcomes, &domains, filters, now)
     })
 }
 
@@ -115,13 +117,12 @@ fn describe_age(updated_at: StoredTime, now: StoredTime) -> String {
         return "a future date".to_owned();
     }
     let secs = updated_at.age_at(now).as_secs();
-    let (n, unit) = match secs {
-        s if s >= DAY => (s / DAY, "day"),
-        s if s >= HOUR => (s / HOUR, "hour"),
-        s => (s / MINUTE, "minute"),
+    let (n, one, many) = match secs {
+        s if s >= DAY => (s / DAY, "day", "days"),
+        s if s >= HOUR => (s / HOUR, "hour", "hours"),
+        s => (s / MINUTE, "minute", "minutes"),
     };
-    let plural = if n == 1 { "" } else { "s" };
-    format!("{n} {unit}{plural} ago")
+    format!("{n} {} ago", plural(n, one, many))
 }
 
 #[cfg(test)]

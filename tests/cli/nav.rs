@@ -1,5 +1,5 @@
-//! `cd`, `on`, `edit`, `clone`, `browse`, `open` and their `sh-*` forms
-//! (W5.1), against a seeded cache and real local clones.
+//! `cd`, `on`, `edit`, `clone`, `browse`, `open` and their `sh-*` forms,
+//! against a seeded cache and real local clones.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -400,7 +400,12 @@ fn sh_on_rejects_an_editor_with_control_characters_before_cloning() {
         assert_eq!(out.status.code(), Some(1), "{editor:?}");
         assert_eq!(stdout(&out), "", "{editor:?}");
         assert_eq!(stderr(&out).lines().count(), 1, "{}", stderr(&out));
-        assert!(stderr(&out).contains("editor command"), "{}", stderr(&out));
+        assert!(
+            stderr(&out).starts_with("work: invalid editor command "),
+            "{}",
+            stderr(&out)
+        );
+        assert!(stderr(&out).contains("$WORK_EDITOR"), "{}", stderr(&out));
     }
     assert!(!env.repo_path(SLUG).exists());
     assert_eq!(access_count(&env, SLUG), 0);

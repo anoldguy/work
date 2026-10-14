@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::auth::{AuthError, EnvToken, SecretToken};
+use crate::auth::{AuthError, EnvToken, GitAuth, SecretToken};
 use crate::domain::Domain;
 use crate::gh::Gh;
 
@@ -78,6 +78,22 @@ impl<'e> Tokens<'e> {
             Some(Ok(token)) => Ok((token, TokenSource::GhCli)),
             Some(Err(err)) => Err(err.clone()),
             None => Err(AuthError::NoToken { domain: d.clone() }),
+        }
+    }
+
+    /// The git auth header for `d`, or `None` when no token is available
+    /// (git then runs unauthenticated: public repos, ssh and credential
+    /// helpers still work).
+    ///
+    /// # Errors
+    ///
+    /// [`AuthError::InvalidEnvToken`] when `GITHUB_TOKEN` is set but
+    /// invalid: that is a mistake to report, not a missing token.
+    pub fn git_auth(&self, d: &Domain) -> Result<Option<GitAuth<'_>>, AuthError> {
+        match self.get(d) {
+            Ok((token, _)) => Ok(Some(GitAuth::new(d.clone(), token))),
+            Err(AuthError::InvalidEnvToken) => Err(AuthError::InvalidEnvToken),
+            Err(AuthError::NoToken { .. } | AuthError::Gh(_)) => Ok(None),
         }
     }
 }
@@ -172,6 +188,32 @@ mod tests {
             Err(AuthError::InvalidEnvToken)
         );
         assert_eq!(gh.calls().len(), 0);
+    }
+
+    #[test]
+    fn git_auth_is_scoped_to_the_domain_when_a_token_resolves() {
+        let gh = FakeGh::new().with_token(dom("github.com"), "gho_gh");
+        let tokens = Tokens::resolve(&gh, &EnvToken::Unset, &[dom("github.com")]);
+        let auth = tokens.git_auth(&dom("github.com")).expect("no error");
+        assert_matches!(auth, Some(ref a) if *a.host() == dom("github.com"));
+    }
+
+    #[test]
+    fn git_auth_is_none_without_a_token_or_gh() {
+        let tokens = Tokens::resolve(&FakeGh::new(), &EnvToken::Unset, &[dom("github.com")]);
+        assert_matches!(tokens.git_auth(&dom("github.com")), Ok(None));
+        let gh = FakeGh::new().with_error(dom("github.com"), GhError::NotInstalled);
+        let tokens = Tokens::resolve(&gh, &EnvToken::Unset, &[dom("github.com")]);
+        assert_matches!(tokens.git_auth(&dom("github.com")), Ok(None));
+    }
+
+    #[test]
+    fn git_auth_reports_an_invalid_env_token() {
+        let tokens = Tokens::resolve(&FakeGh::new(), &EnvToken::Invalid, &[dom("github.com")]);
+        assert_matches!(
+            tokens.git_auth(&dom("github.com")),
+            Err(AuthError::InvalidEnvToken)
+        );
     }
 
     #[test]

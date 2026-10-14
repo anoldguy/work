@@ -20,11 +20,12 @@ No database, no daemon, no cloud sync that stops working when your wifi hiccups.
 ## Prerequisites
 
 - [GitHub CLI (`gh`)](https://cli.github.com/) (authentication -- implementing OAuth device flow just to avoid typing `gh auth login` seemed like the wrong kind of yak shaving)
-- Git (presumably you have this if you're here)
+- Git 2.31 or newer (presumably you have this if you're here; the token reaches git through environment variables, which older versions don't understand)
+- Linux or macOS. Windows is not supported, and nobody is pretending otherwise
 
 ### Shell Integration
 
-Without shell integration, `work cd` just prints a path and stares at you. You'd have to manually `cd` to it, which defeats approximately 90% of the purpose. Add to your shell config:
+A program can't change its parent shell's directory, so `cd` and `on` need a small shell function wrapped around the binary. Without it, `work cd` exits with an error pointing you at `work activate`, rather than printing a path and leaving you to do the walking. Add to your shell config:
 
 ```bash
 # bash (~/.bashrc)
@@ -77,41 +78,45 @@ Every time you interact with a repo (`cd`, `browse`, `clone`, `edit`, `on`, `ope
 
 All matching is case-insensitive. Type `FOO` or `foo` or `FoO`; same result. Life's too short for shift keys.
 
-For more specificity, qualify with org (`acme/foo`) or full slug (`github.com/acme/foo`). Each slash narrows the search. Multiple matches show an interactive picker unless you're in a script, where ambiguity errors instead of picking randomly and hoping.
+For more specificity, qualify with org (`acme/foo`) or full slug (`github.com/acme/foo`). Each slash narrows the search. Multiple matches show an interactive picker unless you're in a script, where ambiguity errors instead of picking randomly and hoping. Pass `--pick` to `cd`, `on`, `edit`, `open`, `browse`, `clone` or `pull` to see the picker whenever several repositories match, even if one is clearly ahead.
+
+### The Picker
+
+Type to filter, Backspace to edit what you typed. Arrow keys or Ctrl-n/Ctrl-p move the selection, Enter selects, Esc cancels. `j` and `k` are not navigation keys; they are letters, and you may need them. In multi-select pickers (`work favorite`), Tab toggles an item. Ctrl-C bails out with exit code 130.
 
 ## Commands
 
 | Command | What it does |
 |---------|-------------|
 | `work version` | Print the version |
-| `work cd [query]` | Fuzzy-match a repo and `cd` into it (clones first if needed; omit the query to go to the work root) |
-| `work on <query>` | Same as `cd`, but also opens the repo in your editor, for the tab hoarders |
-| `work edit <query>` | Open a repo in your editor (`$WORK_EDITOR`, then `$EDITOR`, then `vi`) |
-| `work open <query>` | Open a repo directory in your file manager (clones first if needed; for the GUI-curious) |
-| `work browse <query>` | Open a repo's GitHub page in the browser |
-| `work clone <query>` | Clone a repo into the local hierarchy |
-| `work list [query]` | List cached repos, ranked by relevance (`--filter` for substring-only matching) |
-| `work pull <query>` | Fetch + fast-forward a single repo |
-| `work sync [--jobs <n>]` | Fetch + fast-forward every cloned repo (8 at a time by default). Go get coffee |
-| `work update [--all-orgs]` | Manually refresh the repo cache (usually unnecessary; `--all-orgs` ignores favorites) |
-| `work config` | Show current configuration |
-| `work config path` | Show the config file location |
-| `work config --edit` | Open config in `$EDITOR` |
-| `work config default [domain]` | Set the default domain (interactive picker if omitted) |
-| `work favorite [domain]` | Pick favorite orgs (only cache repos from orgs you care about) |
-| `work setup [domain]` | Interactive first-time setup |
-| `work auth login [--domain <domain>]` | Authenticate with `gh` (default domain: `github.com`) |
-| `work auth logout [--domain <domain>]` | Log out of `gh` for a domain (default domain: `github.com`) |
-| `work auth status` | Check auth status for all domains |
-| `work completions [shell] [--install]` | Output shell completions, or install them with `--install` |
-| `work activate [shell]` | Output the shell integration script (auto-detects from `$SHELL` if omitted) |
-| `work about` | Full-screen animated splash; any key exits. Styles: `classic`, `decode`, `plasma`, `fire`, `dropin` (via a hidden `--style <name>` flag) |
+| `work cd [query]` | Jump to a repository (needs shell integration; clones first if needed; omit the query to go to the work directory) |
+| `work on <query>` | Jump to a repository and open it in your editor (needs shell integration), for the tab hoarders |
+| `work edit <query>` | Open a repository in your editor (`$WORK_EDITOR`, then `$EDITOR`, then `vi`) |
+| `work open <query>` | Open a repository's directory in the file manager (clones first if needed; for the GUI-curious) |
+| `work browse <query>` | Open a repository's page in the browser |
+| `work clone <query>` | Clone a repository into the work directory |
+| `work list [query]` | List cached repositories, ranked by relevance (`--filter` for a plain substring match on the full slug, without frecency) |
+| `work pull <query>` | Fetch and fast-forward one repository |
+| `work sync [--jobs <n>]` | Fetch and fast-forward every cloned repository (8 at a time by default). Go get coffee. Exits 1 if any repo failed |
+| `work update [--all-orgs]` | Refresh the repository cache (usually unnecessary; `--all-orgs` fetches every org, ignoring favourites) |
+| `work config` | Show or change configuration (bare, it shows the current one) |
+| `work config path` | Show the config file location and whether it exists (path on stdout, existence on stderr) |
+| `work config --edit` | Open the config file in your editor (`$WORK_EDITOR`, then `$EDITOR`, then `vi`) |
+| `work config default [domain]` | Set the default domain (asks when omitted) |
+| `work favorite [domain]` | Pick favourite organisations for a domain (only cache repos from orgs you care about) |
+| `work setup [domain]` | Interactive first-time setup (default domain: `github.com`) |
+| `work auth login [--domain <domain>]` | Log in with `gh` (default domain: `github.com`) |
+| `work auth logout [--domain <domain>]` | Log out with `gh` (default domain: `github.com`) |
+| `work auth status` | Show token status for every domain |
+| `work completions [shell] [--install]` | Print or install shell completions |
+| `work activate [shell]` | Print the shell integration script (auto-detects from `$SHELL` if omitted) |
+| `work about` | Show the animated about screen; any key exits. Styles: `classic`, `decode`, `plasma`, `fire`, `dropin` (via a hidden `--style <name>` flag). Without a TTY it prints the static logo to stderr |
 
 ## Configuration
 
 Configuration is optional. Defaults work for most people: `~/code` for repositories, `~/.local/state/work` for cache. XDG conventions are followed; somebody should.
 
-Config lives at `~/.config/work/config.toml`. The tool creates it on first run if needed. Edit it by hand if you prefer; it's just TOML.
+Config lives at `~/.config/work/config.toml`. The tool creates it on first run if needed. Edit it by hand if you prefer (`work config --edit` opens it in `$WORK_EDITOR`, then `$EDITOR`, then `vi`); it's just TOML. `work config path` prints the bare path on stdout and says whether the file exists on stderr, so `cat "$(work config path)"` behaves.
 
 ```toml
 work_dir = "~/code"
@@ -128,7 +133,10 @@ favorite_orgs = ["my-team", "my-company"]
 [domains."github.enterprise.com"]
 favorite_orgs = ["team-a", "team-b"]
 extra_orgs = ["partner-team", "shared-infra"]
+api_url = "https://github.enterprise.com/api/v3"
 ```
+
+Per domain, `api_url` overrides the API base. You rarely need it. The default is `api.github.com` for `github.com`, `https://api.<host>` for `*.ghe.com`, and `https://<host>/api/v3` for GitHub Enterprise Server. It has to be `https`, or `http` for loopback hosts only, because sending your token over plain HTTP to a stranger is not a feature. Unknown keys are rejected with an error rather than silently ignored, so a typo like `favourite_orgs` tells you instead of quietly doing nothing. Quote the hostname (`[domains."github.com"]`); an unquoted one gets a hint.
 
 ## Default Domains
 
@@ -154,7 +162,7 @@ work favorite                        # Interactive picker for default domain
 work favorite github.enterprise.com  # Pick favorites for specific domain
 ```
 
-Once configured, only favorite orgs (plus personal repositories) get synced. Use `work update --all-orgs` to sync everything, ignoring favorites. Clear favorites by deselecting everything in the picker; you're back to syncing all organizations.
+Once configured, only favorite orgs (plus personal repositories) get synced. Personal repositories include the ones you collaborate on, not just the ones you own. Use `work update --all-orgs` to sync everything, ignoring favorites. Clear favorites by deselecting everything in the picker; you're back to syncing all organizations.
 
 ## Extra Organizations
 
@@ -196,7 +204,11 @@ Run `gh auth login` once; everything else works. Check `work auth status` if thi
 4. If it's ambiguous and you're in an interactive terminal, shows a picker
 5. If the repo isn't cloned locally, clones it first
 
-The cache auto-updates when stale (older than 24 hours). This happens transparently during normal use -- you don't need to manually refresh anything. The tool just quietly fetches new data in the background while a spinner pretends to keep you company.
+The cache auto-updates when stale (older than 24 hours). This happens transparently during normal use -- you don't need to manually refresh anything. The tool fetches new data while a spinner pretends to keep you company.
+
+### Offline
+
+If the cache is stale and GitHub is unreachable, each command waits for the fetch timeout once, then falls back to the stale copy with a warning on stderr. It's slower than it should be and still works, which describes most airline wifi.
 
 The local directory structure mirrors GitHub's hierarchy:
 

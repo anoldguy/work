@@ -144,7 +144,6 @@ pub enum GhError {
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
 
     use super::*;
@@ -153,10 +152,11 @@ mod tests {
         "github.com".parse().expect("valid domain")
     }
 
+    /// Installs an executable `#!/bin/sh` shim, safe to exec at once (no
+    /// `ETXTBSY` under the threaded test runner).
     fn shim(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write shim");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        crate::testing::install_script(&path, body);
         path
     }
 

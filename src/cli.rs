@@ -90,16 +90,6 @@ pub struct CdArgs {
     pub pick: bool,
 }
 
-impl CdArgs {
-    /// The resolve arguments, or `None` when no query was given (consumes
-    /// `self` so the query moves rather than being copied).
-    #[must_use]
-    pub fn into_resolve(self) -> Option<ResolveArgs> {
-        let pick = self.pick;
-        self.query.map(|query| ResolveArgs { query, pick })
-    }
-}
-
 /// `sync [--jobs N]`.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct SyncArgs {
@@ -117,7 +107,7 @@ pub struct ListArgs {
     #[arg(long)]
     pub filter: bool,
     /// Offline completion candidates (name and org/name); silent on failure
-    #[arg(long, hide = true)]
+    #[arg(long, hide = true, conflicts_with_all = ["query", "filter"])]
     pub complete: bool,
 }
 
@@ -216,7 +206,7 @@ pub struct ActivateArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct CommandsArgs {
     /// Print the shell-integrated command names, one per line
-    #[arg(long)]
+    #[arg(long, required = true)]
     pub sh: bool,
 }
 
@@ -232,6 +222,7 @@ pub struct AboutArgs {
 mod tests {
     use std::assert_matches;
 
+    use clap::error::ErrorKind;
     use clap::{CommandFactory, Parser};
 
     use super::{CdArgs, Cli, Command, ConfigAction};
@@ -251,6 +242,28 @@ mod tests {
     }
 
     #[test]
+    fn list_complete_conflicts_with_a_query_and_filter() {
+        for args in [
+            &["work", "list", "--complete", "foo"][..],
+            &["work", "list", "--complete", "--filter"],
+            &["work", "list", "foo", "--filter", "--complete"],
+        ] {
+            let err = Cli::try_parse_from(args).expect_err("conflict");
+            assert_eq!(err.kind(), ErrorKind::ArgumentConflict, "{args:?}");
+        }
+        let cli = Cli::try_parse_from(["work", "list", "--complete"]).expect("parses");
+        assert_matches!(cli.command, Some(Command::List(ref args)) if args.complete);
+    }
+
+    #[test]
+    fn commands_requires_sh() {
+        let err = Cli::try_parse_from(["work", "commands"]).expect_err("missing --sh");
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+        let cli = Cli::try_parse_from(["work", "commands", "--sh"]).expect("parses");
+        assert_matches!(cli.command, Some(Command::Commands(ref args)) if args.sh);
+    }
+
+    #[test]
     fn config_edit_conflicts_with_a_subcommand() {
         assert!(Cli::try_parse_from(["work", "config", "--edit", "path"]).is_err());
         let cli = Cli::try_parse_from(["work", "config", "default"]).expect("parses");
@@ -258,14 +271,5 @@ mod tests {
             cli.command,
             Some(Command::Config(ref args)) if args.action == Some(ConfigAction::Default { domain: None })
         );
-    }
-
-    #[test]
-    fn cd_without_a_query_has_nothing_to_resolve() {
-        let args = CdArgs {
-            query: None,
-            pick: true,
-        };
-        assert_eq!(args.into_resolve(), None);
     }
 }

@@ -1,7 +1,6 @@
 //! Host and account names: [`Domain`], [`Org`], [`RepoName`] (pure).
 //!
-//! These validators are part of the contract (not a later chunk) because
-//! nearly every module needs real values in its tests.
+//! Each type validates at construction, so every instance is a legal name.
 
 use std::fmt;
 use std::str::FromStr;

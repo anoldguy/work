@@ -1,0 +1,11 @@
+---
+source: tests/cli/invariants.rs
+expression: help(args)
+---
+Fetch and fast-forward every cloned repository
+
+Usage: work sync [OPTIONS]
+
+Options:
+  -j, --jobs <JOBS>  Repositories to sync at once [default: 8]
+  -h, --help         Print help

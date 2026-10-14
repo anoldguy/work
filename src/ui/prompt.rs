@@ -1,6 +1,6 @@
 //! Line prompts (`input`, `confirm`) for `TtyInteraction`.
 //!
-//! Private to W1.8; nothing outside `ui::interact` depends on this module.
+//! Private to `ui`; nothing outside `ui::interact` depends on this module.
 //! Like the picker, each prompt is a pure reducer over decoded
 //! [`PickerKey`]s plus a one-line render.
 

@@ -79,10 +79,9 @@ fn auth_for<'t>(
         .filter(|url| is_https(url))
         .and_then(host_of)
         .filter(|host| configured.contains(host))?;
-    tokens
-        .get(&host)
-        .ok()
-        .map(|(token, _)| GitAuth::new(host, token))
+    // No usable token (an invalid `GITHUB_TOKEN` included) means no auth:
+    // the fetch still works for public repos and stored credentials.
+    tokens.git_auth(&host).ok().flatten()
 }
 
 /// The `SomeFailed` error for `reports`, or `None` when no repo errored.

@@ -17,7 +17,6 @@ pub fn activation_script(shell: Shell) -> &'static str {
 mod tests {
     use super::*;
     use crate::shell::quote;
-    use std::os::unix::fs::PermissionsExt;
     use std::process::{Command, Stdio};
 
     #[test]
@@ -64,15 +63,13 @@ mod tests {
         )
         .unwrap();
         let fake = bindir.join("work");
-        std::fs::write(
+        crate::testing::install_script(
             &fake,
-            format!(
-                "#!/bin/sh\ncase \"$1\" in\n  commands) echo cd;;\n  sh-cd) cat {};;\n  *) echo passthrough \"$@\";;\nesac\n",
+            &format!(
+                "case \"$1\" in\n  commands) echo cd;;\n  sh-cd) cat {};;\n  *) echo passthrough \"$@\";;\nesac",
                 quote(script_file.to_str().unwrap())
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
 
         let wrapper = dir.path().join(format!("work.{shell}"));
         std::fs::write(&wrapper, activation_script(shell)).unwrap();

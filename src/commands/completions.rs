@@ -20,17 +20,13 @@ use crate::ui::Ui;
 /// # Errors
 ///
 /// `ShellError::Install`; a broken pipe.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "all fields are Copy, so destructuring cannot consume args; lib.rs dispatches by value"
-)]
 pub fn run(
     env: &EnvSnapshot,
     locations: &Locations,
     ui: &mut Ui,
-    args: CompletionsArgs,
+    args: &CompletionsArgs,
 ) -> Result<ExitCode, Error> {
-    let CompletionsArgs { shell, install } = args;
+    let &CompletionsArgs { shell, install } = args;
     let shell = shell.unwrap_or_else(|| detect(env));
     let script = completion_script(shell, &mut Cli::command());
     if !install {

@@ -38,17 +38,6 @@ pub trait StyleRun {
     fn render(&mut self, t: Duration, frame: &mut Frame);
 }
 
-/// A run that draws nothing: the placeholder for a style whose animation has
-/// not been written yet. Leaves the frame blank.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct BlankRun;
-
-impl StyleRun for BlankRun {
-    fn render(&mut self, t: Duration, frame: &mut Frame) {
-        let _ = (t, frame);
-    }
-}
-
 /// Every style, in registry order.
 pub static STYLES: &[&dyn Style] = &[
     &classic::Classic,

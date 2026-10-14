@@ -111,7 +111,7 @@ fn commands_without_sh_is_a_one_line_usage_error() {
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8");
     assert_eq!(
         stderr,
-        "work: missing required argument '--sh' (see 'work commands --help')\n"
+        "work: missing required argument --sh (see 'work commands --help')\n"
     );
 }
 

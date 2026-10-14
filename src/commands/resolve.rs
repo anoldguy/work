@@ -5,9 +5,8 @@ use std::path::PathBuf;
 use std::slice;
 
 use crate::app::App;
-use crate::auth::{AuthError, GitAuth, Tokens};
+use crate::auth::Tokens;
 use crate::cache::{Cache, store};
-use crate::cli::ResolveArgs;
 use crate::core::paths::repo_path;
 use crate::core::query_frecency::{Decision, decide};
 use crate::core::resolve::resolve;
@@ -41,8 +40,9 @@ pub enum CloneStatus {
     Cloned,
 }
 
-/// Resolves `args` against `cache` (search, `decide`, then the picker on a
-/// TTY), recording query frecency after an automatic answer or a pick.
+/// Resolves `query` against `cache` (search, `decide`, then the picker on a
+/// TTY, always when `pick` and several repos match), recording query
+/// frecency after an automatic answer or a pick.
 ///
 /// # Errors
 ///
@@ -52,14 +52,15 @@ pub enum CloneStatus {
 pub fn resolve_target(
     app: &mut App,
     cache: &mut Cache,
-    args: &ResolveArgs,
+    query: &str,
+    pick: bool,
 ) -> Result<Target, Error> {
-    let query = Query::parse(&args.query)?;
+    let query = Query::parse(query)?;
     let interactive = app.ui.interact().is_interactive();
     let now = app.now;
     let results = search(&cache.repos, &query, |s| cache.frecency.score(s, now));
     let key = query.key();
-    let decision = if args.pick && results.len() > 1 {
+    let decision = if pick && results.len() > 1 {
         if !interactive {
             return Err(UiError::NotInteractive { what: "--pick" }.into());
         }
@@ -170,11 +171,7 @@ pub fn ensure_cloned(app: &mut App, cache: &Cache, target: &Target) -> Result<Cl
     }
     let domain = repo.slug.domain();
     let tokens = Tokens::resolve(&*app.gh, &app.env.github_token, slice::from_ref(domain));
-    let auth = match tokens.get(domain) {
-        Ok((token, _)) => Some(GitAuth::new(domain.clone(), token)),
-        Err(AuthError::InvalidEnvToken) => return Err(AuthError::InvalidEnvToken.into()),
-        Err(_) => None,
-    };
+    let auth = tokens.git_auth(domain)?;
     // Pending stdout must land before git (which may inherit it) runs.
     app.ui.flush()?;
     let title = format!(
@@ -265,7 +262,7 @@ mod tests {
 
     use super::*;
     use crate::app::Adapters;
-    use crate::auth::EnvToken;
+    use crate::auth::{AuthError, EnvToken, GitAuth};
     use crate::config::{self, Locations};
     use crate::core::sync_outcome::{RepoFacts, Upstream};
     use crate::domain::{CloneUrl, HtmlUrl, Repo, StoredTime};
@@ -418,13 +415,6 @@ mod tests {
         Cache::new(repos, now())
     }
 
-    fn args(query: &str, pick: bool) -> ResolveArgs {
-        ResolveArgs {
-            query: query.to_owned(),
-            pick,
-        }
-    }
-
     fn key(raw: &str) -> QueryKey {
         QueryKey::new(raw).expect("key")
     }
@@ -449,7 +439,7 @@ mod tests {
     fn a_clean_resolve_returns_the_repo_path_and_records_nothing() {
         let mut h = plain();
         let mut cache = cache();
-        let target = resolve_target(&mut h.app, &mut cache, &args("foobar", false)).expect("ok");
+        let target = resolve_target(&mut h.app, &mut cache, "foobar", false).expect("ok");
         assert_eq!(target.index, 0);
         assert_eq!(target.path, h.app.config.work_dir().join("acme/foobar"));
         assert!(cache.query_frecency.is_empty());
@@ -459,7 +449,7 @@ mod tests {
     #[test]
     fn a_non_default_domain_keeps_its_domain_segment() {
         let mut h = plain();
-        let target = resolve_target(&mut h.app, &mut cache(), &args("api", false)).expect("ok");
+        let target = resolve_target(&mut h.app, &mut cache(), "api", false).expect("ok");
         assert_eq!(
             target.path,
             h.app.config.work_dir().join("ghe.corp.com/corp/api")
@@ -469,15 +459,14 @@ mod tests {
     #[test]
     fn an_invalid_query_is_a_name_error() {
         let mut h = plain();
-        let err =
-            resolve_target(&mut h.app, &mut cache(), &args("a/b/c/d", false)).expect_err("invalid");
+        let err = resolve_target(&mut h.app, &mut cache(), "a/b/c/d", false).expect_err("invalid");
         assert_matches!(err, Error::Name(_));
     }
 
     #[test]
     fn no_match_is_not_found() {
         let mut h = plain();
-        let err = resolve_target(&mut h.app, &mut cache(), &args("zzzz", false)).expect_err("none");
+        let err = resolve_target(&mut h.app, &mut cache(), "zzzz", false).expect_err("none");
         assert_matches!(
             err,
             Error::Resolve(ResolveError::NotFound { ref query }) if query.as_str() == "zzzz"
@@ -488,8 +477,7 @@ mod tests {
     fn ambiguity_without_a_tty_is_a_list_error_of_full_slugs() {
         let mut h = plain();
         let mut cache = cache();
-        let err =
-            resolve_target(&mut h.app, &mut cache, &args("foob", false)).expect_err("ambiguous");
+        let err = resolve_target(&mut h.app, &mut cache, "foob", false).expect_err("ambiguous");
         assert_eq!(
             err.list_items(),
             ["github.com/acme/foobar", "github.com/acme/foobaz"]
@@ -503,7 +491,7 @@ mod tests {
     fn ambiguity_on_a_tty_shows_the_picker_and_records_the_pick() {
         let mut h = harness(true, vec![Answer::Pick(Some(1))]);
         let mut cache = cache();
-        let target = resolve_target(&mut h.app, &mut cache, &args("foob", false)).expect("pick");
+        let target = resolve_target(&mut h.app, &mut cache, "foob", false).expect("pick");
         assert_eq!(target.index, 1);
         assert_matches!(
             h.prompts.calls().as_slice(),
@@ -518,8 +506,7 @@ mod tests {
     fn cancelling_the_picker_gives_the_list_error_and_records_nothing() {
         let mut h = harness(true, vec![Answer::Pick(None)]);
         let mut cache = cache();
-        let err =
-            resolve_target(&mut h.app, &mut cache, &args("foob", false)).expect_err("cancelled");
+        let err = resolve_target(&mut h.app, &mut cache, "foob", false).expect_err("cancelled");
         assert_eq!(
             err.list_items(),
             ["github.com/acme/foobar", "github.com/acme/foobaz"]
@@ -531,8 +518,7 @@ mod tests {
     #[test]
     fn ctrl_c_in_the_picker_is_interrupted() {
         let mut h = harness(true, vec![Answer::Interrupt]);
-        let err = resolve_target(&mut h.app, &mut cache(), &args("foob", false))
-            .expect_err("interrupted");
+        let err = resolve_target(&mut h.app, &mut cache(), "foob", false).expect_err("interrupted");
         assert_matches!(err, Error::Ui(UiError::Interrupted));
     }
 
@@ -541,7 +527,7 @@ mod tests {
         let mut h = harness(true, vec![]);
         let mut cache = cache();
         with_dominant_history(&mut cache);
-        let target = resolve_target(&mut h.app, &mut cache, &args("foob", false)).expect("auto");
+        let target = resolve_target(&mut h.app, &mut cache, "foob", false).expect("auto");
         assert_eq!(target.index, 1);
         assert_eq!(h.prompts.calls(), []);
         assert_eq!(query_count(&cache, "foob", 1), 4);
@@ -552,7 +538,7 @@ mod tests {
         let mut h = plain();
         let mut cache = cache();
         with_dominant_history(&mut cache);
-        let target = resolve_target(&mut h.app, &mut cache, &args("foob", false)).expect("auto");
+        let target = resolve_target(&mut h.app, &mut cache, "foob", false).expect("auto");
         assert_eq!(target.index, 1);
     }
 
@@ -561,7 +547,7 @@ mod tests {
         let mut h = harness(true, vec![Answer::Pick(Some(0))]);
         let mut cache = cache();
         with_dominant_history(&mut cache);
-        let target = resolve_target(&mut h.app, &mut cache, &args("foob", true)).expect("pick");
+        let target = resolve_target(&mut h.app, &mut cache, "foob", true).expect("pick");
         assert_eq!(target.index, 0);
         assert_eq!(h.prompts.calls().len(), 1);
         assert_eq!(query_count(&cache, "foob", 0), 1);
@@ -573,7 +559,7 @@ mod tests {
         let mut h = harness(true, vec![Answer::Pick(Some(1))]);
         let mut cache = cache();
         cache.repos.push(repo("github.com/acme/foobar-cli"));
-        let target = resolve_target(&mut h.app, &mut cache, &args("foobar", true)).expect("pick");
+        let target = resolve_target(&mut h.app, &mut cache, "foobar", true).expect("pick");
         assert_eq!(target.index, 3);
         assert_eq!(h.prompts.calls().len(), 1);
         assert_eq!(query_count(&cache, "foobar", 3), 1);
@@ -583,7 +569,7 @@ mod tests {
     fn pick_with_a_single_result_skips_the_picker() {
         let mut h = harness(true, vec![]);
         let mut cache = cache();
-        let target = resolve_target(&mut h.app, &mut cache, &args("api", true)).expect("unique");
+        let target = resolve_target(&mut h.app, &mut cache, "api", true).expect("unique");
         assert_eq!(target.index, 2);
         assert_eq!(h.prompts.calls(), []);
         assert!(cache.query_frecency.is_empty());
@@ -593,7 +579,7 @@ mod tests {
     fn pick_without_a_tty_resolves_a_single_match() {
         let mut h = plain();
         let mut cache = cache();
-        let target = resolve_target(&mut h.app, &mut cache, &args("api", true)).expect("unique");
+        let target = resolve_target(&mut h.app, &mut cache, "api", true).expect("unique");
         assert_eq!(target.index, 2);
         assert!(cache.query_frecency.is_empty());
     }
@@ -601,15 +587,14 @@ mod tests {
     #[test]
     fn pick_without_a_tty_and_no_match_is_not_found() {
         let mut h = plain();
-        let err = resolve_target(&mut h.app, &mut cache(), &args("zzzz", true)).expect_err("none");
+        let err = resolve_target(&mut h.app, &mut cache(), "zzzz", true).expect_err("none");
         assert_matches!(err, Error::Resolve(ResolveError::NotFound { .. }));
     }
 
     #[test]
     fn pick_without_a_tty_is_an_error_when_several_match() {
         let mut h = plain();
-        let err =
-            resolve_target(&mut h.app, &mut cache(), &args("foob", true)).expect_err("no tty");
+        let err = resolve_target(&mut h.app, &mut cache(), "foob", true).expect_err("no tty");
         assert_eq!(err.to_string(), "--pick requires an interactive terminal");
         assert_matches!(err, Error::Ui(UiError::NotInteractive { what: "--pick" }));
     }
@@ -619,7 +604,7 @@ mod tests {
         let git = Arc::new(FakeGit::new());
         let mut h = cloning(Arc::clone(&git));
         let mut cache = cache();
-        let target = resolve_target(&mut h.app, &mut cache, &args("foobar", false)).expect("ok");
+        let target = resolve_target(&mut h.app, &mut cache, "foobar", false).expect("ok");
         assert!(!target.path.parent().expect("parent").exists());
         let status = ensure_cloned(&mut h.app, &cache, &target).expect("clone");
         assert_eq!(status, CloneStatus::Cloned);
@@ -639,7 +624,7 @@ mod tests {
         let git = Arc::new(FakeGit::new());
         let mut h = cloning(Arc::clone(&git));
         let mut cache = cache();
-        let target = resolve_target(&mut h.app, &mut cache, &args("foobar", false)).expect("ok");
+        let target = resolve_target(&mut h.app, &mut cache, "foobar", false).expect("ok");
         assert_eq!(
             ensure_cloned(&mut h.app, &cache, &target).expect("clone"),
             CloneStatus::Cloned
@@ -662,7 +647,7 @@ mod tests {
             FakeGh::new(),
         );
         let mut cache = cache();
-        let target = resolve_target(&mut h.app, &mut cache, &args("foobar", false)).expect("ok");
+        let target = resolve_target(&mut h.app, &mut cache, "foobar", false).expect("ok");
         std::fs::create_dir_all(target.path.join(".git")).expect("mkdir");
         let status = ensure_cloned(&mut h.app, &cache, &target).expect("no-op");
         assert_eq!(status, CloneStatus::Already);
@@ -675,7 +660,7 @@ mod tests {
         let mut h = cloning(Arc::clone(&git));
         let mut cache = cache();
         // The token is for github.com; `api` lives on ghe.corp.com.
-        let target = resolve_target(&mut h.app, &mut cache, &args("api", false)).expect("ok");
+        let target = resolve_target(&mut h.app, &mut cache, "api", false).expect("ok");
         let status = ensure_cloned(&mut h.app, &cache, &target).expect("clone");
         assert_eq!(status, CloneStatus::Cloned);
         assert_matches!(
@@ -690,7 +675,7 @@ mod tests {
         let mut h = cloning(Arc::clone(&git));
         h.app.env.github_token = EnvToken::Invalid;
         let mut cache = cache();
-        let target = resolve_target(&mut h.app, &mut cache, &args("foobar", false)).expect("ok");
+        let target = resolve_target(&mut h.app, &mut cache, "foobar", false).expect("ok");
         let err = ensure_cloned(&mut h.app, &cache, &target).expect_err("invalid token");
         assert_matches!(err, Error::Auth(AuthError::InvalidEnvToken));
         assert_eq!(git.calls(), []);
@@ -720,7 +705,7 @@ mod tests {
             FakeGh::new().with_token(github(), "tok-123"),
         );
         let mut cache = cache();
-        let target = resolve_target(&mut h.app, &mut cache, &args("foobar", false)).expect("ok");
+        let target = resolve_target(&mut h.app, &mut cache, "foobar", false).expect("ok");
         assert_eq!(target.path, dest);
         let err = ensure_cloned(&mut h.app, &cache, &target).expect_err("git failed");
         assert_matches!(err, Error::Git(ref e) if *e == failure);
@@ -731,7 +716,7 @@ mod tests {
     fn ensure_cloned_flushes_pending_stdout_first() {
         let mut h = cloning(Arc::new(FakeGit::new()));
         let mut cache = cache();
-        let target = resolve_target(&mut h.app, &mut cache, &args("foobar", false)).expect("ok");
+        let target = resolve_target(&mut h.app, &mut cache, "foobar", false).expect("ok");
         h.app.ui.stdout_line("before").expect("write");
         assert_eq!(h.out.contents(), "");
         ensure_cloned(&mut h.app, &cache, &target).expect("clone");
@@ -742,7 +727,7 @@ mod tests {
     fn record_access_records_frecency_and_saves() {
         let mut h = plain();
         let mut cache = cache();
-        let target = resolve_target(&mut h.app, &mut cache, &args("foobar", false)).expect("ok");
+        let target = resolve_target(&mut h.app, &mut cache, "foobar", false).expect("ok");
         record_access(&h.app, &mut cache, &target).expect("save");
         assert_eq!(
             cache
@@ -761,7 +746,7 @@ mod tests {
         let dir = h.app.config.cache_dir().to_path_buf();
         let mut cache = cache();
         store::save(&dir, &cache).expect("seed");
-        let target = resolve_target(&mut h.app, &mut cache, &args("foob", false)).expect("pick");
+        let target = resolve_target(&mut h.app, &mut cache, "foob", false).expect("pick");
         assert_eq!(target.picked_for, Some(key("foob")));
         // Another `work` process records an access and saves first.
         let other = cache.repos[2].slug.clone();
@@ -790,7 +775,7 @@ mod tests {
         let mut h = plain();
         let dir = h.app.config.cache_dir().to_path_buf();
         let mut cache = cache();
-        let target = resolve_target(&mut h.app, &mut cache, &args("foobar", false)).expect("ok");
+        let target = resolve_target(&mut h.app, &mut cache, "foobar", false).expect("ok");
         assert_eq!(target.picked_for, None);
         // A refresh elsewhere removed every repo.
         store::save(&dir, &Cache::new(vec![], now())).expect("refresh");

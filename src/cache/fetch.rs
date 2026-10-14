@@ -122,7 +122,7 @@ impl Job<'_> {
 /// others): token (none → `DomainOutcome::Failed` plus a warning),
 /// `viewer`, `member_orgs`, `select_orgs`. Then, when there is at least one
 /// job, sends one `Header` (its `total` counts every job, the personal ones
-/// included, as `Noun::Orgs` defines; its `domains` is the number of domains
+/// included, as `Noun::Sources` defines; its `domains` is the number of domains
 /// in `plan`), and runs one personal job per ready domain plus every
 /// selected org through `pool::run_bounded` with [`FETCH_JOBS`] workers,
 /// each reporting `TaskStarted`, `TaskProgress` per page, and
@@ -190,7 +190,7 @@ pub fn fetch_all(
         sink.send(UiEvent::Header(Header {
             verb: Verb::Updating,
             total: to_u32(jobs.len()),
-            noun: Noun::Orgs,
+            noun: Noun::Sources,
             domains: Some(to_u32(plan.domains.len())),
         }));
     }
@@ -262,18 +262,10 @@ fn prepare_domain<'t>(
                 favorites: dp.favorites,
                 all_orgs: plan.all_orgs,
             });
-            // Collaborator-only owners are only known filtered out through
-            // `exclude_orgs` (which `include_orgs` overrides).
-            let excluded = if plan.include.is_empty() {
-                plan.exclude
-            } else {
-                &[]
-            };
+            // Collaborator-only owners the global filters reject are
+            // handled by `merge`, which applies the filters itself.
             let mut deselected: Vec<Org> = Vec::new();
-            for org in member
-                .into_iter()
-                .chain(dp.extra.iter().chain(excluded).cloned())
-            {
+            for org in member.into_iter().chain(dp.extra.iter().cloned()) {
                 let known = |list: &[Org]| list.iter().any(|o| o.eq_ignore_case(&org));
                 if !known(&orgs) && !known(&deselected) {
                     deselected.push(org);
@@ -741,7 +733,7 @@ mod tests {
             Some(UiEvent::Header(Header {
                 verb: Verb::Updating,
                 total: 3,
-                noun: Noun::Orgs,
+                noun: Noun::Sources,
                 domains: Some(1),
             }))
         );
@@ -1073,7 +1065,7 @@ mod tests {
     }
 
     #[test]
-    fn deselected_lists_unselected_member_and_extra_orgs_and_excluded_owners() {
+    fn deselected_lists_unselected_member_and_extra_orgs_once() {
         let d = "github.com";
         let fake = FakeGitHub::new()
             .with_viewer(dom(d), org("me"))
@@ -1091,16 +1083,13 @@ mod tests {
         );
         let (out, _) = run(&plan, &fake, &env_token(), &FakeGh::new());
         assert_eq!(org_names(fetched(&out[0]).1), ["beta"]);
-        // Each owner once, case-insensitively; the collaborator-only
-        // `outsider` is known only through `exclude_orgs`.
-        assert_eq!(
-            deselected_of(&out[0]),
-            ["acme", "blocked", "partner", "outsider"]
-        );
+        // Each org once, case-insensitively; the collaborator-only
+        // `outsider` is left to `merge`, which applies the filters itself.
+        assert_eq!(deselected_of(&out[0]), ["acme", "blocked", "partner"]);
     }
 
     #[test]
-    fn deselected_ignores_exclude_orgs_when_include_orgs_is_set() {
+    fn deselected_lists_member_orgs_outside_include_orgs() {
         let d = "github.com";
         let fake = FakeGitHub::new()
             .with_viewer(dom(d), org("me"))
@@ -1115,8 +1104,9 @@ mod tests {
         };
         let (out, _) = run(&plan, &fake, &env_token(), &FakeGh::new());
         assert_eq!(org_names(fetched(&out[0]).1), ["beta"]);
-        // Collaborator-only owners outside `include_orgs` cannot be listed
-        // here; the personal job filters them when it succeeds.
+        // Collaborator-only owners outside `include_orgs` are not listed
+        // here: the personal job filters them, and so does `merge` when it
+        // fails.
         assert_eq!(deselected_of(&out[0]), ["acme"]);
     }
 }

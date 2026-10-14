@@ -1,4 +1,4 @@
-//! Tests for the GitHub HTTP client (W2.8), run against `support::FakeApi`.
+//! Tests for the GitHub HTTP client, run against `support::FakeApi`.
 
 use std::assert_matches;
 use std::collections::BTreeMap;

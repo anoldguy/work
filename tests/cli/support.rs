@@ -1,4 +1,4 @@
-//! Shared harness for the CLI tests (W1.14).
+//! Shared harness for the CLI tests.
 //!
 //! Every `tests/cli/<group>.rs` file builds on [`TestEnv`]:
 //!
@@ -14,7 +14,7 @@
 //! - [`TestEnv`] (`env.rs`): tempdir `HOME` and `XDG_*`, a fully controlled
 //!   command (`env_clear`, `PATH` = shim dir only), config and cache seeding.
 //! - [`Origin`] (`git.rs`): a bare `file://` origin built with real `git`.
-//! - [`Shim`] (`shims.rs`): recording `gh`, editor and opener executables.
+//! - [`shims::Shim`] (`shims.rs`): recording `gh`, editor and opener executables.
 //! - [`FakeApi`] (`api.rs`): a loopback HTTP/1.1 server with a routes table,
 //!   `Link` paging, status codes and request recording.
 //!
@@ -25,14 +25,9 @@ mod env;
 mod git;
 mod shims;
 
-#[allow(unused_imports, reason = "each test file uses a different subset")]
-pub use api::{FakeApi, HostApi, RecordedRequest, Response};
-#[allow(unused_imports, reason = "each test file uses a different subset")]
-pub use env::{CacheSeed, ConfigSeed, DomainCfg, RepoSeed, TestEnv};
-#[allow(unused_imports, reason = "each test file uses a different subset")]
+pub use api::{FakeApi, Response};
+pub use env::{DomainCfg, RepoSeed, TestEnv};
 pub use git::{Origin, git};
-#[allow(unused_imports, reason = "each test file uses a different subset")]
-pub use shims::Shim;
 
 use assert_cmd::Command;
 

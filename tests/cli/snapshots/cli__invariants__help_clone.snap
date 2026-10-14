@@ -1,0 +1,14 @@
+---
+source: tests/cli/invariants.rs
+expression: help(args)
+---
+Clone a repository into the work directory
+
+Usage: work clone [OPTIONS] <QUERY>
+
+Arguments:
+  <QUERY>  Repository query: name, org/name, or domain/org/name
+
+Options:
+      --pick  Always show the picker when several repositories match
+  -h, --help  Print help

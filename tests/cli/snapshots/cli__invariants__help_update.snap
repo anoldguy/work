@@ -1,0 +1,11 @@
+---
+source: tests/cli/invariants.rs
+expression: help(args)
+---
+Refresh the repository cache
+
+Usage: work update [OPTIONS]
+
+Options:
+      --all-orgs  Fetch every org, ignoring favourites
+  -h, --help      Print help

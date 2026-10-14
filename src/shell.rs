@@ -101,6 +101,15 @@ pub enum ShellError {
         /// The offending path.
         path: PathBuf,
     },
+    /// `sh-on`'s editor command contains a control character, which would
+    /// split the one-line script and run the rest as a separate command.
+    #[error(
+        "invalid editor command {given:?} (control characters are not allowed; check $WORK_EDITOR and $EDITOR)"
+    )]
+    ControlCharInEditor {
+        /// The editor command as resolved from the environment.
+        given: String,
+    },
     /// `about --style` with an unknown name. A list error: `valid` is printed
     /// as `  - <name>` lines after the summary.
     #[error("unknown style {given:?} (valid styles are listed below)")]

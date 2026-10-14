@@ -5,9 +5,11 @@ use std::process::ExitCode;
 use crate::app::App;
 use crate::auth::Tokens;
 use crate::cli::FavoriteArgs;
+use crate::commands::config::pick_domain;
 use crate::config::{ConfigDoc, ConfigError};
 use crate::domain::{Domain, Org};
 use crate::error::Error;
+use crate::text::plural;
 use crate::ui::{Interaction, UiError};
 
 /// Shown by the progress display while the orgs are fetched.
@@ -32,12 +34,12 @@ enum Choice {
 ///
 /// `UiError::NotInteractive` without a TTY, unknown domain, token, API, or
 /// config write failures.
-pub fn run(app: &mut App, args: FavoriteArgs) -> Result<ExitCode, Error> {
+pub fn run(app: &mut App, args: &FavoriteArgs) -> Result<ExitCode, Error> {
     if !app.ui.interact().is_interactive() {
         return Err(UiError::NotInteractive { what: "favorite" }.into());
     }
     let FavoriteArgs { domain } = args;
-    let Some(domain) = select_domain(app, domain)? else {
+    let Some(domain) = select_domain(app, domain.as_ref())? else {
         return Ok(ExitCode::SUCCESS);
     };
     let (extras, current) = {
@@ -74,11 +76,9 @@ pub fn run(app: &mut App, args: FavoriteArgs) -> Result<ExitCode, Error> {
             let line = if favorites.is_empty() {
                 format!("Cleared favorite organizations for {domain}")
             } else {
-                format!(
-                    "Saved {} favorite organization{} for {domain}",
-                    favorites.len(),
-                    if favorites.len() == 1 { "" } else { "s" }
-                )
+                let count = favorites.len();
+                let noun = plural(count, "organization", "organizations");
+                format!("Saved {count} favorite {noun} for {domain}")
             };
             app.ui.stdout_line(&line)?;
         }
@@ -88,17 +88,20 @@ pub fn run(app: &mut App, args: FavoriteArgs) -> Result<ExitCode, Error> {
 
 /// The domain named, the only configured one, or the user's pick. `None`
 /// when the picker was cancelled.
-fn select_domain(app: &mut App, requested: Option<Domain>) -> Result<Option<Domain>, Error> {
+fn select_domain(app: &mut App, requested: Option<&Domain>) -> Result<Option<Domain>, Error> {
     if let Some(domain) = requested {
-        return if app.config.domains().contains_key(&domain) {
-            Ok(Some(domain))
+        return if app.config.domains().contains_key(domain) {
+            Ok(Some(domain.clone()))
         } else {
-            Err(ConfigError::UnknownDomain { domain }.into())
+            Err(ConfigError::UnknownDomain {
+                domain: domain.clone(),
+            }
+            .into())
         };
     }
-    let mut configured: Vec<Domain> = app.config.domains().keys().cloned().collect();
-    match configured.len() {
-        0 => {
+    let mut configured = app.config.domains().keys();
+    match (configured.next(), configured.next()) {
+        (None, _) => {
             // `effective_domains` is never empty: it falls back to the implicit domain.
             let domain = app
                 .config
@@ -108,12 +111,8 @@ fn select_domain(app: &mut App, requested: Option<Domain>) -> Result<Option<Doma
                 .expect("effective_domains is never empty");
             Err(ConfigError::UnknownDomain { domain }.into())
         }
-        1 => Ok(configured.pop()),
-        _ => {
-            let names: Vec<&str> = configured.iter().map(Domain::as_str).collect();
-            let picked = app.ui.interact().pick_one("Domain", &names)?;
-            Ok(picked.and_then(|i| configured.into_iter().nth(i)))
-        }
+        (Some(only), None) => Ok(Some(only.clone())),
+        _ => pick_domain(&app.config, &mut app.ui, "favorite", "Domain"),
     }
 }
 
@@ -195,7 +194,7 @@ mod tests {
         };
         let now = StoredTime::from_unix_seconds(1_700_000_000).expect("time");
         let mut app = App::with_parts(env, locations, config, ui, adapters, now);
-        let result = run(&mut app, FavoriteArgs { domain: None });
+        let result = run(&mut app, &FavoriteArgs { domain: None });
         app.ui.flush().expect("flush");
         let text = std::fs::read_to_string(&app.locations.config_file).expect("config");
         (result, text, log.calls(), out.contents())
