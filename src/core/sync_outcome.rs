@@ -49,8 +49,12 @@ pub enum FetchedReason {
 impl fmt::Display for FetchedReason {
     /// `dirty worktree`, `diverged`, `detached HEAD`, or `no upstream`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = (self, f);
-        unimplemented!("W1.10")
+        f.write_str(match self {
+            Self::DirtyWorktree => "dirty worktree",
+            Self::Diverged => "diverged",
+            Self::DetachedHead => "detached HEAD",
+            Self::NoUpstream => "no upstream",
+        })
     }
 }
 
@@ -74,8 +78,12 @@ impl fmt::Display for SyncOutcome {
     /// The report text: `pulled (N commits)`, `up to date`,
     /// `fetched (<reason>)`, or `error: <message>`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = (self, f);
-        unimplemented!("W1.10")
+        match self {
+            Self::Pulled { commits } => write!(f, "pulled ({commits} commits)"),
+            Self::UpToDate => f.write_str("up to date"),
+            Self::Fetched(reason) => write!(f, "fetched ({reason})"),
+            Self::Error(message) => write!(f, "error: {message}"),
+        }
     }
 }
 
@@ -96,6 +104,109 @@ pub enum Plan {
 /// else fast-forward.
 #[must_use]
 pub fn classify(facts: &RepoFacts) -> Plan {
-    let _ = facts;
-    unimplemented!("W1.10")
+    let (dirty, upstream) = match *facts {
+        RepoFacts::Detached { dirty } => (dirty, None),
+        RepoFacts::Branch { dirty, upstream } => (dirty, Some(upstream)),
+    };
+    let fetched = |reason| Plan::Done(SyncOutcome::Fetched(reason));
+    if dirty {
+        return fetched(FetchedReason::DirtyWorktree);
+    }
+    match upstream {
+        None => fetched(FetchedReason::DetachedHead),
+        Some(Upstream::None) => fetched(FetchedReason::NoUpstream),
+        Some(Upstream::Tracking { behind: 0, .. }) => Plan::Done(SyncOutcome::UpToDate),
+        Some(Upstream::Tracking { ahead, .. }) if ahead > 0 => fetched(FetchedReason::Diverged),
+        Some(Upstream::Tracking { behind, .. }) => Plan::FastForward { commits: behind },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::assert_matches;
+
+    use super::*;
+
+    fn branch(dirty: bool, upstream: Upstream) -> RepoFacts {
+        RepoFacts::Branch { dirty, upstream }
+    }
+
+    fn tracking(ahead: u32, behind: u32) -> Upstream {
+        Upstream::Tracking { ahead, behind }
+    }
+
+    #[test]
+    fn classify_truth_table() {
+        let fetched = |r| Plan::Done(SyncOutcome::Fetched(r));
+        let cases = [
+            (
+                branch(true, tracking(0, 3)),
+                fetched(FetchedReason::DirtyWorktree),
+            ),
+            (
+                branch(true, Upstream::None),
+                fetched(FetchedReason::DirtyWorktree),
+            ),
+            (
+                RepoFacts::Detached { dirty: true },
+                fetched(FetchedReason::DirtyWorktree),
+            ),
+            (
+                RepoFacts::Detached { dirty: false },
+                fetched(FetchedReason::DetachedHead),
+            ),
+            (
+                branch(false, Upstream::None),
+                fetched(FetchedReason::NoUpstream),
+            ),
+            (
+                branch(false, tracking(0, 0)),
+                Plan::Done(SyncOutcome::UpToDate),
+            ),
+            (
+                branch(false, tracking(2, 0)),
+                Plan::Done(SyncOutcome::UpToDate),
+            ),
+            (
+                branch(false, tracking(1, 4)),
+                fetched(FetchedReason::Diverged),
+            ),
+            (
+                branch(false, tracking(0, 4)),
+                Plan::FastForward { commits: 4 },
+            ),
+        ];
+        for (facts, expected) in cases {
+            assert_eq!(classify(&facts), expected, "{facts:?}");
+        }
+    }
+
+    #[test]
+    fn display_texts() {
+        assert_eq!(
+            SyncOutcome::Pulled { commits: 3 }.to_string(),
+            "pulled (3 commits)"
+        );
+        assert_eq!(SyncOutcome::UpToDate.to_string(), "up to date");
+        assert_eq!(SyncOutcome::Error("boom".into()).to_string(), "error: boom");
+        for (r, t) in [
+            (FetchedReason::DirtyWorktree, "dirty worktree"),
+            (FetchedReason::Diverged, "diverged"),
+            (FetchedReason::DetachedHead, "detached HEAD"),
+            (FetchedReason::NoUpstream, "no upstream"),
+        ] {
+            assert_eq!(
+                SyncOutcome::Fetched(r).to_string(),
+                format!("fetched ({t})")
+            );
+        }
+    }
+
+    #[test]
+    fn fast_forward_carries_behind_count() {
+        assert_matches!(
+            classify(&branch(false, tracking(0, 1))),
+            Plan::FastForward { commits: 1 }
+        );
+    }
 }

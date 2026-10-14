@@ -49,11 +49,20 @@ pub struct Frame {
 }
 
 impl Frame {
+    fn index(&self, x: u16, y: u16) -> Option<usize> {
+        (x < self.width && y < self.height)
+            .then(|| usize::from(y) * usize::from(self.width) + usize::from(x))
+    }
+
     /// A blank frame.
     #[must_use]
     pub fn new(width: u16, height: u16) -> Self {
-        let _ = (width, height);
-        unimplemented!("W1.9")
+        let len = usize::from(width) * usize::from(height);
+        Self {
+            width,
+            height,
+            cells: vec![Cell::BLANK; len],
+        }
     }
 
     /// Columns.
@@ -70,34 +79,94 @@ impl Frame {
 
     /// Resets every cell to [`Cell::BLANK`].
     pub fn clear(&mut self) {
-        let _ = &mut self.cells;
-        unimplemented!("W1.9")
+        self.cells.fill(Cell::BLANK);
     }
 
     /// The cell at column `x`, row `y`, if in range.
     #[must_use]
     pub fn get(&self, x: u16, y: u16) -> Option<&Cell> {
-        let _ = (self, x, y);
-        unimplemented!("W1.9")
+        self.index(x, y).and_then(|i| self.cells.get(i))
     }
 
     /// Sets the cell at column `x`, row `y`; ignored when out of range.
     pub fn set(&mut self, x: u16, y: u16, cell: Cell) {
-        let _ = (self, x, y, cell);
-        unimplemented!("W1.9")
+        if let Some(slot) = self.index(x, y).and_then(|i| self.cells.get_mut(i)) {
+            *slot = cell;
+        }
     }
 
     /// Writes `text` from column `x` on row `y` with the given colours,
     /// clipped at the right edge.
     pub fn put_str(&mut self, x: u16, y: u16, text: &str, fg: Option<Rgb>, bg: Option<Rgb>) {
-        let _ = (self, x, y, text, fg, bg);
-        unimplemented!("W1.9")
+        for (dx, ch) in (0..=u16::MAX).zip(text.chars()) {
+            let Some(cx) = x.checked_add(dx) else { break };
+            if cx >= self.width {
+                break;
+            }
+            self.set(cx, y, Cell { ch, fg, bg });
+        }
     }
 
     /// The characters only, one line per row (for snapshots).
     #[must_use]
     pub fn to_text(&self) -> String {
-        let _ = self;
-        unimplemented!("W1.9")
+        let mut out = String::with_capacity(self.cells.len() + usize::from(self.height));
+        for row in self.cells.chunks(usize::from(self.width).max(1)) {
+            out.extend(row.iter().map(|c| c.ch));
+            out.push('\n');
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::assert_matches;
+
+    use super::{Cell, Frame, Rgb};
+
+    #[test]
+    fn new_frame_is_blank_and_sized() {
+        let f = Frame::new(3, 2);
+        assert_eq!((f.width(), f.height()), (3, 2));
+        assert_eq!(f.get(2, 1), Some(&Cell::BLANK));
+        assert_matches!(f.get(3, 0), None);
+        assert_matches!(f.get(0, 2), None);
+    }
+
+    #[test]
+    fn out_of_range_set_is_ignored() {
+        let mut f = Frame::new(2, 2);
+        let cell = Cell {
+            ch: 'x',
+            ..Cell::BLANK
+        };
+        f.set(2, 0, cell);
+        f.set(0, 2, cell);
+        assert_eq!(f, Frame::new(2, 2));
+    }
+
+    #[test]
+    fn put_str_clips_at_right_edge() {
+        let mut f = Frame::new(4, 1);
+        let red = Rgb { r: 255, g: 0, b: 0 };
+        f.put_str(2, 0, "abc", Some(red), None);
+        assert_eq!(f.to_text(), "  ab\n");
+        assert_eq!(f.get(3, 0).and_then(|c| c.fg), Some(red));
+    }
+
+    #[test]
+    fn clear_resets_cells() {
+        let mut f = Frame::new(2, 1);
+        f.put_str(0, 0, "ab", None, None);
+        f.clear();
+        assert_eq!(f, Frame::new(2, 1));
+    }
+
+    #[test]
+    fn to_text_has_one_line_per_row() {
+        let mut f = Frame::new(2, 2);
+        f.put_str(0, 1, "hi", None, None);
+        assert_eq!(f.to_text(), "  \nhi\n");
     }
 }

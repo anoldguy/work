@@ -118,6 +118,8 @@ fn name_problem(s: &str) -> Option<&'static str> {
         Some("'.' and '..' are not names")
     } else if s.starts_with('-') {
         Some("cannot start with '-'")
+    } else if s.trim_end_matches('.').eq_ignore_ascii_case(".git") {
+        Some("'.git' is reserved for git metadata")
     } else if !s
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
@@ -314,6 +316,21 @@ mod tests {
             "x".repeat(101).parse::<RepoName>(),
             Err(NameError::RepoName { .. })
         );
+    }
+
+    #[test]
+    fn git_metadata_directory_names_are_rejected_in_any_case() {
+        for bad in [".git", ".GIT", ".Git", ".git.", ".git.."] {
+            assert_matches!(bad.parse::<Org>(), Err(NameError::Org { .. }), "{bad:?}");
+            assert_matches!(
+                bad.parse::<RepoName>(),
+                Err(NameError::RepoName { .. }),
+                "{bad:?}"
+            );
+        }
+        for ok in [".github", "my.git", "x.git", ".gitignore"] {
+            assert!(ok.parse::<RepoName>().is_ok(), "{ok:?}");
+        }
     }
 
     #[test]

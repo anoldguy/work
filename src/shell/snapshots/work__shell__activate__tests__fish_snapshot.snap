@@ -1,0 +1,27 @@
+---
+source: src/shell/activate.rs
+expression: "activation_script(Shell::Fish)"
+---
+set -g __work_sh_commands (command work commands --sh)
+
+function work
+    if test (count $argv) -eq 0
+        command work
+        return
+    end
+
+    set command $argv[1]
+    set -e argv[1]
+
+    if contains -- "$command" $__work_sh_commands
+        # Capture first, eval second. Eval of nothing succeeds, so a failed
+        # resolution would otherwise report status 0 and let a chained command
+        # run in the wrong directory. set preserves the substitution's status.
+        set -l script (command "work" "sh-$command" $argv)
+        or return $status
+        eval $script
+        return $status
+    end
+
+    command "work" "$command" $argv
+end

@@ -1,6 +1,7 @@
 //! [`SecretToken`], the git auth header, and redaction.
 
 use std::fmt;
+use std::marker::PhantomData;
 
 use crate::domain::Domain;
 
@@ -51,8 +52,11 @@ impl fmt::Debug for SecretToken {
 #[derive(Debug)]
 pub struct GitAuth<'t> {
     host: Domain,
-    token: &'t SecretToken,
     header_b64: SecretToken,
+    /// Redaction forms, longest first, computed once.
+    forms: Vec<String>,
+    /// Ties the auth to the token it was derived from.
+    token: PhantomData<&'t SecretToken>,
 }
 
 impl<'t> GitAuth<'t> {
@@ -60,8 +64,15 @@ impl<'t> GitAuth<'t> {
     /// `base64("x-access-token:" + token)`.
     #[must_use]
     pub fn new(host: Domain, token: &'t SecretToken) -> Self {
-        let _ = (host, token);
-        unimplemented!("W1.4")
+        let credential = format!("{BASIC_USER}:{}", token.expose());
+        let header_b64 = SecretToken(base64_encode(credential.as_bytes()));
+        let forms = redaction_forms(&[token]);
+        Self {
+            host,
+            header_b64,
+            forms,
+            token: PhantomData,
+        }
     }
 
     /// The host the header is scoped to.
@@ -80,7 +91,7 @@ impl<'t> GitAuth<'t> {
     /// `***`. Apply to every line of git output before it is shown.
     #[must_use]
     pub fn redact(&self, line: &str) -> String {
-        redact(line, &[self.token])
+        apply_redaction(line, &self.forms)
     }
 }
 
@@ -89,13 +100,144 @@ impl<'t> GitAuth<'t> {
 /// secret)`).
 #[must_use]
 pub fn redact(line: &str, secrets: &[&SecretToken]) -> String {
-    let _ = (line, secrets);
-    unimplemented!("W1.4")
+    apply_redaction(line, &redaction_forms(secrets))
+}
+
+/// Every form of each secret to scrub, longest first and deduplicated.
+fn redaction_forms(secrets: &[&SecretToken]) -> Vec<String> {
+    let mut forms: Vec<String> = secrets
+        .iter()
+        .flat_map(|secret| {
+            let raw = secret.expose();
+            [
+                base64_encode(format!("{BASIC_USER}:{raw}").as_bytes()),
+                base64_encode(raw.as_bytes()),
+                raw.to_owned(),
+            ]
+        })
+        .collect();
+    // Longest first so a longer form is never half-eaten by a shorter one.
+    forms.sort_by_key(|form| std::cmp::Reverse(form.len()));
+    forms.dedup();
+    forms
+}
+
+fn apply_redaction(line: &str, forms: &[String]) -> String {
+    forms.iter().fold(line.to_owned(), |text, form| {
+        text.replace(form.as_str(), "***")
+    })
+}
+
+/// The basic-auth user name GitHub accepts for token authentication.
+const BASIC_USER: &str = "x-access-token";
+
+const BASE64_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Standard RFC 4648 base64 with padding.
+fn base64_encode(input: &[u8]) -> String {
+    let sextet = |n: u32, shift: u32| char::from(BASE64_ALPHABET[(n >> shift & 0x3f) as usize]);
+    input
+        .chunks(3)
+        .flat_map(|chunk| {
+            let n = chunk
+                .iter()
+                .enumerate()
+                .fold(0u32, |acc, (i, &b)| acc | u32::from(b) << (16 - 8 * i));
+            [
+                Some(sextet(n, 18)),
+                Some(sextet(n, 12)),
+                Some(if chunk.len() > 1 { sextet(n, 6) } else { '=' }),
+                Some(if chunk.len() > 2 { sextet(n, 0) } else { '=' }),
+            ]
+        })
+        .flatten()
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::SecretToken;
+    use std::assert_matches;
+
+    use proptest::prelude::*;
+
+    use super::{GitAuth, SecretToken, base64_encode, redact};
+    use crate::domain::Domain;
+    use crate::env::EnvSnapshot;
+
+    #[test]
+    fn base64_matches_rfc4648_vectors() {
+        for (plain, encoded) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64_encode(plain.as_bytes()), encoded);
+        }
+    }
+
+    #[test]
+    fn git_auth_header_is_basic_x_access_token() {
+        let token = SecretToken::new("gho_abc").expect("valid");
+        let host = "github.com".parse::<Domain>().expect("valid domain");
+        let auth = GitAuth::new(host, &token);
+        assert_eq!(
+            auth.header_b64().expose(),
+            base64_encode(b"x-access-token:gho_abc")
+        );
+        assert_eq!(auth.host().as_str(), "github.com");
+    }
+
+    #[test]
+    fn redact_removes_raw_and_base64_forms() {
+        let token = SecretToken::new("gho_abc123").expect("valid");
+        let host = "github.com".parse::<Domain>().expect("valid domain");
+        let auth = GitAuth::new(host, &token);
+        let line = format!(
+            "fatal: gho_abc123 Authorization: Basic {} alt {}",
+            auth.header_b64().expose(),
+            base64_encode(b"gho_abc123"),
+        );
+        let out = auth.redact(&line);
+        assert_eq!(out, "fatal: *** Authorization: Basic *** alt ***");
+        assert_eq!(redact(&line, &[&token]), out);
+    }
+
+    #[test]
+    fn env_snapshot_debug_hides_the_token() {
+        let env = EnvSnapshot {
+            github_token: SecretToken::new("ghp_topsecretvalue"),
+            ..EnvSnapshot::default()
+        };
+        assert_matches!(env.github_token, Some(_));
+        assert!(!format!("{env:?}").contains("topsecretvalue"));
+    }
+
+    proptest! {
+        #[test]
+        fn redacted_output_never_contains_the_token(
+            raw in "[A-Za-z0-9_]{6,40}",
+            before in ".{0,40}",
+            after in ".{0,40}",
+            use_b64 in any::<bool>(),
+        ) {
+            let token = SecretToken::new(&raw).expect("valid token");
+            let host = "github.com".parse::<Domain>().expect("valid domain");
+            let auth = GitAuth::new(host, &token);
+            let middle = if use_b64 {
+                auth.header_b64().expose().to_owned()
+            } else {
+                raw.clone()
+            };
+            let out = auth.redact(&format!("{before}{raw} {middle}{after}"));
+            prop_assert!(!out.contains(&raw));
+            prop_assert!(!out.contains(auth.header_b64().expose()));
+        }
+    }
 
     #[test]
     fn new_trims_and_rejects_blank_or_split_tokens() {
