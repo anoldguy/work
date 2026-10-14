@@ -2,7 +2,7 @@
 
 use std::process::ExitCode;
 
-use crate::cli::{ActivateArgs, CommandsArgs};
+use crate::cli::ActivateArgs;
 use crate::env::EnvSnapshot;
 use crate::error::Error;
 use crate::shell::{activation_script, detect};
@@ -22,16 +22,13 @@ pub fn version(ui: &mut Ui) -> Result<ExitCode, Error> {
 }
 
 /// `commands --sh`: prints [`SH_COMMANDS`], one per line, and nothing else.
+/// The parser rejects `commands` without `--sh`, so there is nothing to
+/// check here.
 ///
 /// # Errors
 ///
-/// A usage error when `--sh` is missing; a broken pipe.
-pub fn commands(ui: &mut Ui, CommandsArgs { sh }: CommandsArgs) -> Result<ExitCode, Error> {
-    if !sh {
-        return Err(Error::Usage(
-            "missing required argument '--sh' (see 'work commands --help')".to_owned(),
-        ));
-    }
+/// A broken pipe.
+pub fn commands(ui: &mut Ui) -> Result<ExitCode, Error> {
     for name in SH_COMMANDS {
         ui.stdout_line(name)?;
     }
@@ -48,7 +45,7 @@ pub fn commands(ui: &mut Ui, CommandsArgs { sh }: CommandsArgs) -> Result<ExitCo
 pub fn activate(
     env: &EnvSnapshot,
     ui: &mut Ui,
-    ActivateArgs { shell }: ActivateArgs,
+    ActivateArgs { shell }: &ActivateArgs,
 ) -> Result<ExitCode, Error> {
     let shell = shell.unwrap_or_else(|| detect(env));
     // The embedded scripts end with exactly one newline, which `stdout_line`

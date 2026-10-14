@@ -1,7 +1,17 @@
-//! Display-width helpers for terminal text (pure, std-only).
+//! Display-width and wording helpers for terminal text (pure, std-only).
 //!
 //! Widths are conservative: never less than a terminal will use, so a line
 //! measured, clipped or truncated with these cannot wrap.
+
+/// `one` when `n` is 1, otherwise `many`: `plural(2, "repo", "repos")`.
+#[must_use]
+pub(crate) fn plural<'w, N: Copy + PartialEq + From<u8>>(
+    n: N,
+    one: &'w str,
+    many: &'w str,
+) -> &'w str {
+    if n == N::from(1) { one } else { many }
+}
 
 /// Conservative terminal columns for `c`.
 ///
@@ -67,7 +77,14 @@ pub(crate) fn truncate(text: &str, width: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{char_width, clip, display_width, pad_to, truncate};
+    use super::{char_width, clip, display_width, pad_to, plural, truncate};
+
+    #[test]
+    fn plural_picks_the_singular_only_for_one() {
+        assert_eq!(plural(1_usize, "repo", "repos"), "repo");
+        assert_eq!(plural(0_u32, "repo", "repos"), "repos");
+        assert_eq!(plural(2_u64, "repo", "repos"), "repos");
+    }
 
     #[test]
     fn widths_count_wide_and_combining_chars() {

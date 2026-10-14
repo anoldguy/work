@@ -1,0 +1,11 @@
+---
+source: tests/cli/invariants.rs
+expression: help(args)
+---
+Log in with gh
+
+Usage: work auth login [OPTIONS]
+
+Options:
+      --domain <DOMAIN>  GitHub host [default: github.com]
+  -h, --help             Print help

@@ -48,8 +48,7 @@ pub struct ApiCall {
 /// An unscripted domain fails `viewer` with HTTP 404; an unscripted org has
 /// no repos. A scripted failure returns `ApiError::Status` with that status.
 ///
-/// The scripted data's private storage is W2.8's choice; only the builder
-/// and inspection methods are contract.
+/// Scripted through the builder methods; inspected through the call log.
 #[derive(Debug, Default)]
 pub struct FakeGitHub {
     log: Mutex<Vec<ApiCall>>,
@@ -221,7 +220,7 @@ impl GitHubApi for FakeGitHub {
 }
 
 /// A `GitHubApi` for tests that must never touch the API (for example the
-/// shared pipeline in W3.3). Every method panics.
+/// shared resolve pipeline). Every method panics.
 #[derive(Debug, Default)]
 pub struct NullGitHub;
 

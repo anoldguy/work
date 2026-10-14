@@ -52,7 +52,7 @@ const MAX_ERROR_BODY: u64 = 4096;
 /// the API base's origin, for at most `MAX_PAGES` pages.
 #[derive(Debug)]
 pub struct HttpGitHub {
-    /// Built on first request (by W2.8's private `agent()`), so constructing
+    /// Built on first request (by the private `agent()`), so constructing
     /// the client costs nothing for commands that never call the API.
     agent: OnceLock<ureq::Agent>,
     bases: BTreeMap<Domain, ApiUrl>,

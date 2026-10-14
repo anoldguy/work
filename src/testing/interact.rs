@@ -1,4 +1,4 @@
-//! [`ScriptedInteraction`]: a scripted `Interaction` (filled in by W1.8).
+//! [`ScriptedInteraction`]: a scripted `Interaction`.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, PoisonError};

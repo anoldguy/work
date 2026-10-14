@@ -13,7 +13,6 @@ use crate::cache::Cache;
 use crate::cache::refresh::{Freshness, load_or_refresh};
 use crate::cli::{CdArgs, ResolveArgs};
 use crate::commands::resolve::{Target, ensure_cloned, record_access, resolve_target};
-use crate::config::ConfigError;
 use crate::error::Error;
 use crate::platform::{self, EditorCmd};
 use crate::shell::{self, ShellError};
@@ -42,9 +41,9 @@ enum Local {
 /// # Errors
 ///
 /// Not wrapped, resolution, clone, or cache failures.
-pub fn cd(app: &mut App, args: CdArgs, via: Invocation) -> Result<ExitCode, Error> {
+pub fn cd(app: &mut App, args: &CdArgs, via: Invocation) -> Result<ExitCode, Error> {
     require_wrapper(app, via)?;
-    let Some(args) = args.into_resolve() else {
+    let Some(query) = &args.query else {
         let dir = app.config.work_dir();
         // Check the path can be printed before creating anything.
         let script = shell::cd_script(dir)?;
@@ -55,7 +54,7 @@ pub fn cd(app: &mut App, args: CdArgs, via: Invocation) -> Result<ExitCode, Erro
         app.ui.stdout_line(&script)?;
         return Ok(ExitCode::SUCCESS);
     };
-    let (mut cache, target) = resolve(app, &args)?;
+    let (mut cache, target) = resolve(app, query, args.pick)?;
     // Check the path can be printed before cloning anything.
     let script = shell::cd_script(&target.path)?;
     ensure_cloned(app, &cache, &target)?;
@@ -69,14 +68,10 @@ pub fn cd(app: &mut App, args: CdArgs, via: Invocation) -> Result<ExitCode, Erro
 /// # Errors
 ///
 /// Not wrapped, resolution, clone, or cache failures.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "lib.rs dispatches args by value; the shared pipeline only borrows them"
-)]
-pub fn on(app: &mut App, args: ResolveArgs, via: Invocation) -> Result<ExitCode, Error> {
+pub fn on(app: &mut App, args: &ResolveArgs, via: Invocation) -> Result<ExitCode, Error> {
     require_wrapper(app, via)?;
     let editor = script_editor(app)?;
-    let (mut cache, target) = resolve(app, &args)?;
+    let (mut cache, target) = resolve(app, &args.query, args.pick)?;
     // Check the path can be printed before cloning anything.
     let script = shell::on_script(&target.path, editor.as_str())?;
     ensure_cloned(app, &cache, &target)?;
@@ -90,12 +85,8 @@ pub fn on(app: &mut App, args: ResolveArgs, via: Invocation) -> Result<ExitCode,
 /// # Errors
 ///
 /// Resolution, clone, editor, or cache failures.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "lib.rs dispatches args by value; the shared pipeline only borrows them"
-)]
-pub fn edit(app: &mut App, args: ResolveArgs) -> Result<ExitCode, Error> {
-    let (mut cache, target) = prepare(app, &args, Local::Clone)?;
+pub fn edit(app: &mut App, args: &ResolveArgs) -> Result<ExitCode, Error> {
+    let (mut cache, target) = prepare(app, args, Local::Clone)?;
     // The editor inherits stdout: pending output must land first.
     app.ui.flush()?;
     platform::spawn_editor(&EditorCmd::from_env(&app.env), &target.path)?;
@@ -108,12 +99,8 @@ pub fn edit(app: &mut App, args: ResolveArgs) -> Result<ExitCode, Error> {
 /// # Errors
 ///
 /// Resolution, clone, or cache failures.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "lib.rs dispatches args by value; the shared pipeline only borrows them"
-)]
-pub fn clone(app: &mut App, args: ResolveArgs) -> Result<ExitCode, Error> {
-    let (mut cache, target) = prepare(app, &args, Local::Clone)?;
+pub fn clone(app: &mut App, args: &ResolveArgs) -> Result<ExitCode, Error> {
+    let (mut cache, target) = prepare(app, args, Local::Clone)?;
     record_access(app, &mut cache, &target)?;
     app.ui.stdout_line(&target.path.display().to_string())?;
     Ok(ExitCode::SUCCESS)
@@ -124,12 +111,8 @@ pub fn clone(app: &mut App, args: ResolveArgs) -> Result<ExitCode, Error> {
 /// # Errors
 ///
 /// Resolution, opener, or cache failures.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "lib.rs dispatches args by value; the shared pipeline only borrows them"
-)]
-pub fn browse(app: &mut App, args: ResolveArgs) -> Result<ExitCode, Error> {
-    let (mut cache, target) = prepare(app, &args, Local::NotNeeded)?;
+pub fn browse(app: &mut App, args: &ResolveArgs) -> Result<ExitCode, Error> {
+    let (mut cache, target) = prepare(app, args, Local::NotNeeded)?;
     app.ui.flush()?;
     platform::open_url(&cache.repos[target.index].html_url)?;
     record_access(app, &mut cache, &target)?;
@@ -141,12 +124,8 @@ pub fn browse(app: &mut App, args: ResolveArgs) -> Result<ExitCode, Error> {
 /// # Errors
 ///
 /// Resolution, clone, opener, or cache failures.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "lib.rs dispatches args by value; the shared pipeline only borrows them"
-)]
-pub fn open(app: &mut App, args: ResolveArgs) -> Result<ExitCode, Error> {
-    let (mut cache, target) = prepare(app, &args, Local::Clone)?;
+pub fn open(app: &mut App, args: &ResolveArgs) -> Result<ExitCode, Error> {
+    let (mut cache, target) = prepare(app, args, Local::Clone)?;
     app.ui.flush()?;
     platform::open_dir(&target.path)?;
     record_access(app, &mut cache, &target)?;
@@ -167,31 +146,28 @@ fn require_wrapper(app: &App, via: Invocation) -> Result<(), ShellError> {
 /// The editor for `sh-on`'s script. It is inserted verbatim as a command
 /// fragment, so a control character (a newline above all) would split the
 /// one-line script and run the rest as a separate command: reject it.
-fn script_editor(app: &App) -> Result<EditorCmd, Error> {
+fn script_editor(app: &App) -> Result<EditorCmd, ShellError> {
     let editor = EditorCmd::from_env(&app.env);
     if editor.as_str().chars().any(char::is_control) {
-        return Err(ConfigError::InvalidPath {
-            key: "editor command",
+        return Err(ShellError::ControlCharInEditor {
             given: editor.as_str().to_owned(),
-            reason: "control characters are not allowed; check $WORK_EDITOR and $EDITOR",
-        }
-        .into());
+        });
     }
     Ok(editor)
 }
 
-/// Loads the cache (refreshing it when needed) and resolves `args`.
+/// Loads the cache (refreshing it when needed) and resolves `query`.
 /// Nothing is cloned or recorded yet.
-fn resolve(app: &mut App, args: &ResolveArgs) -> Result<(Cache, Target), Error> {
+fn resolve(app: &mut App, query: &str, pick: bool) -> Result<(Cache, Target), Error> {
     let mut cache = load_or_refresh(app, Freshness::AutoUpdate)?;
-    let target = resolve_target(app, &mut cache, args)?;
+    let target = resolve_target(app, &mut cache, query, pick)?;
     Ok((cache, target))
 }
 
 /// [`resolve`], then clones the result when `local` asks for it. Nothing is
 /// recorded yet.
 fn prepare(app: &mut App, args: &ResolveArgs, local: Local) -> Result<(Cache, Target), Error> {
-    let (cache, target) = resolve(app, args)?;
+    let (cache, target) = resolve(app, &args.query, args.pick)?;
     if local == Local::Clone {
         ensure_cloned(app, &cache, &target)?;
     }

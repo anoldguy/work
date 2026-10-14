@@ -317,6 +317,19 @@ mod tests {
     }
 
     #[test]
+    fn wrapper_usage_errors_name_the_visible_command() {
+        for (args, hint) in [
+            (&["work", "sh-on"][..], "(see 'work on --help')"),
+            (&["work", "sh-cd", "a", "b"], "(see 'work cd --help')"),
+            (&["work", "sh-on", "--bogus", "x"], "(see 'work on --help')"),
+        ] {
+            let text = usage_text(args);
+            assert!(text.ends_with(hint), "{text}");
+            assert!(!text.contains("sh-"), "{text}");
+        }
+    }
+
+    #[test]
     fn newlines_in_arguments_do_not_cut_the_message() {
         let text = usage_text(&["work", "fr\nob"]);
         assert!(text.contains("fr\\nob"), "{text}");

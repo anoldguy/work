@@ -23,7 +23,7 @@ const STYLE_SALT: u64 = 0xA076_1D64_78BD_642F;
 /// # Errors
 ///
 /// `ShellError::UnknownStyle` (a list error), or terminal failures.
-pub fn run(ui: &mut Ui, args: AboutArgs) -> Result<ExitCode, Error> {
+pub fn run(ui: &mut Ui, args: &AboutArgs) -> Result<ExitCode, Error> {
     let AboutArgs { style } = args;
     let seed = entropy_seed();
     let style = pick_style(style.as_deref(), seed)?;

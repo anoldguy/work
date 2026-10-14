@@ -39,12 +39,12 @@ pub fn login_logout(gh: &dyn Gh, ui: &mut Ui, action: &AuthAction) -> Result<(),
 ///
 /// gh failures for `login`/`logout`; a missing `gh` for `status`; a broken
 /// pipe.
-pub fn run(app: &mut App, args: AuthArgs) -> Result<ExitCode, Error> {
+pub fn run(app: &mut App, args: &AuthArgs) -> Result<ExitCode, Error> {
     let AuthArgs { action } = args;
     match action {
         AuthAction::Status => status(app),
         other => {
-            login_logout(&*app.gh, &mut app.ui, &other)?;
+            login_logout(&*app.gh, &mut app.ui, other)?;
             Ok(ExitCode::SUCCESS)
         }
     }

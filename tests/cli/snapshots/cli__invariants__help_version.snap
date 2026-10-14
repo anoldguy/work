@@ -1,0 +1,10 @@
+---
+source: tests/cli/invariants.rs
+expression: help(args)
+---
+Print the version
+
+Usage: work version
+
+Options:
+  -h, --help  Print help

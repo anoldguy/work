@@ -1,0 +1,14 @@
+---
+source: tests/cli/invariants.rs
+expression: help(args)
+---
+List cached repositories
+
+Usage: work list [OPTIONS] [QUERY]
+
+Arguments:
+  [QUERY]  Rank repositories against this query
+
+Options:
+      --filter  Plain substring match on the full slug, without frecency
+  -h, --help    Print help

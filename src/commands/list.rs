@@ -19,7 +19,7 @@ use crate::ui::Ui;
 /// # Errors
 ///
 /// Cache failures, or a broken pipe.
-pub fn run(app: &mut App, args: ListArgs) -> Result<ExitCode, Error> {
+pub fn run(app: &mut App, args: &ListArgs) -> Result<ExitCode, Error> {
     let ListArgs {
         query,
         filter: substring,
@@ -28,12 +28,12 @@ pub fn run(app: &mut App, args: ListArgs) -> Result<ExitCode, Error> {
     let cache = load_or_refresh(app, Freshness::AutoUpdate)?;
     let lines: Vec<String> = match query {
         None => sorted_slugs(&cache.repos),
-        Some(needle) if substring => filter(&cache.repos, &needle)
+        Some(needle) if *substring => filter(&cache.repos, needle)
             .into_iter()
             .map(|i| cache.repos[i].slug.to_string())
             .collect(),
         Some(raw) => {
-            let q = Query::parse(&raw)?;
+            let q = Query::parse(raw)?;
             let now = app.now;
             search(&cache.repos, &q, |s| cache.frecency.score(s, now))
                 .into_iter()

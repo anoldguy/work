@@ -129,7 +129,7 @@ impl Ui {
     /// Prints a one-line warning to stderr at once, after flushing pending
     /// stdout. Never fails; a broken stderr loses the warning. (During
     /// `with_progress` the `&mut Ui` borrow is held, so warnings from workers
-    /// arrive as events and W1.7 flushes them through `deferred`.)
+    /// arrive as events and are flushed through `deferred`.)
     pub fn warn(&mut self, message: &str) {
         debug_assert!(
             !message.contains('\n'),

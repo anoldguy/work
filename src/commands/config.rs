@@ -40,7 +40,7 @@ fn file_state(file: &Path) -> &'static str {
 /// inherited.
 ///
 /// Prints nothing itself, so there is no buffered `Ui` output to flush
-/// before the editor takes the terminal (the contract passes no `Ui`).
+/// before the editor takes the terminal (it takes no `Ui`).
 ///
 /// # Errors
 ///
@@ -126,7 +126,12 @@ pub fn set_default(app: &mut App, domain: Option<Domain>) -> Result<ExitCode, Er
     } = app;
     let picked = match domain {
         Some(domain) => Some(domain),
-        None => pick_domain(config, ui)?,
+        None => pick_domain(
+            config,
+            ui,
+            "config default without a domain",
+            "Default domain",
+        )?,
     };
     let Some(chosen) = picked else {
         ui.stderr_line("no change")?;
@@ -139,21 +144,30 @@ pub fn set_default(app: &mut App, domain: Option<Domain>) -> Result<ExitCode, Er
     Ok(ExitCode::SUCCESS)
 }
 
-/// Asks which configured domain to make the default; `None` when cancelled.
-fn pick_domain(config: &Config, ui: &mut Ui) -> Result<Option<Domain>, Error> {
+/// Asks which configured domain to use, under `prompt`; `None` when
+/// cancelled. Shared by `config default` and `favorite`.
+///
+/// # Errors
+///
+/// [`ConfigError::NoDomains`] when no domain is configured (the picker
+/// would have nothing to offer), [`UiError::NotInteractive`] naming `what`
+/// without a TTY, or picker failures.
+pub(crate) fn pick_domain(
+    config: &Config,
+    ui: &mut Ui,
+    what: &'static str,
+    prompt: &str,
+) -> Result<Option<Domain>, Error> {
     let domains: Vec<&Domain> = config.domains().keys().collect();
     if domains.is_empty() {
         return Err(ConfigError::NoDomains.into());
     }
     let interact = ui.interact();
     if !interact.is_interactive() {
-        return Err(UiError::NotInteractive {
-            what: "config default without a domain",
-        }
-        .into());
+        return Err(UiError::NotInteractive { what }.into());
     }
     let labels: Vec<&str> = domains.iter().map(|d| d.as_str()).collect();
-    let picked = interact.pick_one("Default domain", &labels)?;
+    let picked = interact.pick_one(prompt, &labels)?;
     Ok(picked
         .and_then(|index| domains.get(index))
         .map(|d| (*d).clone()))

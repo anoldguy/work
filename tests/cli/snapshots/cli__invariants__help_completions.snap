@@ -1,0 +1,23 @@
+---
+source: tests/cli/invariants.rs
+expression: help(args)
+---
+Print or install shell completions
+
+Usage: work completions [OPTIONS] [SHELL]
+
+Arguments:
+  [SHELL]
+          Shell (default: detected from $SHELL)
+
+          Possible values:
+          - bash: GNU bash
+          - zsh:  zsh
+          - fish: fish
+
+Options:
+      --install
+          Write the script to the shell's completion directory
+
+  -h, --help
+          Print help (see a summary with '-h')

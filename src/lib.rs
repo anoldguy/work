@@ -145,12 +145,12 @@ enum AppCommand {
 fn stage1(command: Command, env: &env::EnvSnapshot, ui: &mut ui::Ui) -> Result<Stage, Error> {
     let next = match command {
         Command::Version => return meta::version(ui).map(Stage::Done),
-        Command::Commands(args) => return meta::commands(ui, args).map(Stage::Done),
-        Command::Activate(args) => return meta::activate(env, ui, args).map(Stage::Done),
-        Command::About(args) => return about::run(ui, args).map(Stage::Done),
+        Command::Commands(_) => return meta::commands(ui).map(Stage::Done),
+        Command::Activate(args) => return meta::activate(env, ui, &args).map(Stage::Done),
+        Command::About(args) => return about::run(ui, &args).map(Stage::Done),
         Command::Completions(args) => {
             let locations = Locations::from_env(env)?;
-            return completions::run(env, &locations, ui, args).map(Stage::Done);
+            return completions::run(env, &locations, ui, &args).map(Stage::Done);
         }
         Command::Config(args) if args.edit => {
             return config_cmd::edit(env, &Locations::from_env(env)?).map(Stage::Done);
@@ -196,21 +196,21 @@ fn stage1(command: Command, env: &env::EnvSnapshot, ui: &mut ui::Ui) -> Result<S
 
 fn stage2(app: &mut app::App, command: AppCommand) -> Result<ExitCode, Error> {
     match command {
-        AppCommand::Cd(args, via) => nav::cd(app, args, via),
-        AppCommand::On(args, via) => nav::on(app, args, via),
-        AppCommand::Edit(args) => nav::edit(app, args),
-        AppCommand::Clone(args) => nav::clone(app, args),
-        AppCommand::Browse(args) => nav::browse(app, args),
-        AppCommand::Open(args) => nav::open(app, args),
-        AppCommand::Pull(args) => sync_cmd::pull(app, args),
-        AppCommand::Sync(args) => sync_cmd::sync(app, args),
-        AppCommand::List(args) => list::run(app, args),
-        AppCommand::Update(args) => update::run(app, args),
-        AppCommand::Favorite(args) => favorite::run(app, args),
-        AppCommand::Setup(args) => setup::run(app, args),
+        AppCommand::Cd(args, via) => nav::cd(app, &args, via),
+        AppCommand::On(args, via) => nav::on(app, &args, via),
+        AppCommand::Edit(args) => nav::edit(app, &args),
+        AppCommand::Clone(args) => nav::clone(app, &args),
+        AppCommand::Browse(args) => nav::browse(app, &args),
+        AppCommand::Open(args) => nav::open(app, &args),
+        AppCommand::Pull(args) => sync_cmd::pull(app, &args),
+        AppCommand::Sync(args) => sync_cmd::sync(app, &args),
+        AppCommand::List(args) => list::run(app, &args),
+        AppCommand::Update(args) => update::run(app, &args),
+        AppCommand::Favorite(args) => favorite::run(app, &args),
+        AppCommand::Setup(args) => setup::run(app, &args),
         AppCommand::ConfigShow => config_cmd::show(app),
         AppCommand::ConfigDefault(domain) => config_cmd::set_default(app, domain),
-        AppCommand::Auth(args) => auth_cmd::run(app, args),
+        AppCommand::Auth(args) => auth_cmd::run(app, &args),
     }
 }
 
@@ -223,7 +223,8 @@ fn print_block(ui: &mut ui::Ui, text: &str) -> Result<(), Error> {
 
 /// `work` followed by the subcommands `args` reached, for the
 /// `(see '<path> --help')` hint. Stops at the first word that is not a
-/// subcommand, so untrusted words never appear in the hint.
+/// subcommand, so untrusted words never appear in the hint. Hidden
+/// `sh-<cmd>` wrapper subcommands are shown as `<cmd>`.
 pub(crate) fn help_path<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> String {
     let mut path = String::from("work");
     let mut command = Cli::command();
@@ -238,8 +239,15 @@ pub(crate) fn help_path<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> String {
             }
             break;
         };
+        // The wrapper runs hidden `sh-<cmd>` for the user's `<cmd>`: name
+        // the command they typed.
+        let name = sub.get_name();
+        let shown = name
+            .strip_prefix("sh-")
+            .filter(|_| sub.is_hide_set())
+            .unwrap_or(name);
         path.push(' ');
-        path.push_str(sub.get_name());
+        path.push_str(shown);
         command = sub.clone();
     }
     path

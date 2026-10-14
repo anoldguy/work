@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use std::slice;
 
 use crate::app::App;
-use crate::auth::{AuthError, GitAuth, Tokens};
+use crate::auth::Tokens;
 use crate::cache::refresh::{Freshness, load_or_refresh};
 use crate::cli::{ResolveArgs, SyncArgs};
 use crate::commands::resolve::{ResolveError, record_access, resolve_target, short_name};
@@ -23,10 +23,9 @@ const SYNC_TITLE: &str = "Syncing repositories";
 ///
 /// `CacheError::Missing`, resolution failures, `ResolveError::NotCloned`, or
 /// `SyncError::PullFailed`.
-pub fn pull(app: &mut App, args: ResolveArgs) -> Result<ExitCode, Error> {
+pub fn pull(app: &mut App, args: &ResolveArgs) -> Result<ExitCode, Error> {
     let mut cache = load_or_refresh(app, Freshness::NoUpdate)?;
-    let target = resolve_target(app, &mut cache, &args)?;
-    drop(args);
+    let target = resolve_target(app, &mut cache, &args.query, args.pick)?;
     let slug = &cache.repos[target.index].slug;
     let name = short_name(slug, app.config.default_domain());
     if !target.path.join(".git").exists() {
@@ -34,11 +33,7 @@ pub fn pull(app: &mut App, args: ResolveArgs) -> Result<ExitCode, Error> {
     }
     let domain = slug.domain();
     let tokens = Tokens::resolve(&*app.gh, &app.env.github_token, slice::from_ref(domain));
-    let auth = match tokens.get(domain) {
-        Ok((token, _)) => Some(GitAuth::new(domain.clone(), token)),
-        Err(AuthError::InvalidEnvToken) => return Err(AuthError::InvalidEnvToken.into()),
-        Err(_) => None,
-    };
+    let auth = tokens.git_auth(domain)?;
     app.ui.flush()?;
     let git = &*app.git;
     let path = target.path.as_path();
@@ -61,11 +56,7 @@ pub fn pull(app: &mut App, args: ResolveArgs) -> Result<ExitCode, Error> {
 ///
 /// `SyncError::WorkDir`, or `SyncError::SomeFailed` (after every line is
 /// printed).
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "SyncArgs has only Copy fields; the signature is fixed by the dispatcher"
-)]
-pub fn sync(app: &mut App, args: SyncArgs) -> Result<ExitCode, Error> {
+pub fn sync(app: &mut App, args: &SyncArgs) -> Result<ExitCode, Error> {
     let work_dir = app.config.work_dir().to_path_buf();
     // `find_repos` returns paths under `work_dir`; `sync_all` wants them relative.
     let repos: Vec<PathBuf> = find_repos(&work_dir)?

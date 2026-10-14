@@ -8,26 +8,26 @@
 use std::collections::BTreeMap;
 use std::sync::mpsc;
 
-use crate::text::{display_width, pad_to, truncate};
+use crate::text::{display_width, pad_to, plural, truncate};
 
 /// What a progress display counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Noun {
-    /// Org jobs (`update`); personal jobs count as one each.
-    Orgs,
+    /// Repo listings (`update`): each domain's personal listing plus one
+    /// per selected org.
+    Sources,
     /// Repositories (`sync`).
     Repositories,
 }
 
 impl Noun {
-    /// The word for `n` items: `org`/`orgs`, `repository`/`repositories`.
+    /// The word for `n` items: `source`/`sources`,
+    /// `repository`/`repositories`.
     #[must_use]
-    pub const fn word(self, n: u32) -> &'static str {
-        match (self, n) {
-            (Self::Orgs, 1) => "org",
-            (Self::Orgs, _) => "orgs",
-            (Self::Repositories, 1) => "repository",
-            (Self::Repositories, _) => "repositories",
+    pub fn word(self, n: u32) -> &'static str {
+        match self {
+            Self::Sources => plural(n, "source", "sources"),
+            Self::Repositories => plural(n, "repository", "repositories"),
         }
     }
 }
@@ -73,7 +73,7 @@ impl Step {
 }
 
 /// The first line of a live display, e.g.
-/// `Updating 12 orgs across 2 domains  [7/12]` or
+/// `Updating 12 sources across 2 domains  [7/12]` or
 /// `Syncing 40 repositories  [12/40]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
@@ -400,7 +400,7 @@ impl ProgressView {
     }
 
     /// The line left on stderr once the display is cleared, e.g.
-    /// `✓ 12 orgs · 1,204 repos · 1 failed`. `None` if nothing ran.
+    /// `✓ 12 sources · 1,204 repos · 1 failed`. `None` if nothing ran.
     #[must_use]
     pub fn summary_line(&self) -> Option<String> {
         let finished = self.finished();
@@ -413,7 +413,7 @@ impl ProgressView {
             None => format!("{count} finished"),
         }];
         if let Some(repos) = self.repos {
-            let unit = if repos == 1 { "repo" } else { "repos" };
+            let unit = plural(repos, "repo", "repos");
             parts.push(format!("{} {unit}", group(repos)));
         }
         if !self.failed.is_empty() {
@@ -437,7 +437,7 @@ impl ProgressView {
 fn detail_text(detail: &TaskDetail) -> String {
     match detail {
         TaskDetail::Page { page, repos } => {
-            let unit = if *repos == 1 { "repo" } else { "repos" };
+            let unit = plural(*repos, "repo", "repos");
             format!("page {page} · {} {unit}", group(u64::from(*repos)))
         }
         TaskDetail::Step(step) => step.label().to_owned(),
@@ -475,7 +475,7 @@ mod tests {
         UiEvent::Header(Header {
             verb: Verb::Updating,
             total,
-            noun: Noun::Orgs,
+            noun: Noun::Sources,
             domains: Some(2),
         })
     }
@@ -519,7 +519,7 @@ mod tests {
         });
     }
 
-    /// The §5.4 example: 12 orgs, 6 done, 1 failed, 3 in flight.
+    /// The §5.4 example: 12 sources, 6 done, 1 failed, 3 in flight.
     fn example(color: bool) -> ProgressView {
         let mut view = ProgressView::new("Updating…", color);
         view.apply(update_header(12));
@@ -565,7 +565,7 @@ mod tests {
     fn header_counts_done_over_total() {
         let mut view = ProgressView::new("Updating…", false);
         view.apply(update_header(12));
-        insta::assert_snapshot!(frame(&view, 80, 24, 0), @r"Updating 12 orgs across 2 domains  [0/12]");
+        insta::assert_snapshot!(frame(&view, 80, 24, 0), @r"Updating 12 sources across 2 domains  [0/12]");
         let mut sync = ProgressView::new("Syncing…", false);
         sync.apply(sync_header(1));
         insta::assert_snapshot!(frame(&sync, 80, 24, 0), @r"Syncing 1 repository  [0/1]");
@@ -584,7 +584,7 @@ mod tests {
         });
         start(&mut view, 2, "acme/bar");
         insta::assert_snapshot!(frame(&view, 80, 24, 1), @r"
-            Updating 2 orgs across 2 domains  [0/2]
+            Updating 2 sources across 2 domains  [0/2]
               ⠙ github.com/acme  page 3 · 1,280 repos
               ⠹ acme/foo         fetching…
               ⠸ acme/bar
@@ -594,7 +594,7 @@ mod tests {
     #[test]
     fn successes_collapse_and_failures_persist() {
         insta::assert_snapshot!(frame(&example(false), 80, 24, 0), @r"
-            Updating 12 orgs across 2 domains  [7/12]
+            Updating 12 sources across 2 domains  [7/12]
               ✓ 6 done · 1 failed
               ✗ ghe.corp.com/infra         HTTP 502 (kept 41 cached repos)
               ⠋ github.com/acme            page 3 · 280 repos
@@ -651,7 +651,7 @@ mod tests {
         let lines = example(false).lines(30, 24, 0);
         assert!(lines.iter().all(|l| display_width(l) <= 29), "{lines:?}");
         insta::assert_snapshot!(lines.join("\n"), @r"
-            Updating 12 orgs across 2 d…
+            Updating 12 sources across …
               ✓ 6 done · 1 failed
               ✗ ghe.corp.com/infra     …
               ⠋ github.com/acme        …
@@ -698,7 +698,7 @@ mod tests {
         assert!(!plain.contains('\x1b'));
         assert!(!example(false).summary_line().expect("ran").contains('\x1b'));
         insta::assert_snapshot!(frame(&example(true), 80, 24, 0).replace('\x1b', "^["), @r"
-            ^[[1mUpdating 12 orgs across 2 domains  [7/12]^[[0m
+            ^[[1mUpdating 12 sources across 2 domains  [7/12]^[[0m
               ^[[32m✓^[[0m 6 done · 1 failed
               ^[[31m✗^[[0m ghe.corp.com/infra         HTTP 502 (kept 41 cached repos)
               ^[[36m⠋^[[0m github.com/acme            page 3 · 280 repos
@@ -712,10 +712,10 @@ mod tests {
         let mut view = example(false);
         ok(&mut view, 7, Some(1004));
         ok(&mut view, 8, None);
-        insta::assert_snapshot!(view.summary_line().expect("ran"), @r"✓ 9 orgs · 1,604 repos · 1 failed");
+        insta::assert_snapshot!(view.summary_line().expect("ran"), @r"✓ 9 sources · 1,604 repos · 1 failed");
         insta::assert_snapshot!(
             example(true).summary_line().expect("ran").replace('\x1b', "^["),
-            @r"^[[32m✓^[[0m 7 orgs · 600 repos · 1 failed"
+            @r"^[[32m✓^[[0m 7 sources · 600 repos · 1 failed"
         );
     }
 

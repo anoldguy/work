@@ -13,6 +13,7 @@ use crate::domain::{Domain, Org};
 use crate::error::Error;
 use crate::gh::GhError;
 use crate::github::ApiError;
+use crate::text::plural;
 use crate::ui::UiError;
 
 /// The domain set up when none is named.
@@ -29,13 +30,16 @@ const DEFAULT_DOMAIN: &str = "github.com";
 ///
 /// `UiError::NotInteractive` without a TTY, gh, token, or config write
 /// failures.
-pub fn run(app: &mut App, args: SetupArgs) -> Result<ExitCode, Error> {
+pub fn run(app: &mut App, args: &SetupArgs) -> Result<ExitCode, Error> {
     if !app.ui.interact().is_interactive() {
         return Err(UiError::NotInteractive { what: "setup" }.into());
     }
-    let domain = match args.domain {
-        Some(domain) => domain,
-        None => DEFAULT_DOMAIN.parse()?,
+    let fallback: Domain;
+    let domain = if let Some(domain) = &args.domain {
+        domain
+    } else {
+        fallback = DEFAULT_DOMAIN.parse()?;
+        &fallback
     };
 
     let mut doc = ConfigDoc::open(&app.locations.config_file)?;
@@ -46,11 +50,11 @@ pub fn run(app: &mut App, args: SetupArgs) -> Result<ExitCode, Error> {
         doc.set_work_dir(&typed)?;
     }
 
-    let has_token = ensure_token(app, &domain)?;
+    let has_token = ensure_token(app, domain)?;
 
     // The first domain becomes the default; a later one never changes it.
     let is_first = app.config.domains().is_empty();
-    doc.add_domain(&domain, is_first)?;
+    doc.add_domain(domain, is_first)?;
     doc.save()?;
     app.config = config::store::load(&app.locations)?;
     app.ui
@@ -59,11 +63,7 @@ pub fn run(app: &mut App, args: SetupArgs) -> Result<ExitCode, Error> {
     if has_token && app.ui.interact().confirm("Fetch repositories now?", true)? {
         let cache = load_or_refresh(app, Freshness::Force { all_orgs: false })?;
         let repos = cache.repos.len();
-        let noun = if repos == 1 {
-            "repository"
-        } else {
-            "repositories"
-        };
+        let noun = plural(repos, "repository", "repositories");
         app.ui.stderr_line(&format!("Cached {repos} {noun}"))?;
     }
     Ok(ExitCode::SUCCESS)
@@ -278,7 +278,7 @@ mod tests {
         fn run(&mut self, domain: Option<&str>) -> Result<ExitCode, Error> {
             run(
                 &mut self.app,
-                SetupArgs {
+                &SetupArgs {
                     domain: domain.map(dom),
                 },
             )

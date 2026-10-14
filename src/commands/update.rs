@@ -8,17 +8,14 @@ use crate::cache::Cache;
 use crate::cache::refresh::{Freshness, load_or_refresh};
 use crate::cli::UpdateArgs;
 use crate::error::Error;
+use crate::text::plural;
 
 /// Forces a refresh, then prints `Cached N repositories across D domains`.
 ///
 /// # Errors
 ///
 /// `CacheError::AllFailed` or store failures.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "the dispatch table fixes the by-value signature"
-)]
-pub fn run(app: &mut App, args: UpdateArgs) -> Result<ExitCode, Error> {
+pub fn run(app: &mut App, args: &UpdateArgs) -> Result<ExitCode, Error> {
     let all_orgs = args.all_orgs;
     let freshness = Freshness::Force { all_orgs };
     let cache = load_or_refresh(app, freshness)?;
@@ -38,12 +35,8 @@ fn summary(cache: &Cache) -> String {
         .len();
     format!(
         "Cached {repos} {} across {domains} {}",
-        if repos == 1 {
-            "repository"
-        } else {
-            "repositories"
-        },
-        if domains == 1 { "domain" } else { "domains" },
+        plural(repos, "repository", "repositories"),
+        plural(domains, "domain", "domains"),
     )
 }
 

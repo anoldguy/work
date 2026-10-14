@@ -346,7 +346,7 @@ mod tests {
         UiEvent::Header(Header {
             verb: Verb::Updating,
             total,
-            noun: Noun::Orgs,
+            noun: Noun::Sources,
             domains: None,
         })
     }
@@ -398,7 +398,7 @@ mod tests {
         assert_eq!(
             screen(&bytes),
             [
-                "✓ 2 orgs · 3 repos · 1 failed",
+                "✓ 2 sources · 3 repos · 1 failed",
                 "warning: org widgets failed: HTTP 502"
             ]
         );
@@ -488,7 +488,7 @@ mod tests {
                     move |sink| {
                         sink.send(header(3));
                         sink.warn("before the crash");
-                        while !seen.contents().contains("Updating 3 orgs") {
+                        while !seen.contents().contains("Updating 3 sources") {
                             thread::yield_now();
                         }
                         panic!("worker boom");

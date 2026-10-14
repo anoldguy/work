@@ -1,0 +1,13 @@
+---
+source: tests/cli/invariants.rs
+expression: help(args)
+---
+Pick favourite organisations for a domain
+
+Usage: work favorite [DOMAIN]
+
+Arguments:
+  [DOMAIN]  Domain to pick favourites for (asks when several are configured)
+
+Options:
+  -h, --help  Print help
