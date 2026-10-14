@@ -56,7 +56,7 @@ impl Ui {
             out: BufWriter::new(Box::new(io::stdout())),
             err: Box::new(io::stderr()),
             deferred: Vec::new(),
-            interact: Box::new(TtyInteraction::new()),
+            interact: Box::new(TtyInteraction::for_env(env)),
         }
     }
 
@@ -252,33 +252,8 @@ mod tests {
     use std::assert_matches;
     use std::io::{self, Write};
 
-    use super::{Interaction, Mode, Ui, UiError};
-    use crate::testing::SharedBuf;
-
-    struct NoInteraction;
-
-    impl Interaction for NoInteraction {
-        fn is_interactive(&self) -> bool {
-            false
-        }
-        fn pick_one(&mut self, _: &str, _: &[&str]) -> Result<Option<usize>, UiError> {
-            Err(UiError::NotInteractive { what: "test" })
-        }
-        fn pick_many(
-            &mut self,
-            _: &str,
-            _: &[&str],
-            _: &[bool],
-        ) -> Result<Option<Vec<bool>>, UiError> {
-            Err(UiError::NotInteractive { what: "test" })
-        }
-        fn input(&mut self, _: &str, _: &str) -> Result<Option<String>, UiError> {
-            Err(UiError::NotInteractive { what: "test" })
-        }
-        fn confirm(&mut self, _: &str, _: bool) -> Result<bool, UiError> {
-            Err(UiError::NotInteractive { what: "test" })
-        }
-    }
+    use super::{Mode, Ui, UiError};
+    use crate::testing::{ScriptedInteraction, SharedBuf};
 
     /// A writer that fails every write with `kind`.
     struct Failing(io::ErrorKind);
@@ -293,7 +268,7 @@ mod tests {
     }
 
     fn ui(out: Box<dyn Write + Send>, err: Box<dyn Write + Send>) -> Ui {
-        Ui::for_test(out, err, Box::new(NoInteraction))
+        Ui::for_test(out, err, Box::new(ScriptedInteraction::new(false, vec![])))
     }
 
     #[test]
@@ -347,7 +322,7 @@ mod tests {
             Mode::Tty,
             Box::new(out),
             Box::new(err),
-            Box::new(NoInteraction),
+            Box::new(ScriptedInteraction::new(false, vec![])),
         );
         assert_eq!(ui.mode(), Mode::Tty);
         assert!(!ui.color());
