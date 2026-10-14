@@ -117,13 +117,71 @@ impl Frame {
         }
         out
     }
+
+    /// One char per cell for colour snapshots: a cell's own glyph when it
+    /// is text, otherwise a code for its background (or, failing that,
+    /// foreground) colour, quantised to two bits per channel; a blank,
+    /// uncoloured cell is a space.
+    #[cfg(test)]
+    pub(crate) fn to_color_map(&self) -> String {
+        const CODES: &[u8; 64] =
+            b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+=";
+        let code = |c: Rgb| {
+            let i = usize::from(c.r >> 6) << 4 | usize::from(c.g >> 6) << 2 | usize::from(c.b >> 6);
+            char::from(CODES[i])
+        };
+        let mut out = String::new();
+        for row in self.cells.chunks(usize::from(self.width).max(1)) {
+            out.extend(row.iter().map(|c| match (c.ch, c.bg.or(c.fg)) {
+                (' ' | '▀', Some(colour)) => code(colour),
+                (ch, _) => ch,
+            }));
+            out.push('\n');
+        }
+        out
+    }
+}
+
+/// `n` as a `u16`, saturating at `u16::MAX`.
+#[must_use]
+pub(crate) fn to_u16(n: usize) -> u16 {
+    u16::try_from(n).unwrap_or(u16::MAX)
+}
+
+/// The offset that centres `inner` cells in `outer` (0 when it does not
+/// fit).
+#[must_use]
+pub(crate) fn center(outer: u16, inner: usize) -> u16 {
+    outer.saturating_sub(to_u16(inner)) / 2
 }
 
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
 
-    use super::{Cell, Frame, Rgb};
+    use super::{Cell, Frame, Rgb, center, to_u16};
+
+    #[test]
+    fn center_splits_the_slack_and_clamps_at_zero() {
+        assert_eq!(center(80, 36), 22);
+        assert_eq!(center(37, 36), 0);
+        assert_eq!(center(10, 36), 0);
+        assert_eq!(center(10, usize::MAX), 0);
+    }
+
+    #[test]
+    fn to_u16_saturates() {
+        assert_eq!(to_u16(7), 7);
+        assert_eq!(to_u16(70_000), u16::MAX);
+    }
+
+    #[test]
+    fn color_map_shows_text_and_colour_codes() {
+        let mut f = Frame::new(3, 1);
+        f.put_str(0, 0, "a", Some(Rgb { r: 255, g: 0, b: 0 }), None);
+        f.put_str(1, 0, " ", None, Some(Rgb { r: 0, g: 0, b: 255 }));
+        assert_eq!(f.to_color_map(), "a3 \n");
+    }
 
     #[test]
     fn new_frame_is_blank_and_sized() {

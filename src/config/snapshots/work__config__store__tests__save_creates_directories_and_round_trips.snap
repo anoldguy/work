@@ -1,0 +1,8 @@
+---
+source: src/config/store.rs
+expression: saved
+---
+work_dir = "~/src"
+
+[domains."github.com"]
+is_default = true

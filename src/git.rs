@@ -1,9 +1,10 @@
 //! The `git` subprocess seam, its auth environment, and pure parsers for its
 //! output.
 //!
-//! Every captured git child runs with `GIT_TERMINAL_PROMPT=0` and
-//! `GIT_ALLOW_PROTOCOL=https:ssh:file`; its stderr goes through
-//! `proc::one_line` and `auth::redact` before it can reach an error.
+//! Every captured git child runs with `LC_ALL=C`, `GIT_TERMINAL_PROMPT=0`,
+//! `GIT_OPTIONAL_LOCKS=0` and `protocol.ext.allow=never` (see
+//! [`auth_env::GitEnv`]); its stderr goes through `proc::one_line` and
+//! `GitAuth::redact` before it can reach an error.
 
 pub mod auth_env;
 pub mod remote;
@@ -42,8 +43,8 @@ pub trait Git: Sync + Debug {
     /// Any [`GitError`].
     fn fetch(&self, repo: &Path, auth: Option<&GitAuth<'_>>) -> Result<(), GitError>;
 
-    /// One `git status --porcelain=v2 --branch`, parsed by
-    /// [`status::parse_v2`].
+    /// One `git status --porcelain=v2 --branch --untracked-files=normal`,
+    /// parsed by [`status::parse_v2`].
     ///
     /// # Errors
     ///
@@ -59,6 +60,10 @@ pub trait Git: Sync + Debug {
     fn fast_forward(&self, repo: &Path) -> Result<(), GitError>;
 
     /// `git remote get-url origin`; `Ok(None)` when there is no `origin`.
+    ///
+    /// The URL is returned as configured and may carry credentials
+    /// (`https://user:token@host/…`). Use it for [`remote::host_of`] and
+    /// [`remote::is_https`] only; never show it to the user.
     ///
     /// # Errors
     ///

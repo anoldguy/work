@@ -42,6 +42,21 @@ impl fmt::Debug for SecretToken {
     }
 }
 
+/// The `GITHUB_TOKEN` environment variable, as captured at startup.
+///
+/// An unusable value is its own state so it cannot be mistaken for "unset"
+/// and silently replaced by a `gh` token.
+#[derive(Debug, Default)]
+pub enum EnvToken {
+    /// Unset or empty.
+    #[default]
+    Unset,
+    /// Set to a usable token; answers for every domain.
+    Valid(SecretToken),
+    /// Set but unusable (inner whitespace, control characters, not UTF-8).
+    Invalid,
+}
+
 /// HTTP auth for one host's git traffic.
 ///
 /// Passed to git through `GIT_CONFIG_*` environment variables as
@@ -49,7 +64,6 @@ impl fmt::Debug for SecretToken {
 /// which keeps it out of argv and off other hosts. It borrows the raw token
 /// so [`GitAuth::redact`] can scrub both forms from git's stderr without the
 /// secret ever leaving this type.
-#[derive(Debug)]
 pub struct GitAuth<'t> {
     host: Domain,
     header_b64: SecretToken,
@@ -57,6 +71,15 @@ pub struct GitAuth<'t> {
     forms: Vec<String>,
     /// Ties the auth to the token it was derived from.
     token: PhantomData<&'t SecretToken>,
+}
+
+impl fmt::Debug for GitAuth<'_> {
+    /// Prints the host only: `forms` holds the raw token and its base64s.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GitAuth")
+            .field("host", &self.host)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'t> GitAuth<'t> {
@@ -161,7 +184,7 @@ mod tests {
 
     use proptest::prelude::*;
 
-    use super::{GitAuth, SecretToken, base64_encode, redact};
+    use super::{EnvToken, GitAuth, SecretToken, base64_encode, redact};
     use crate::domain::Domain;
     use crate::env::EnvSnapshot;
 
@@ -210,11 +233,48 @@ mod tests {
     #[test]
     fn env_snapshot_debug_hides_the_token() {
         let env = EnvSnapshot {
-            github_token: SecretToken::new("ghp_topsecretvalue"),
+            github_token: SecretToken::new("ghp_topsecretvalue")
+                .map_or(EnvToken::Invalid, EnvToken::Valid),
             ..EnvSnapshot::default()
         };
-        assert_matches!(env.github_token, Some(_));
+        assert_matches!(env.github_token, EnvToken::Valid(_));
         assert!(!format!("{env:?}").contains("topsecretvalue"));
+    }
+
+    #[test]
+    fn no_token_holder_debug_shows_the_token_or_its_base64() {
+        use crate::auth::Tokens;
+        use crate::testing::FakeGh;
+
+        let raw = "gho_PROBESECRET123";
+        let host = "github.com".parse::<Domain>().expect("valid domain");
+        let token = SecretToken::new(raw).expect("valid");
+        let auth = GitAuth::new(host.clone(), &token);
+        let gh = FakeGh::new().with_token(host.clone(), raw);
+        let env_token = EnvToken::Valid(SecretToken::new(raw).expect("valid"));
+        let tokens = Tokens::resolve(&gh, &EnvToken::Unset, std::slice::from_ref(&host));
+        let tokens_env = Tokens::resolve(&gh, &env_token, std::slice::from_ref(&host));
+        let snapshot = EnvSnapshot {
+            github_token: SecretToken::new(raw).map_or(EnvToken::Invalid, EnvToken::Valid),
+            ..EnvSnapshot::default()
+        };
+        let shown = [
+            format!("{token:?}"),
+            format!("{auth:?}"),
+            format!("{tokens:?}"),
+            format!("{tokens_env:?}"),
+            format!("{gh:?}"),
+            format!("{snapshot:?}"),
+            format!("{env_token:?}"),
+        ];
+        let b64 = [
+            base64_encode(raw.as_bytes()),
+            base64_encode(format!("x-access-token:{raw}").as_bytes()),
+        ];
+        for text in &shown {
+            assert!(!text.contains("PROBESECRET"), "{text}");
+            assert!(b64.iter().all(|b| !text.contains(b.as_str())), "{text}");
+        }
     }
 
     proptest! {

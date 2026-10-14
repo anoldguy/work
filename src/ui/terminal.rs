@@ -218,6 +218,35 @@ impl<'a> TerminalGuard<'a> {
     }
 }
 
+/// The terminal as the interaction and splash loops see it: a writer that
+/// can wait for a key and report its size. [`TerminalGuard`] is the real
+/// one; tests drive the loops through `fake::FakeTerm`.
+pub(crate) trait Term: Write {
+    /// Waits up to `timeout` for a key press. `Ok(None)` on timeout.
+    ///
+    /// # Errors
+    ///
+    /// [`UiError::Io`].
+    fn read_key(&mut self, timeout: Duration) -> Result<Option<KeyEvent>, UiError>;
+
+    /// `(columns, rows)`.
+    ///
+    /// # Errors
+    ///
+    /// [`UiError::Io`].
+    fn size(&self) -> Result<(u16, u16), UiError>;
+}
+
+impl Term for TerminalGuard<'_> {
+    fn read_key(&mut self, timeout: Duration) -> Result<Option<KeyEvent>, UiError> {
+        TerminalGuard::read_key(self, timeout)
+    }
+
+    fn size(&self) -> Result<(u16, u16), UiError> {
+        TerminalGuard::size(self)
+    }
+}
+
 impl Write for TerminalGuard<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.out.write(buf)
@@ -273,20 +302,124 @@ impl Ui {
     }
 }
 
-/// A scripted [`Backend`] for tests, and the lock that keeps tests that
-/// panic or hold a guard from seeing each other through the global hook.
+/// A scripted [`Backend`] and [`Term`] for tests, and the lock that keeps
+/// tests that panic or hold a guard from seeing each other through the
+/// global hook.
 #[cfg(test)]
 pub(crate) mod fake {
+    use std::cell::Cell;
     use std::collections::VecDeque;
     use std::io::{self, Write};
     use std::panic;
+    use std::rc::Rc;
     use std::sync::{Arc, Mutex, PoisonError};
     use std::time::Duration;
 
-    use crossterm::event::Event;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
-    use super::Backend;
+    use super::{Backend, Term};
     use crate::testing::SharedBuf;
+    use crate::ui::UiError;
+
+    /// A scripted [`Term`]: replays a script of keys and timeouts, records
+    /// what was written, and keeps a fake clock.
+    ///
+    /// A timeout advances the clock by the full wait and applies the next
+    /// queued resize, as if the window had changed meanwhile. Running out
+    /// of script panics, so a loop that never finishes fails fast.
+    #[derive(Debug)]
+    pub(crate) struct FakeTerm {
+        script: VecDeque<Option<KeyEvent>>,
+        resizes: VecDeque<(u16, u16)>,
+        size: (u16, u16),
+        out: Vec<u8>,
+        elapsed: Rc<Cell<Duration>>,
+    }
+
+    impl FakeTerm {
+        /// A `size` terminal with an empty script.
+        pub(crate) fn new(size: (u16, u16)) -> Self {
+            Self {
+                script: VecDeque::new(),
+                resizes: VecDeque::new(),
+                size,
+                out: Vec::new(),
+                elapsed: Rc::new(Cell::new(Duration::ZERO)),
+            }
+        }
+
+        /// Appends `n` timeouts to the script.
+        pub(crate) fn timeouts(mut self, n: usize) -> Self {
+            self.script.extend(std::iter::repeat_n(None, n));
+            self
+        }
+
+        /// Appends unmodified presses of `codes` to the script.
+        pub(crate) fn keys(mut self, codes: &[KeyCode]) -> Self {
+            self.script.extend(
+                codes
+                    .iter()
+                    .map(|&code| Some(KeyEvent::new(code, KeyModifiers::NONE))),
+            );
+            self
+        }
+
+        /// Appends Ctrl+`c` to the script.
+        pub(crate) fn ctrl(mut self, c: char) -> Self {
+            self.script
+                .push_back(Some(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)));
+            self
+        }
+
+        /// Queues a resize, applied at the next timeout.
+        pub(crate) fn resize_on_timeout(mut self, size: (u16, u16)) -> Self {
+            self.resizes.push_back(size);
+            self
+        }
+
+        /// The fake clock: the time spent waiting out timeouts so far.
+        pub(crate) fn clock(&self) -> impl Fn() -> Duration + use<> {
+            let elapsed = Rc::clone(&self.elapsed);
+            move || elapsed.get()
+        }
+
+        /// Everything written, lossily decoded.
+        pub(crate) fn output(&self) -> String {
+            String::from_utf8_lossy(&self.out).into_owned()
+        }
+
+        /// The number of bytes written so far.
+        pub(crate) fn written(&self) -> usize {
+            self.out.len()
+        }
+    }
+
+    impl Write for FakeTerm {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.out.write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Term for FakeTerm {
+        fn read_key(&mut self, timeout: Duration) -> Result<Option<KeyEvent>, UiError> {
+            let step = self.script.pop_front().expect("the script ran out of keys");
+            if step.is_none() {
+                self.elapsed.set(self.elapsed.get() + timeout);
+                if let Some(size) = self.resizes.pop_front() {
+                    self.size = size;
+                }
+            }
+            Ok(step)
+        }
+
+        fn size(&self) -> Result<(u16, u16), UiError> {
+            Ok(self.size)
+        }
+    }
 
     /// Runs `f` with the panic hook extended to append `main`'s one-line
     /// message (`work: internal error: <msg> (please report this)`) to

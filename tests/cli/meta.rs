@@ -2,7 +2,7 @@
 
 use predicates::prelude::*;
 
-use crate::support::work;
+use crate::support::{TestEnv, work};
 
 #[test]
 fn no_arguments_prints_help_to_stdout_and_exits_0() {
@@ -80,4 +80,110 @@ fn a_usage_error_survives_a_closed_stderr() {
         .expect("spawn");
     drop(child.stderr.take());
     assert_eq!(child.wait().expect("wait").code(), Some(2));
+}
+
+#[test]
+fn version_subcommand_prints_the_package_version() {
+    let env = TestEnv::new();
+    env.command()
+        .arg("version")
+        .assert()
+        .success()
+        .stdout(format!("{}\n", env!("CARGO_PKG_VERSION")))
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn commands_sh_prints_exactly_cd_and_on() {
+    let env = TestEnv::new();
+    env.command()
+        .args(["commands", "--sh"])
+        .assert()
+        .success()
+        .stdout("cd\non\n")
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn commands_without_sh_is_a_one_line_usage_error() {
+    let env = TestEnv::new();
+    let assert = env.command().arg("commands").assert().code(2).stdout("");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8");
+    assert_eq!(
+        stderr,
+        "work: missing required argument '--sh' (see 'work commands --help')\n"
+    );
+}
+
+#[test]
+fn activate_prints_the_bash_wrapper_byte_for_byte() {
+    let env = TestEnv::new();
+    env.command()
+        .args(["activate", "bash"])
+        .assert()
+        .success()
+        .stdout(include_str!("../../shell/work.bash"))
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn activate_prints_the_zsh_and_fish_wrappers() {
+    let env = TestEnv::new();
+    env.command()
+        .args(["activate", "zsh"])
+        .assert()
+        .success()
+        .stdout(include_str!("../../shell/work.zsh"));
+    env.command()
+        .args(["activate", "fish"])
+        .assert()
+        .success()
+        .stdout(include_str!("../../shell/work.fish"));
+}
+
+#[test]
+fn activate_detects_the_shell_from_shell() {
+    let env = TestEnv::new();
+    env.command()
+        .env("SHELL", "/usr/bin/fish")
+        .arg("activate")
+        .assert()
+        .success()
+        .stdout(include_str!("../../shell/work.fish"));
+    env.command()
+        .env("SHELL", "/bin/zsh")
+        .arg("activate")
+        .assert()
+        .success()
+        .stdout(include_str!("../../shell/work.zsh"));
+}
+
+#[test]
+fn activate_falls_back_to_bash_when_shell_is_unset_or_unknown() {
+    let env = TestEnv::new();
+    env.command()
+        .arg("activate")
+        .assert()
+        .success()
+        .stdout(include_str!("../../shell/work.bash"));
+    env.command()
+        .env("SHELL", "/bin/tcsh")
+        .arg("activate")
+        .assert()
+        .success()
+        .stdout(include_str!("../../shell/work.bash"));
+}
+
+#[test]
+fn activate_with_an_unknown_shell_is_a_one_line_usage_error() {
+    let env = TestEnv::new();
+    let assert = env
+        .command()
+        .args(["activate", "tcsh"])
+        .assert()
+        .code(2)
+        .stdout("");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8");
+    assert_eq!(stderr.lines().count(), 1, "{stderr:?}");
+    assert!(stderr.starts_with("work: invalid value 'tcsh'"), "{stderr}");
 }

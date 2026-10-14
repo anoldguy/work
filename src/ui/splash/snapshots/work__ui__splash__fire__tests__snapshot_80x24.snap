@@ -1,0 +1,28 @@
+---
+source: src/ui/splash/fire.rs
+expression: "render(1, &[1000, 2000], 80, 24).to_color_map()"
+---
+                                                                                
+                                                                                
+                       ██╗    ██╗ ██████╗ ██████╗ ██╗  ██╗                      
+                       ██║    ██║██╔═══██╗██╔══██╗██║ ██╔╝                      
+                       ██║ █╗ ██║██║   ██║██████╔╝█████╔╝                       
+                       ██║███╗██║██║   ██║██╔══██╗██╔═██╗                       
+                       ╚███╔███╔╝╚██████╔╝██║  ██║██║  ██╗                      
+                        ╚══╝╚══╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝                      
+                                                                                
+                                     v0.1.0                                     
+                           Made with love by anoldguy                           
+                            github.com/anoldguy/work                            
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+   0 g0g 00g g0g 0gg00000gg0g000g0g0   gggggg 0  0   g0g 0  g  g ggggg0  0      
+0g0g0ggwwwggwgwwggwwwwgggwg0g0gggggggggggggwgggggg0g0gggw0wg0000ggg0g0wggwgwg 0 
+wwwwwwwwMMwMMMMMMwMMMwwwwgwwgwwwwwwMMwMwwwwwgwwgwgwwwwMwwwwMwwMwwMgwwwgwwwMMwwg 
+wwMMMMMMMMMMMMMMMMwMMMMMMMMMMwMwMMMwMMwMMMMMMwMMMMMMMMMwMMMMMMMMwwwwwwMwMMMMMMg0
+MMMMMMMMMMQMMQQMMMMMMMMMMMMMMMMMMMMMMQMMMMMMMMMMQMMMMMMMMMQQQQQMMMMMMMMMMMQMMMww
+UQQUUQQQQQQUQUUUQQMMQQMQQQQMQQQUUUUUQMMMMQMQQUUUUUUUUUMQUQQQQUUQQQQUMMMQQUQQQMMw
+UUQQUUUYYUYYYUQQQYUYUUUUUUUQYUUQYUQUUQQQUUUUYYYYUYUUUUQQUUYYUQUUYYYUYQUUYUQUQUMM
+YYYZZYY+YYZYYYZYY+Z=+===Z=ZZ=YYY=ZYYYZ+YZZ=Y+Y=+Y=YYZYZYY+=+=YYZ==+Z=YZ++YY=++Y=
