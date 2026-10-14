@@ -6,6 +6,7 @@ use std::io::{self, IsTerminal, Write};
 use std::time::Duration;
 
 use crate::env::EnvSnapshot;
+use crate::text::clip;
 use crate::ui::picker::{PickerKey, PickerState, PickerStep};
 use crate::ui::prompt::{Confirm, LineInput, Step};
 use crate::ui::terminal::Term;
@@ -182,7 +183,7 @@ fn run_picker(
         let (w, h) = term.size()?;
         let w = w.saturating_sub(1).max(1);
         let rows = h.saturating_sub(1).clamp(1, MAX_PICKER_ROWS);
-        let mut frame = vec![prompt.chars().take(usize::from(w)).collect::<String>()];
+        let mut frame = vec![clip(prompt, usize::from(w))];
         frame.extend(state.lines(w, rows));
         redraw(term, &mut last, frame, "")?;
         let drawn = last.len();

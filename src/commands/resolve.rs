@@ -2,12 +2,22 @@
 //! and `pull`: resolve a query, clone if needed, record the access.
 
 use std::path::PathBuf;
+use std::slice;
 
 use crate::app::App;
-use crate::cache::Cache;
+use crate::auth::{AuthError, GitAuth, Tokens};
+use crate::cache::{Cache, store};
 use crate::cli::ResolveArgs;
-use crate::domain::{QueryKey, Slug};
+use crate::core::paths::repo_path;
+use crate::core::query_frecency::{Decision, decide};
+use crate::core::resolve::resolve;
+use crate::core::search::{Query, search};
+use crate::domain::{Domain, QueryKey, Slug};
 use crate::error::Error;
+use crate::ui::UiError;
+
+/// The picker's prompt for an ambiguous query.
+const PICK_PROMPT: &str = "Select a repository";
 
 /// A resolved repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,26 +44,145 @@ pub enum CloneStatus {
 ///
 /// An invalid query; [`ResolveError::NotFound`]; [`ResolveError::Ambiguous`]
 /// without a TTY or when the picker is cancelled; `UiError::NotInteractive`
-/// for `--pick` without a TTY; `UiError::Interrupted` on Ctrl-C.
+/// for `--pick` without a TTY when several repos match; `UiError::Interrupted` on Ctrl-C.
 pub fn resolve_target(
     app: &mut App,
     cache: &mut Cache,
     args: &ResolveArgs,
 ) -> Result<Target, Error> {
-    let _ = (app, cache, args);
-    unimplemented!("W3.3")
+    let query = Query::parse(&args.query)?;
+    let interactive = app.ui.interact().is_interactive();
+    let now = app.now;
+    let results = search(&cache.repos, &query, |s| cache.frecency.score(s, now));
+    let key = query.key();
+    let decision = if args.pick && results.len() > 1 {
+        if !interactive {
+            return Err(UiError::NotInteractive { what: "--pick" }.into());
+        }
+        Decision::Ask(results.iter().map(|r| r.index).collect())
+    } else {
+        decide(
+            &cache.repos,
+            resolve(results),
+            &cache.query_frecency,
+            key,
+            now,
+        )
+    };
+    let index = match decision {
+        Decision::Unique(index) => index,
+        Decision::NotFound => return Err(ResolveError::NotFound { query: key.clone() }.into()),
+        Decision::Auto(index) => {
+            cache
+                .query_frecency
+                .record(key, &cache.repos[index].slug, now);
+            index
+        }
+        Decision::Ask(candidates) => {
+            let index = ask(app, cache, key, &candidates, interactive)?;
+            cache
+                .query_frecency
+                .record(key, &cache.repos[index].slug, now);
+            index
+        }
+    };
+    Ok(target_for(app, cache, index))
+}
+
+/// Shows the picker over `candidates` (repo indices, rank order) and returns
+/// the chosen repo index.
+///
+/// # Errors
+///
+/// [`ResolveError::Ambiguous`] without a terminal or when cancelled; the
+/// picker's own failure (e.g. `UiError::Interrupted`).
+fn ask(
+    app: &mut App,
+    cache: &Cache,
+    key: &QueryKey,
+    candidates: &[usize],
+    interactive: bool,
+) -> Result<usize, Error> {
+    let slugs: Vec<&Slug> = candidates.iter().map(|&i| &cache.repos[i].slug).collect();
+    let ambiguous = || ResolveError::Ambiguous {
+        query: key.clone(),
+        candidates: slugs.iter().map(|&s| s.clone()).collect(),
+    };
+    if !interactive {
+        return Err(ambiguous().into());
+    }
+    let labels: Vec<String> = slugs.iter().map(ToString::to_string).collect();
+    let items: Vec<&str> = labels.iter().map(String::as_str).collect();
+    match app.ui.interact().pick_one(PICK_PROMPT, &items)? {
+        Some(chosen) => candidates
+            .get(chosen)
+            .copied()
+            .ok_or_else(|| ambiguous().into()),
+        None => Err(ambiguous().into()),
+    }
+}
+
+/// The [`Target`] for repo `index`: where it lives under the work directory.
+fn target_for(app: &App, cache: &Cache, index: usize) -> Target {
+    let slug = &cache.repos[index].slug;
+    let path = repo_path(app.config.work_dir(), app.config.default_domain(), slug);
+    Target { index, path }
+}
+
+/// `org/name` for the default domain, the full slug otherwise.
+pub(crate) fn short_name(slug: &Slug, default: Option<&Domain>) -> String {
+    if default == Some(slug.domain()) {
+        format!("{}/{}", slug.org(), slug.name())
+    } else {
+        slug.to_string()
+    }
 }
 
 /// Clones the target unless `.git` exists: creates the parent directories,
 /// resolves a token for the repo's domain, and runs `git clone` under a
-/// progress title.
+/// progress title. With no token for the domain, git clones without auth
+/// (public repos, ssh `insteadOf`, credential helpers).
 ///
 /// # Errors
 ///
-/// [`Error::CreateDir`], or the git failure.
+/// [`Error::CreateDir`], an invalid `GITHUB_TOKEN`
+/// ([`AuthError::InvalidEnvToken`]), a stdout flush failure, or the git
+/// failure.
+///
+/// # Panics
+///
+/// If `target.index` is not an index into `cache.repos` (a [`Target`] from
+/// [`resolve_target`] against the same cache always is).
 pub fn ensure_cloned(app: &mut App, cache: &Cache, target: &Target) -> Result<CloneStatus, Error> {
-    let _ = (app, cache, target);
-    unimplemented!("W3.3")
+    if target.path.join(".git").exists() {
+        return Ok(CloneStatus::Already);
+    }
+    let repo = &cache.repos[target.index];
+    if let Some(parent) = target.path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| Error::CreateDir {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    let domain = repo.slug.domain();
+    let tokens = Tokens::resolve(&*app.gh, &app.env.github_token, slice::from_ref(domain));
+    let auth = match tokens.get(domain) {
+        Ok((token, _)) => Some(GitAuth::new(domain.clone(), token)),
+        Err(AuthError::InvalidEnvToken) => return Err(AuthError::InvalidEnvToken.into()),
+        Err(_) => None,
+    };
+    // Pending stdout must land before git (which may inherit it) runs.
+    app.ui.flush()?;
+    let title = format!(
+        "cloning {}",
+        short_name(&repo.slug, app.config.default_domain())
+    );
+    let git = &*app.git;
+    let dest = target.path.as_path();
+    app.ui.with_progress(&title, |_| {
+        git.clone_repo(&repo.clone_url, dest, auth.as_ref())
+    })?;
+    Ok(CloneStatus::Cloned)
 }
 
 /// Records repo frecency for the target and saves the cache. Called once the
@@ -62,9 +191,18 @@ pub fn ensure_cloned(app: &mut App, cache: &Cache, target: &Target) -> Result<Cl
 /// # Errors
 ///
 /// Saving the cache failed.
+///
+/// # Panics
+///
+/// If `target.index` is not an index into `cache.repos` (a [`Target`] from
+/// [`resolve_target`] against the same cache always is).
 pub fn record_access(app: &App, cache: &mut Cache, target: &Target) -> Result<(), Error> {
-    let _ = (app, cache, target);
-    unimplemented!("W3.3")
+    let Cache {
+        repos, frecency, ..
+    } = cache;
+    frecency.record(&repos[target.index].slug, app.now);
+    store::save(app.config.cache_dir(), cache)?;
+    Ok(())
 }
 
 /// A resolution failure.
@@ -91,4 +229,510 @@ pub enum ResolveError {
         /// The repo as shown to the user, e.g. `acme/foo`.
         repo: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use std::assert_matches;
+    use std::path::Path;
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::app::Adapters;
+    use crate::auth::EnvToken;
+    use crate::config::{self, Locations};
+    use crate::core::sync_outcome::{RepoFacts, Upstream};
+    use crate::domain::{CloneUrl, HtmlUrl, Repo, StoredTime};
+    use crate::env::EnvSnapshot;
+    use crate::git::{Git, GitError};
+    use crate::testing::interact::PromptCall;
+    use crate::testing::{
+        Answer, FakeGh, FakeGit, GitOp, NullGitHub, PromptLog, RepoScript, ScriptedInteraction,
+        SharedBuf,
+    };
+    use crate::ui::Ui;
+
+    const NOW: i64 = 1_700_000_000;
+
+    /// Lets a test keep a handle on the `FakeGit` it gives the `App`, and
+    /// snapshots what stdout held when each clone started.
+    #[derive(Debug)]
+    struct SharedGit {
+        inner: Arc<FakeGit>,
+        out: SharedBuf,
+        out_at_clone: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Git for SharedGit {
+        fn clone_repo(
+            &self,
+            url: &CloneUrl,
+            dest: &Path,
+            auth: Option<&GitAuth<'_>>,
+        ) -> Result<(), GitError> {
+            self.out_at_clone
+                .lock()
+                .expect("lock")
+                .push(self.out.contents());
+            self.inner.clone_repo(url, dest, auth)
+        }
+        fn fetch(&self, repo: &Path, auth: Option<&GitAuth<'_>>) -> Result<(), GitError> {
+            self.inner.fetch(repo, auth)
+        }
+        fn facts(&self, repo: &Path) -> Result<RepoFacts, GitError> {
+            self.inner.facts(repo)
+        }
+        fn fast_forward(&self, repo: &Path) -> Result<(), GitError> {
+            self.inner.fast_forward(repo)
+        }
+        fn origin_url(&self, repo: &Path) -> Result<Option<String>, GitError> {
+            self.inner.origin_url(repo)
+        }
+    }
+
+    struct Harness {
+        _dir: tempfile::TempDir,
+        app: App,
+        prompts: PromptLog,
+        out: SharedBuf,
+        out_at_clone: Arc<Mutex<Vec<String>>>,
+    }
+
+    /// An `App` whose home is `dir` (so the work dir is `dir/code`), with a
+    /// `Plain` Ui over in-memory writers.
+    fn harness_in(
+        dir: tempfile::TempDir,
+        interaction: ScriptedInteraction,
+        git: Arc<FakeGit>,
+        gh: FakeGh,
+    ) -> Harness {
+        let env = EnvSnapshot {
+            home: Some(dir.path().to_path_buf()),
+            ..EnvSnapshot::default()
+        };
+        let locations = Locations::from_env(&env).expect("locations");
+        let config = config::store::load(&locations).expect("config");
+        let prompts = interaction.log();
+        let out = SharedBuf::new();
+        let out_at_clone = Arc::default();
+        let ui = Ui::for_test(
+            Box::new(out.clone()),
+            Box::new(SharedBuf::new()),
+            Box::new(interaction),
+        );
+        let adapters = Adapters {
+            git: Box::new(SharedGit {
+                inner: git,
+                out: out.clone(),
+                out_at_clone: Arc::clone(&out_at_clone),
+            }),
+            gh: Box::new(gh),
+            api: Box::new(NullGitHub),
+        };
+        let app = App::with_parts(env, locations, config, ui, adapters, now());
+        Harness {
+            _dir: dir,
+            app,
+            prompts,
+            out,
+            out_at_clone,
+        }
+    }
+
+    fn harness(interactive: bool, answers: Vec<Answer>) -> Harness {
+        harness_in(
+            tempfile::tempdir().expect("tempdir"),
+            ScriptedInteraction::new(interactive, answers),
+            Arc::new(FakeGit::new()),
+            FakeGh::new(),
+        )
+    }
+
+    fn plain() -> Harness {
+        harness(false, vec![])
+    }
+
+    /// A non-interactive harness whose `gh` has a token for github.com.
+    fn cloning(git: Arc<FakeGit>) -> Harness {
+        harness_in(
+            tempfile::tempdir().expect("tempdir"),
+            ScriptedInteraction::new(false, vec![]),
+            git,
+            FakeGh::new().with_token(github(), "tok-123"),
+        )
+    }
+
+    fn now() -> StoredTime {
+        StoredTime::from_unix_seconds(NOW).expect("time")
+    }
+
+    fn github() -> Domain {
+        "github.com".parse().expect("domain")
+    }
+
+    fn repo(slug: &str) -> Repo {
+        let slug = Slug::try_from(slug.to_owned()).expect("slug");
+        let url = format!("https://{}/{}/{}", slug.domain(), slug.org(), slug.name());
+        Repo {
+            clone_url: CloneUrl::try_from(format!("{url}.git")).expect("clone url"),
+            html_url: HtmlUrl::try_from(url).expect("html url"),
+            slug,
+        }
+    }
+
+    /// `foob` matches `foobar` and `foobaz` ambiguously; `api` is unique.
+    fn cache() -> Cache {
+        let repos = [
+            "github.com/acme/foobar",
+            "github.com/acme/foobaz",
+            "ghe.corp.com/corp/api",
+        ]
+        .map(repo)
+        .into();
+        Cache::new(repos, now())
+    }
+
+    fn args(query: &str, pick: bool) -> ResolveArgs {
+        ResolveArgs {
+            query: query.to_owned(),
+            pick,
+        }
+    }
+
+    fn key(raw: &str) -> QueryKey {
+        QueryKey::new(raw).expect("key")
+    }
+
+    fn query_count(cache: &Cache, query: &str, index: usize) -> u32 {
+        cache
+            .query_frecency
+            .get(&key(query))
+            .and_then(|f| f.get(&cache.repos[index].slug))
+            .map_or(0, |d| d.access_count)
+    }
+
+    /// Gives `foob` a dominant history for `foobaz`.
+    fn with_dominant_history(cache: &mut Cache) {
+        let slug = cache.repos[1].slug.clone();
+        for _ in 0..3 {
+            cache.query_frecency.record(&key("foob"), &slug, now());
+        }
+    }
+
+    #[test]
+    fn a_clean_resolve_returns_the_repo_path_and_records_nothing() {
+        let mut h = plain();
+        let mut cache = cache();
+        let target = resolve_target(&mut h.app, &mut cache, &args("foobar", false)).expect("ok");
+        assert_eq!(target.index, 0);
+        assert_eq!(target.path, h.app.config.work_dir().join("acme/foobar"));
+        assert!(cache.query_frecency.is_empty());
+        assert_eq!(h.prompts.calls(), []);
+    }
+
+    #[test]
+    fn a_non_default_domain_keeps_its_domain_segment() {
+        let mut h = plain();
+        let target = resolve_target(&mut h.app, &mut cache(), &args("api", false)).expect("ok");
+        assert_eq!(
+            target.path,
+            h.app.config.work_dir().join("ghe.corp.com/corp/api")
+        );
+    }
+
+    #[test]
+    fn an_invalid_query_is_a_name_error() {
+        let mut h = plain();
+        let err =
+            resolve_target(&mut h.app, &mut cache(), &args("a/b/c/d", false)).expect_err("invalid");
+        assert_matches!(err, Error::Name(_));
+    }
+
+    #[test]
+    fn no_match_is_not_found() {
+        let mut h = plain();
+        let err = resolve_target(&mut h.app, &mut cache(), &args("zzzz", false)).expect_err("none");
+        assert_matches!(
+            err,
+            Error::Resolve(ResolveError::NotFound { ref query }) if query.as_str() == "zzzz"
+        );
+    }
+
+    #[test]
+    fn ambiguity_without_a_tty_is_a_list_error_of_full_slugs() {
+        let mut h = plain();
+        let mut cache = cache();
+        let err =
+            resolve_target(&mut h.app, &mut cache, &args("foob", false)).expect_err("ambiguous");
+        assert_eq!(
+            err.list_items(),
+            ["github.com/acme/foobar", "github.com/acme/foobaz"]
+        );
+        assert_matches!(err, Error::Resolve(ResolveError::Ambiguous { .. }));
+        assert!(!err.summary().contains('\n'));
+        assert!(cache.query_frecency.is_empty());
+    }
+
+    #[test]
+    fn ambiguity_on_a_tty_shows_the_picker_and_records_the_pick() {
+        let mut h = harness(true, vec![Answer::Pick(Some(1))]);
+        let mut cache = cache();
+        let target = resolve_target(&mut h.app, &mut cache, &args("foob", false)).expect("pick");
+        assert_eq!(target.index, 1);
+        assert_matches!(
+            h.prompts.calls().as_slice(),
+            [PromptCall::PickOne { items, .. }]
+                if items == &["github.com/acme/foobar", "github.com/acme/foobaz"]
+        );
+        assert_eq!(query_count(&cache, "foob", 1), 1);
+        assert_eq!(query_count(&cache, "foob", 0), 0);
+    }
+
+    #[test]
+    fn cancelling_the_picker_gives_the_list_error_and_records_nothing() {
+        let mut h = harness(true, vec![Answer::Pick(None)]);
+        let mut cache = cache();
+        let err =
+            resolve_target(&mut h.app, &mut cache, &args("foob", false)).expect_err("cancelled");
+        assert_eq!(
+            err.list_items(),
+            ["github.com/acme/foobar", "github.com/acme/foobaz"]
+        );
+        assert_matches!(err, Error::Resolve(ResolveError::Ambiguous { .. }));
+        assert!(cache.query_frecency.is_empty());
+    }
+
+    #[test]
+    fn ctrl_c_in_the_picker_is_interrupted() {
+        let mut h = harness(true, vec![Answer::Interrupt]);
+        let err = resolve_target(&mut h.app, &mut cache(), &args("foob", false))
+            .expect_err("interrupted");
+        assert_matches!(err, Error::Ui(UiError::Interrupted));
+    }
+
+    #[test]
+    fn dominant_history_auto_resolves_and_records_without_asking() {
+        let mut h = harness(true, vec![]);
+        let mut cache = cache();
+        with_dominant_history(&mut cache);
+        let target = resolve_target(&mut h.app, &mut cache, &args("foob", false)).expect("auto");
+        assert_eq!(target.index, 1);
+        assert_eq!(h.prompts.calls(), []);
+        assert_eq!(query_count(&cache, "foob", 1), 4);
+    }
+
+    #[test]
+    fn dominant_history_auto_resolves_without_a_tty_too() {
+        let mut h = plain();
+        let mut cache = cache();
+        with_dominant_history(&mut cache);
+        let target = resolve_target(&mut h.app, &mut cache, &args("foob", false)).expect("auto");
+        assert_eq!(target.index, 1);
+    }
+
+    #[test]
+    fn pick_with_several_results_asks_without_consulting_history() {
+        let mut h = harness(true, vec![Answer::Pick(Some(0))]);
+        let mut cache = cache();
+        with_dominant_history(&mut cache);
+        let target = resolve_target(&mut h.app, &mut cache, &args("foob", true)).expect("pick");
+        assert_eq!(target.index, 0);
+        assert_eq!(h.prompts.calls().len(), 1);
+        assert_eq!(query_count(&cache, "foob", 0), 1);
+        assert_eq!(query_count(&cache, "foob", 1), 3);
+    }
+
+    #[test]
+    fn pick_asks_even_with_one_exact_match_among_several() {
+        let mut h = harness(true, vec![Answer::Pick(Some(1))]);
+        let mut cache = cache();
+        cache.repos.push(repo("github.com/acme/foobar-cli"));
+        let target = resolve_target(&mut h.app, &mut cache, &args("foobar", true)).expect("pick");
+        assert_eq!(target.index, 3);
+        assert_eq!(h.prompts.calls().len(), 1);
+        assert_eq!(query_count(&cache, "foobar", 3), 1);
+    }
+
+    #[test]
+    fn pick_with_a_single_result_skips_the_picker() {
+        let mut h = harness(true, vec![]);
+        let mut cache = cache();
+        let target = resolve_target(&mut h.app, &mut cache, &args("api", true)).expect("unique");
+        assert_eq!(target.index, 2);
+        assert_eq!(h.prompts.calls(), []);
+        assert!(cache.query_frecency.is_empty());
+    }
+
+    #[test]
+    fn pick_without_a_tty_resolves_a_single_match() {
+        let mut h = plain();
+        let mut cache = cache();
+        let target = resolve_target(&mut h.app, &mut cache, &args("api", true)).expect("unique");
+        assert_eq!(target.index, 2);
+        assert!(cache.query_frecency.is_empty());
+    }
+
+    #[test]
+    fn pick_without_a_tty_and_no_match_is_not_found() {
+        let mut h = plain();
+        let err = resolve_target(&mut h.app, &mut cache(), &args("zzzz", true)).expect_err("none");
+        assert_matches!(err, Error::Resolve(ResolveError::NotFound { .. }));
+    }
+
+    #[test]
+    fn pick_without_a_tty_is_an_error_when_several_match() {
+        let mut h = plain();
+        let err =
+            resolve_target(&mut h.app, &mut cache(), &args("foob", true)).expect_err("no tty");
+        assert_eq!(err.to_string(), "--pick requires an interactive terminal");
+        assert_matches!(err, Error::Ui(UiError::NotInteractive { what: "--pick" }));
+    }
+
+    #[test]
+    fn ensure_cloned_creates_parents_and_clones_with_the_domain_token() {
+        let git = Arc::new(FakeGit::new());
+        let mut h = cloning(Arc::clone(&git));
+        let mut cache = cache();
+        let target = resolve_target(&mut h.app, &mut cache, &args("foobar", false)).expect("ok");
+        assert!(!target.path.parent().expect("parent").exists());
+        let status = ensure_cloned(&mut h.app, &cache, &target).expect("clone");
+        assert_eq!(status, CloneStatus::Cloned);
+        assert!(target.path.join(".git").is_dir());
+        assert_eq!(
+            git.cloned_urls(),
+            [(target.path.clone(), cache.repos[0].clone_url.clone())]
+        );
+        assert_matches!(
+            git.calls().as_slice(),
+            [call] if call.op == GitOp::Clone && call.auth_host == Some(github())
+        );
+    }
+
+    #[test]
+    fn ensure_cloned_is_idempotent() {
+        let git = Arc::new(FakeGit::new());
+        let mut h = cloning(Arc::clone(&git));
+        let mut cache = cache();
+        let target = resolve_target(&mut h.app, &mut cache, &args("foobar", false)).expect("ok");
+        assert_eq!(
+            ensure_cloned(&mut h.app, &cache, &target).expect("clone"),
+            CloneStatus::Cloned
+        );
+        assert_eq!(
+            ensure_cloned(&mut h.app, &cache, &target).expect("again"),
+            CloneStatus::Already
+        );
+        assert_eq!(git.calls().len(), 1);
+    }
+
+    #[test]
+    fn ensure_cloned_does_nothing_when_git_exists() {
+        let git = Arc::new(FakeGit::new());
+        // No token: an attempted clone would fail.
+        let mut h = harness_in(
+            tempfile::tempdir().expect("tempdir"),
+            ScriptedInteraction::new(false, vec![]),
+            Arc::clone(&git),
+            FakeGh::new(),
+        );
+        let mut cache = cache();
+        let target = resolve_target(&mut h.app, &mut cache, &args("foobar", false)).expect("ok");
+        std::fs::create_dir_all(target.path.join(".git")).expect("mkdir");
+        let status = ensure_cloned(&mut h.app, &cache, &target).expect("no-op");
+        assert_eq!(status, CloneStatus::Already);
+        assert_eq!(git.calls(), []);
+    }
+
+    #[test]
+    fn ensure_cloned_without_a_token_clones_without_auth() {
+        let git = Arc::new(FakeGit::new());
+        let mut h = cloning(Arc::clone(&git));
+        let mut cache = cache();
+        // The token is for github.com; `api` lives on ghe.corp.com.
+        let target = resolve_target(&mut h.app, &mut cache, &args("api", false)).expect("ok");
+        let status = ensure_cloned(&mut h.app, &cache, &target).expect("clone");
+        assert_eq!(status, CloneStatus::Cloned);
+        assert_matches!(
+            git.calls().as_slice(),
+            [call] if call.op == GitOp::Clone && call.auth_host.is_none()
+        );
+    }
+
+    #[test]
+    fn ensure_cloned_with_an_invalid_env_token_fails_before_git() {
+        let git = Arc::new(FakeGit::new());
+        let mut h = cloning(Arc::clone(&git));
+        h.app.env.github_token = EnvToken::Invalid;
+        let mut cache = cache();
+        let target = resolve_target(&mut h.app, &mut cache, &args("foobar", false)).expect("ok");
+        let err = ensure_cloned(&mut h.app, &cache, &target).expect_err("invalid token");
+        assert_matches!(err, Error::Auth(AuthError::InvalidEnvToken));
+        assert_eq!(git.calls(), []);
+    }
+
+    #[test]
+    fn ensure_cloned_reports_the_git_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dest = dir.path().join("code/acme/foobar");
+        let failure = GitError::Failed {
+            action: "clone",
+            detail: "boom".to_owned(),
+        };
+        let script = RepoScript {
+            facts: RepoFacts::Branch {
+                dirty: false,
+                upstream: Upstream::None,
+            },
+            origin: None,
+            fail: Some((GitOp::Clone, failure.clone())),
+        };
+        let git = Arc::new(FakeGit::new().with_repo(&dest, script));
+        let mut h = harness_in(
+            dir,
+            ScriptedInteraction::new(false, vec![]),
+            git,
+            FakeGh::new().with_token(github(), "tok-123"),
+        );
+        let mut cache = cache();
+        let target = resolve_target(&mut h.app, &mut cache, &args("foobar", false)).expect("ok");
+        assert_eq!(target.path, dest);
+        let err = ensure_cloned(&mut h.app, &cache, &target).expect_err("git failed");
+        assert_matches!(err, Error::Git(ref e) if *e == failure);
+        assert!(!dest.join(".git").exists());
+    }
+
+    #[test]
+    fn ensure_cloned_flushes_pending_stdout_first() {
+        let mut h = cloning(Arc::new(FakeGit::new()));
+        let mut cache = cache();
+        let target = resolve_target(&mut h.app, &mut cache, &args("foobar", false)).expect("ok");
+        h.app.ui.stdout_line("before").expect("write");
+        assert_eq!(h.out.contents(), "");
+        ensure_cloned(&mut h.app, &cache, &target).expect("clone");
+        assert_eq!(*h.out_at_clone.lock().expect("lock"), ["before\n"]);
+    }
+
+    #[test]
+    fn record_access_records_frecency_and_saves() {
+        let mut h = plain();
+        let mut cache = cache();
+        let target = resolve_target(&mut h.app, &mut cache, &args("foobar", false)).expect("ok");
+        record_access(&h.app, &mut cache, &target).expect("save");
+        assert_eq!(
+            cache
+                .frecency
+                .get(&cache.repos[0].slug)
+                .map(|d| d.access_count),
+            Some(1)
+        );
+        let saved = store::load(h.app.config.cache_dir());
+        assert_matches!(saved, store::LoadOutcome::Loaded(ref c) if *c == cache);
+    }
+
+    #[test]
+    fn short_name_drops_only_the_default_domain() {
+        let slug = repo("github.com/acme/foo").slug;
+        assert_eq!(short_name(&slug, Some(&github())), "acme/foo");
+        assert_eq!(short_name(&slug, None), "github.com/acme/foo");
+    }
 }

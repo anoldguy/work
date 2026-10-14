@@ -8,6 +8,8 @@
 use std::collections::BTreeMap;
 use std::sync::mpsc;
 
+use crate::text::{display_width, pad_to, truncate};
+
 /// What a progress display counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Noun {
@@ -460,60 +462,6 @@ fn sanitize(text: &str) -> String {
     text.chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect()
-}
-
-/// Conservative terminal columns for `c`: never less than the terminal
-/// will use, so a line measured with it cannot wrap.
-///
-/// ASCII, the view's own narrow glyphs (`✓`, `✗`, braille spinners) and
-/// Latin/Greek/Cyrillic letters are one column; combining marks are zero;
-/// everything else (CJK, emoji, and East Asian "ambiguous" symbols such as
-/// `…` and `·`) counts as two.
-const fn char_width(c: char) -> usize {
-    match c {
-        '\u{0300}'..='\u{036F}' => 0,
-        '×' | '÷' => 2,
-        ' '..='~'
-        | '✓'
-        | '✗'
-        | '\u{2800}'..='\u{28FF}'
-        | 'À'..='ÿ'
-        | '\u{0100}'..='\u{02AF}'
-        | '\u{0391}'..='\u{03C9}'
-        | '\u{0400}'..='\u{04FF}' => 1,
-        _ => 2,
-    }
-}
-
-/// The conservative display width of `text` (see [`char_width`]).
-fn display_width(text: &str) -> usize {
-    text.chars().map(char_width).sum()
-}
-
-/// `text` padded with spaces to `width` display columns.
-fn pad_to(text: &str, width: usize) -> String {
-    let fill = width.saturating_sub(display_width(text));
-    format!("{text}{}", " ".repeat(fill))
-}
-
-/// At most `width` display columns, ending in `…` when cut; trailing spaces
-/// dropped.
-fn truncate(text: &str, width: usize) -> String {
-    let text = text.trim_end();
-    if display_width(text) <= width {
-        return text.to_owned();
-    }
-    let budget = width.saturating_sub(char_width('…'));
-    let mut used = 0;
-    let mut cut: String = text
-        .chars()
-        .take_while(|&c| {
-            used += char_width(c);
-            used <= budget
-        })
-        .collect();
-    cut.push('…');
-    cut
 }
 
 #[cfg(test)]

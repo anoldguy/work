@@ -6,7 +6,7 @@
 //!
 //! 1. Commands that never build an [`app::App`] (so a broken config cannot
 //!    block them): `version`, `commands`, `activate`, `about`, plus (with
-//!    `config::Locations`) `completions`, `config path`, `config --edit` and
+//!    `config::Locations`) `completions`, `config path`, `config --edit`, `auth login|logout` and
 //!    `list --complete`.
 //! 2. Everything else, with an [`app::App`].
 //!
@@ -39,6 +39,7 @@ pub mod shell;
 pub mod sync;
 #[cfg(test)]
 pub mod testing;
+pub(crate) mod text;
 pub mod ui;
 
 pub use error::Error;
@@ -182,7 +183,13 @@ fn stage1(command: Command, env: &env::EnvSnapshot, ui: &mut ui::Ui) -> Result<S
         Command::Update(args) => AppCommand::Update(args),
         Command::Favorite(args) => AppCommand::Favorite(args),
         Command::Setup(args) => AppCommand::Setup(args),
-        Command::Auth(args) => AppCommand::Auth(args),
+        Command::Auth(args) => match args.action {
+            cli::AuthAction::Status => AppCommand::Auth(args),
+            ref action => {
+                auth_cmd::login_logout(&gh::ProcessGh, ui, action)?;
+                return Ok(Stage::Done(ExitCode::SUCCESS));
+            }
+        },
     };
     Ok(Stage::Next(next, Locations::from_env(env)?))
 }

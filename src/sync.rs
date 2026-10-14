@@ -5,7 +5,7 @@
 pub mod run;
 pub mod walk;
 
-pub use run::{SyncReport, pull_one, sync_all};
+pub use run::{SyncReport, failures, pull_one, sync_all};
 pub use walk::find_repos;
 
 use std::io;
