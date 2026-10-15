@@ -1,9 +1,8 @@
 //! The terminal owner.
 //!
-//! [`Ui`] is created once and is the only thing that writes to stdout or
-//! stderr. stdout carries only command output; progress, pickers, prompts
-//! and warnings go to stderr. Methods that draw take `&mut self`, so a
-//! picker, a progress display and a stdout write cannot interleave.
+//! [`Ui`] is the only thing that writes to stdout or stderr. Methods that
+//! draw take `&mut self`, so a picker, a progress display and a stdout write
+//! cannot interleave.
 
 pub mod interact;
 pub mod picker;
@@ -94,15 +93,14 @@ impl Ui {
     ///
     /// # Errors
     ///
-    /// [`UiError::BrokenPipe`] when stdout's reader went away (the command
-    /// should stop and exit 0 silently), or [`UiError::Io`].
+    /// [`UiError::BrokenPipe`] when stdout's reader went away, or
+    /// [`UiError::Io`].
     pub fn stdout_line(&mut self, line: &str) -> Result<(), UiError> {
         writeln!(self.out, "{line}").map_err(UiError::from_stdout)
     }
 
     /// Writes one informational line to stderr immediately, after flushing
-    /// pending stdout so the two streams keep their order (e.g. the zsh
-    /// `fpath` hint, or `about`'s static logo).
+    /// pending stdout so the two streams keep their order.
     ///
     /// # Errors
     ///
@@ -115,9 +113,7 @@ impl Ui {
     }
 
     /// Prints a one-line warning to stderr at once, after flushing pending
-    /// stdout. Never fails; a broken stderr loses the warning. (During
-    /// `with_progress` the `&mut Ui` borrow is held, so workers queue
-    /// warnings on [`Tasks`] and they are printed when the display ends.)
+    /// stdout. Never fails; a broken stderr loses the warning.
     pub fn warn(&mut self, message: &str) {
         debug_assert!(
             !message.contains('\n'),
@@ -200,7 +196,6 @@ impl fmt::Debug for Ui {
 }
 
 impl UiError {
-    /// Maps a stdout write failure: a closed reader is [`UiError::BrokenPipe`].
     fn from_stdout(source: io::Error) -> Self {
         if source.kind() == io::ErrorKind::BrokenPipe {
             Self::BrokenPipe
@@ -210,11 +205,10 @@ impl UiError {
     }
 }
 
-/// Pickers and prompts, all drawn on stderr. Behind a trait so tests can
-/// script answers.
+/// Pickers and prompts, all drawn on stderr.
 ///
 /// Every method that waits for input returns [`UiError::Interrupted`] on
-/// Ctrl-C (exit 130).
+/// Ctrl-C.
 pub trait Interaction {
     /// True when stdin and stderr are both terminals.
     fn is_interactive(&self) -> bool;
@@ -261,10 +255,10 @@ pub trait Interaction {
 /// A terminal failure.
 #[derive(Debug, thiserror::Error)]
 pub enum UiError {
-    /// stdout's reader went away (`work list | head`). Exit 0, print nothing.
+    /// stdout's reader went away (`work list | head`).
     #[error("broken pipe")]
     BrokenPipe,
-    /// Ctrl-C in a picker or prompt. Exit 130.
+    /// Ctrl-C in a picker or prompt.
     #[error("interrupted")]
     Interrupted,
     /// A command or flag needs a terminal and there is none.

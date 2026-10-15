@@ -1,4 +1,4 @@
-//! [`Frame`]: a grid of styled cells that styles draw into (pure).
+//! [`Frame`]: a grid of styled cells that styles draw into.
 
 /// A 24-bit colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

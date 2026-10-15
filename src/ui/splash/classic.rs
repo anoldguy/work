@@ -54,7 +54,7 @@ impl StyleRun for ClassicRun {
         };
         for (i, line) in footer.iter().enumerate() {
             let y = top.saturating_add(to_u16(LOGO.len() + 1 + i));
-            // Centred under the logo's own width, as in the spec.
+            // Centred under the logo's own width, not the frame's.
             let x = logo_x.saturating_add(to_u16(footer_pad(line)));
             frame.put_str(x, y, line, Some(grey), None);
         }

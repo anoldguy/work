@@ -1,4 +1,4 @@
-//! A small seeded RNG (xorshift64*) for splash styles (pure).
+//! A small seeded RNG (xorshift64*) for splash styles.
 
 use std::num::NonZeroU32;
 
