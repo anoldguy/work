@@ -1,8 +1,7 @@
 //! One line of `gh api --jq '.[] | {name, owner: .owner.login, clone_url,
 //! html_url}'` output, and its validation into a [`Repo`].
 //!
-//! Unknown fields are ignored. Validation is where an entry is rejected (and
-//! counted as skipped by the caller).
+//! Unknown fields are ignored.
 
 use serde::Deserialize;
 
