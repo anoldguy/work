@@ -30,7 +30,7 @@ const DEFAULT_DOMAIN: &str = "github.com";
 ///
 /// `UiError::NotInteractive` without a TTY, a missing gh, or config write
 /// failures.
-pub fn run(mut app: App, ui: &mut Ui, args: &SetupArgs) -> Result<ExitCode, Error> {
+pub fn run(app: App, ui: &mut Ui, args: &SetupArgs) -> Result<ExitCode, Error> {
     if !ui.interact().is_interactive() {
         return Err(UiError::NotInteractive { what: "setup" }.into());
     }
@@ -56,7 +56,10 @@ pub fn run(mut app: App, ui: &mut Ui, args: &SetupArgs) -> Result<ExitCode, Erro
     let is_first = app.config.domains().is_empty();
     doc.add_domain(domain, is_first)?;
     doc.save()?;
-    app.config = config::store::load(&app.locations)?;
+    let app = App {
+        config: config::store::load(&app.locations)?,
+        ..app
+    };
     ui.stderr_line(&format!("Saved {}", app.locations.config_file.display()))?;
 
     if logged_in && ui.interact().confirm("Fetch repositories now?", true)? {

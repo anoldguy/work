@@ -217,7 +217,7 @@ fn api_lines(
     if status.success() {
         return Ok(());
     }
-    let summary = proc::stderr_summary(&stderr);
+    let summary = proc::stderr_summary(&stderr, proc::Fallback::AllLines);
     Err(GhError::Api {
         host: host.clone(),
         detail: if summary.is_empty() {

@@ -3,8 +3,7 @@
 //! Every git child runs with `LC_ALL=C`, `GIT_TERMINAL_PROMPT=0`,
 //! `GIT_OPTIONAL_LOCKS=0` and `-c protocol.ext.allow=never`; clone and fetch
 //! authenticate through `gh auth git-credential`, scoped to the repo's
-//! domain (see [`runner::ProcessGit`]). git's stderr goes through
-//! `proc::stderr_summary` before it can reach an error.
+//! domain.
 
 pub mod runner;
 pub mod status;
