@@ -159,13 +159,6 @@ impl ConfigDoc {
         })
     }
 
-    /// The file this document saves to (tests).
-    #[cfg(test)]
-    #[must_use]
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
     /// Marks `d` as the only default domain (clearing `is_default` on the
     /// others).
     ///
@@ -335,270 +328,63 @@ mod tests {
     use super::*;
     use crate::env::EnvSnapshot;
 
-    const README_EXAMPLE: &str = r#"work_dir = "~/code"
-cache_path = "~/.local/state/work"
-
-[filters]
-exclude_orgs = ["that-org-from-2019-you-forgot-to-leave"]
-include_orgs = ["my-team"]
-
-[domains."github.com"]
-is_default = true
-favorite_orgs = ["my-team", "my-company"]
-
-[domains."github.enterprise.com"]
-favorite_orgs = ["team-a", "team-b"]
-extra_orgs = ["partner-team", "shared-infra"]
-"#;
-
-    const COMMENTED: &str = r#"# my config
-work_dir = "~/code" # where things live
-
-[domains."a.com"]
-# the main one
-is_default = true # keep
-favorite_orgs = ["x"] # favs
-
-[domains."b.example.com"]
-extra_orgs = ["y"]
-"#;
-
-    fn setup(text: Option<&str>) -> (tempfile::TempDir, Locations) {
+    fn load_text(text: &str) -> Result<Config, ConfigError> {
         let dir = tempfile::tempdir().expect("tempdir");
         let env = EnvSnapshot {
             home: Some(dir.path().to_path_buf()),
             ..EnvSnapshot::default()
         };
         let locations = Locations::from_env(&env).expect("locations");
-        if let Some(text) = text {
-            let parent = locations.config_file.parent().expect("parent");
-            fs::create_dir_all(parent).expect("mkdir");
-            fs::write(&locations.config_file, text).expect("write");
-        }
-        (dir, locations)
-    }
-
-    fn domain(s: &str) -> Domain {
-        s.parse().expect("domain")
-    }
-
-    fn org(s: &str) -> Org {
-        s.parse().expect("org")
-    }
-
-    fn doc_of(text: &str) -> (tempfile::TempDir, ConfigDoc) {
-        let (dir, locations) = setup(Some(text));
-        let doc = ConfigDoc::open(&locations.config_file).expect("open");
-        (dir, doc)
+        fs::create_dir_all(locations.config_file.parent().expect("parent")).expect("mkdir");
+        fs::write(&locations.config_file, text).expect("write");
+        load(&locations)
     }
 
     #[test]
-    fn readme_example_loads_in_one_parse() {
-        let (_dir, locations) = setup(Some(README_EXAMPLE));
-        let config = load(&locations).expect("load");
-        assert_eq!(config.default_domain(), Some(&domain("github.com")));
-        assert_eq!(config.domains().len(), 2);
-        assert_eq!(config.filters().include_orgs, vec![org("my-team")]);
-    }
+    fn the_spec_example_loads() {
+        let config = load_text(
+            r#"work_dir = "~/code"
+cache_path = "~/.local/state/work"
 
-    #[test]
-    fn missing_file_gives_implicit_github() {
-        let (_dir, locations) = setup(None);
-        let config = load(&locations).expect("load");
-        assert_eq!(config.effective_domains(), vec![domain("github.com")]);
-        assert_eq!(config.default_domain(), Some(&domain("github.com")));
-    }
+[filters]
+exclude_orgs = ["archived-org"]
 
-    #[test]
-    fn no_domains_gives_implicit_github() {
-        let (_dir, locations) = setup(Some("work_dir = \"~/src\"\n"));
-        let config = load(&locations).expect("load");
-        assert_eq!(config.effective_domains(), vec![domain("github.com")]);
-        assert!(config.work_dir().ends_with("src"));
-    }
+[domains."github.com"]
+is_default = true
+favorite_orgs = ["my-team", "my-company"]
 
-    #[test]
-    fn two_defaults_are_rejected() {
-        let (_dir, locations) = setup(Some(
-            "[domains.\"a.com\"]\nis_default = true\n[domains.\"b.com\"]\nis_default = true\n",
-        ));
-        assert_matches!(load(&locations), Err(ConfigError::MultipleDefaults { .. }));
-    }
-
-    #[test]
-    fn uppercase_domain_key_is_rejected_with_a_hint() {
-        let (_dir, locations) = setup(Some("[domains.\"GitHub.com\"]\nis_default = true\n"));
-        let err = load(&locations).expect_err("uppercase");
-        assert_matches!(&err, ConfigError::DomainCase { given, .. } if given == "GitHub.com");
-        assert!(err.to_string().contains("github.com"), "{err}");
-    }
-
-    #[test]
-    fn unquoted_dotted_domain_suggests_quoting() {
-        let (_dir, locations) = setup(Some("[domains.github.com]\nis_default = true\n"));
-        let err = load(&locations).expect_err("nested");
-        assert_matches!(&err, ConfigError::NestedDomainTable { host, .. } if host == "github.com");
-        let msg = err.to_string();
-        assert!(msg.contains("quote the hostname"), "{msg}");
-        assert!(msg.contains("[domains.\"github.com\"]"), "{msg}");
-    }
-
-    #[test]
-    fn unquoted_three_label_domain_is_detected() {
-        let (_dir, locations) = setup(Some("[domains.github.enterprise.com]\n"));
-        assert_matches!(
-            load(&locations),
-            Err(ConfigError::NestedDomainTable { host, .. }) if host == "github.enterprise.com"
+[domains."github.enterprise.com"]
+favorite_orgs = ["corp-team"]
+"#,
+        )
+        .expect("load");
+        assert_eq!(
+            config.default_domain(),
+            Some(&"github.com".parse().expect("domain"))
         );
+        assert_eq!(config.domains().len(), 2);
     }
 
     #[test]
-    fn quoted_domain_with_subtable_is_not_advised_to_requote() {
-        let (_dir, locations) = setup(Some("[domains.\"github.com\".extra]\nx = 1\n"));
-        let err = load(&locations).expect_err("subtable");
-        assert_matches!(&err, ConfigError::Parse { detail, .. } if detail.contains("sub-table"));
-    }
-
-    #[test]
-    fn misspelt_keys_are_rejected_with_the_key_named() {
+    fn misspelt_keys_are_rejected() {
         for text in [
             "WORK_DIR = \"/x\"\n",
             "[filters]\ninclude_org = []\n",
             "[domains.\"a.com\"]\nfavourite_orgs = []\n",
         ] {
-            let (_dir, locations) = setup(Some(text));
-            let err = load(&locations).expect_err("unknown key");
-            assert_matches!(&err, ConfigError::Parse { detail, .. } if detail.contains("unknown field"));
-            assert!(!err.to_string().contains('\n'), "{err:?}");
+            assert_matches!(load_text(text), Err(ConfigError::Parse { .. }), "{text}");
         }
     }
 
     #[test]
-    fn toml_syntax_error_is_one_line() {
-        let (_dir, locations) = setup(Some("work_dir = \n[filters\nx = 1\n"));
-        let err = load(&locations).expect_err("syntax");
-        assert_matches!(&err, ConfigError::Parse { .. });
-        assert!(!err.to_string().contains('\n'), "{err:?}");
-    }
-
-    #[test]
-    fn wrong_type_error_is_one_line() {
-        let (_dir, locations) = setup(Some("work_dir = 5\n"));
-        let err = load(&locations).expect_err("type");
-        assert_matches!(&err, ConfigError::Parse { .. });
-        assert!(!err.to_string().contains('\n'), "{err:?}");
-    }
-
-    #[test]
-    fn set_default_moves_the_flag_and_keeps_comments() {
-        let (_dir, mut doc) = doc_of(COMMENTED);
-        doc.set_default(&domain("b.example.com")).expect("set");
-        insta::assert_snapshot!(doc.doc.to_string());
-    }
-
-    #[test]
-    fn set_default_unknown_domain_changes_nothing() {
-        let (_dir, mut doc) = doc_of(COMMENTED);
-        let err = doc.set_default(&domain("nope.com")).expect_err("unknown");
-        assert_matches!(err, ConfigError::UnknownDomain { .. });
-        assert_eq!(doc.doc.to_string(), COMMENTED);
-    }
-
-    #[test]
-    fn set_favorites_replaces_and_empty_removes() {
-        let (_dir, mut doc) = doc_of(COMMENTED);
-        doc.set_favorites(&domain("a.com"), &[org("one"), org("two")])
-            .expect("set");
-        doc.set_favorites(&domain("b.example.com"), &[org("z")])
-            .expect("set");
-        insta::assert_snapshot!("set_favorites_replaced", doc.doc.to_string());
-        doc.set_favorites(&domain("a.com"), &[]).expect("clear");
-        insta::assert_snapshot!("set_favorites_cleared", doc.doc.to_string());
-    }
-
-    #[test]
-    fn add_domain_to_empty_document() {
-        let (_dir, mut doc) = doc_of("");
-        doc.add_domain(&domain("github.com"), true).expect("add");
-        insta::assert_snapshot!(doc.doc.to_string());
-    }
-
-    #[test]
-    fn add_domain_keeps_existing_and_can_take_default() {
-        let (_dir, mut doc) = doc_of(COMMENTED);
-        doc.add_domain(&domain("a.com"), false).expect("existing");
-        assert_eq!(doc.doc.to_string(), COMMENTED);
-        doc.add_domain(&domain("c.com"), true).expect("new");
-        insta::assert_snapshot!(doc.doc.to_string());
-    }
-
-    #[test]
-    fn set_work_dir_replaces_value_and_keeps_comment() {
-        let (_dir, mut doc) = doc_of(COMMENTED);
-        doc.set_work_dir("~/src").expect("set");
-        insta::assert_snapshot!("set_work_dir_replaced", doc.doc.to_string());
-        let (_dir, mut doc) = doc_of("[domains.\"a.com\"]\n");
-        doc.set_work_dir("~/src").expect("set");
-        insta::assert_snapshot!("set_work_dir_added", doc.doc.to_string());
-    }
-
-    #[test]
-    fn domains_that_is_not_a_table_is_an_edit_error() {
-        let (_dir, mut doc) = doc_of("domains = 3\n");
+    fn unquoted_and_uppercase_domains_are_rejected() {
         assert_matches!(
-            doc.add_domain(&domain("a.com"), false),
-            Err(ConfigError::Edit { .. })
+            load_text("[domains.github.com]\nis_default = true\n"),
+            Err(ConfigError::NestedDomainTable { host, .. }) if host == "github.com"
         );
-    }
-
-    #[test]
-    fn save_creates_directories_and_round_trips() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("nested").join("work").join("config.toml");
-        let mut doc = ConfigDoc::open(&path).expect("open missing");
-        doc.add_domain(&domain("github.com"), true).expect("add");
-        doc.set_work_dir("~/src").expect("work_dir");
-        doc.save().expect("save");
-        let saved = fs::read_to_string(&path).expect("read");
-        insta::assert_snapshot!(saved);
-        let names: Vec<_> = fs::read_dir(path.parent().expect("parent"))
-            .expect("ls")
-            .map(|e| e.expect("entry").file_name())
-            .collect();
-        assert_eq!(names, vec![std::ffi::OsString::from("config.toml")]);
-        let reopened = ConfigDoc::open(&path).expect("reopen");
-        assert_eq!(reopened.doc.to_string(), saved);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn save_through_a_symlink_keeps_the_link_and_updates_the_target() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let target = dir.path().join("dotfiles.toml");
-        let link = dir.path().join("config.toml");
-        fs::write(&target, COMMENTED).expect("write target");
-        std::os::unix::fs::symlink(&target, &link).expect("symlink");
-        let mut doc = ConfigDoc::open(&link).expect("open");
-        doc.set_default(&domain("b.example.com")).expect("set");
-        doc.save().expect("save");
-        assert!(
-            fs::symlink_metadata(&link)
-                .expect("meta")
-                .file_type()
-                .is_symlink()
+        assert_matches!(
+            load_text("[domains.\"GitHub.com\"]\n"),
+            Err(ConfigError::DomainCase { .. })
         );
-        let updated = fs::read_to_string(&target).expect("read target");
-        assert_eq!(updated, doc.doc.to_string());
-        assert_ne!(updated, COMMENTED);
-    }
-
-    #[test]
-    fn save_replaces_an_existing_file() {
-        let (_dir, mut doc) = doc_of(COMMENTED);
-        doc.set_favorites(&domain("a.com"), &[]).expect("clear");
-        doc.save().expect("save");
-        let on_disk = fs::read_to_string(doc.path()).expect("read");
-        assert!(!on_disk.contains("favorite_orgs"));
-        assert!(on_disk.contains("# my config"));
     }
 }

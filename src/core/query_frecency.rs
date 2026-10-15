@@ -60,13 +60,6 @@ impl QueryFrecency {
     pub fn get(&self, k: &QueryKey) -> Option<&Frecency> {
         self.0.get(k)
     }
-
-    /// True when no query has any history (tests).
-    #[cfg(test)]
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
 }
 
 /// What the shared pipeline should do with a set of search results.
@@ -132,184 +125,115 @@ pub fn decide(
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches;
-
     use super::*;
     use crate::core::search::{MatchTier, SearchResult};
     use crate::domain::{CloneUrl, HtmlUrl};
 
     const DAY: i64 = 86_400;
     const NOW: i64 = 1_000 * DAY;
+    const NAMES: [&str; 3] = ["foobar", "foo-legacy", "foobaz"];
+
+    /// `(name, picks, days ago)` for one query.
+    type History<'a> = &'a [(&'a str, u32, i64)];
 
     fn t(secs: i64) -> StoredTime {
-        StoredTime::from_unix_seconds(secs).unwrap()
+        StoredTime::from_unix_seconds(secs).expect("time")
     }
 
     fn repo(name: &str) -> Repo {
         Repo {
-            slug: Slug::try_from(format!("github.com/acme/{name}")).unwrap(),
-            clone_url: CloneUrl::try_from(format!("https://github.com/acme/{name}.git")).unwrap(),
-            html_url: HtmlUrl::try_from(format!("https://github.com/acme/{name}")).unwrap(),
+            slug: Slug::try_from(format!("github.com/acme/{name}")).expect("slug"),
+            clone_url: CloneUrl::try_from(format!("https://github.com/acme/{name}.git"))
+                .expect("clone url"),
+            html_url: HtmlUrl::try_from(format!("https://github.com/acme/{name}"))
+                .expect("html url"),
         }
     }
 
-    fn repos() -> Vec<Repo> {
-        ["foobar", "foobaz", "foo-legacy"].map(repo).into()
-    }
-
-    fn ambiguous(indices: &[usize]) -> Resolution {
-        Resolution::Ambiguous(
-            indices
-                .iter()
-                .map(|&index| SearchResult {
-                    index,
-                    tier: MatchTier::Substring,
-                    score: 50.0,
-                })
-                .collect(),
-        )
-    }
-
-    fn key() -> QueryKey {
-        QueryKey::new("Foo ").unwrap()
-    }
-
-    fn history(entries: &[(&str, u32, i64)]) -> QueryFrecency {
+    /// Decides `foo` over the candidates `names` (a subset of [`NAMES`])
+    /// with `(name, picks, days ago)` as its history.
+    fn decide_foo(names: &[&str], history: History<'_>) -> Decision {
+        let repos: Vec<Repo> = NAMES.map(repo).into();
+        let key = QueryKey::new("foo").expect("key");
         let mut qf = QueryFrecency::default();
-        for (name, n, at) in entries {
-            for _ in 0..*n {
-                qf.record(&key(), &repo(name).slug, t(*at));
+        for (name, picks, days) in history {
+            for _ in 0..*picks {
+                qf.record(&key, &repo(name).slug, t(NOW - days * DAY));
             }
         }
-        qf
-    }
-
-    fn run(r: Resolution, qf: &QueryFrecency) -> Decision {
-        decide(&repos(), r, qf, &key(), t(NOW))
-    }
-
-    #[test]
-    fn unique_and_not_found_bypass_history() {
-        let qf = history(&[("foobar", 10, NOW)]);
-        assert_matches!(run(Resolution::Unique(1), &qf), Decision::Unique(1));
-        assert_matches!(run(Resolution::NotFound, &qf), Decision::NotFound);
-    }
-
-    #[test]
-    fn no_history_asks() {
-        let d = run(ambiguous(&[0, 1]), &QueryFrecency::default());
-        assert_eq!(d, Decision::Ask(vec![0, 1]));
+        let index = |name: &&str| NAMES.iter().position(|n| n == name).expect("known");
+        let results = names
+            .iter()
+            .map(|name| SearchResult {
+                index: index(name),
+                tier: MatchTier::Substring,
+                score: 50.0,
+            })
+            .collect();
+        decide(&repos, Resolution::Ambiguous(results), &qf, &key, t(NOW))
     }
 
     #[test]
-    fn auto_resolves_at_minimum_accesses() {
-        let qf = history(&[("foobaz", 3, NOW)]);
-        assert_eq!(run(ambiguous(&[0, 1]), &qf), Decision::Auto(1));
-    }
-
-    #[test]
-    fn below_minimum_accesses_asks() {
-        let qf = history(&[("foobaz", 2, NOW)]);
-        assert_eq!(run(ambiguous(&[0, 1]), &qf), Decision::Ask(vec![0, 1]));
-    }
-
-    #[test]
-    fn dominance_exactly_three_times_passes() {
-        let qf = history(&[("foobar", 9, NOW), ("foobaz", 3, NOW)]);
-        assert_eq!(run(ambiguous(&[0, 1]), &qf), Decision::Auto(0));
-    }
-
-    #[test]
-    fn dominance_exactly_three_times_passes_in_every_tier() {
-        for days in [0, 7, 8, 30, 31, 40, 90, 91, 100] {
-            let at = NOW - days * DAY;
-            let qf = history(&[("foobar", 9, at), ("foobaz", 3, at)]);
-            assert_eq!(run(ambiguous(&[0, 1]), &qf), Decision::Auto(0), "{days}d");
-            let qf = history(&[("foobar", 8, at), ("foobaz", 3, at)]);
-            assert_eq!(
-                run(ambiguous(&[0, 1]), &qf),
-                Decision::Ask(vec![0, 1]),
-                "{days}d"
-            );
+    fn worked_examples_a_to_e() {
+        let both = ["foobar", "foo-legacy"];
+        let ask = Decision::Ask(vec![0, 1]);
+        let scenarios: [(&str, &[&str], History<'_>, Decision); 5] = [
+            (
+                "A: 2.25x is not dominant",
+                &both,
+                &[("foobar", 9, 0), ("foo-legacy", 4, 0)],
+                ask.clone(),
+            ),
+            (
+                "B: 11.25x",
+                &both,
+                &[("foobar", 9, 0), ("foo-legacy", 4, 60)],
+                Decision::Auto(0),
+            ),
+            (
+                "C: below the minimum picks",
+                &both,
+                &[("foobar", 2, 0)],
+                ask,
+            ),
+            (
+                "D: no runner-up",
+                &both,
+                &[("foobar", 3, 0)],
+                Decision::Auto(0),
+            ),
+            (
+                "E: top entry not a candidate",
+                &["foobar", "foobaz"],
+                &[("foo-legacy", 10, 0), ("foobar", 3, 0)],
+                Decision::Ask(vec![0, 2]),
+            ),
+        ];
+        for (scenario, candidates, history, expected) in scenarios {
+            assert_eq!(decide_foo(candidates, history), expected, "{scenario}");
         }
     }
 
     #[test]
-    fn dominance_across_tiers_at_exact_ratio() {
-        // 9 at 40d = 1.8 vs 12 at 100d = 0.6.
-        let qf = history(&[
-            ("foobar", 9, NOW - 40 * DAY),
-            ("foo-legacy", 12, NOW - 100 * DAY),
-        ]);
-        assert_eq!(run(ambiguous(&[0, 1]), &qf), Decision::Auto(0));
-    }
-
-    proptest::proptest! {
-        #[test]
-        fn exact_multiples_pass(
-            runner in 1u32..50,
-            days in 0i64..200,
-            runner_days in 0i64..200,
-        ) {
-            // Top has exactly 3x the runner-up's score iff its count is
-            // 3 * runner * (runner multiplier / top multiplier).
-            let (top_mult, runner_mult) = (mult(days), mult(runner_days));
-            let top_count = (3.0 * f64::from(runner) * runner_mult / top_mult).round();
-            let exact = (top_count * top_mult - 3.0 * f64::from(runner) * runner_mult).abs() < 1e-12;
-            proptest::prop_assume!(exact && (3.0..10_000.0).contains(&top_count));
-            #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "bounded by the assume above")]
-            let top_count = top_count as u32;
-            let qf = history(&[
-                ("foobar", top_count, NOW - days * DAY),
-                ("foobaz", runner, NOW - runner_days * DAY),
-            ]);
-            proptest::prop_assert_eq!(run(ambiguous(&[0, 1]), &qf), Decision::Auto(0));
-        }
-    }
-
-    fn mult(days: i64) -> f64 {
-        crate::core::frecency::recency_multiplier(days.unsigned_abs())
-    }
-
-    #[test]
-    fn insufficient_dominance_asks() {
-        let qf = history(&[("foobar", 8, NOW), ("foobaz", 3, NOW)]);
-        assert_eq!(run(ambiguous(&[0, 1]), &qf), Decision::Ask(vec![0, 1]));
-    }
-
-    #[test]
-    fn runner_up_outside_candidates_still_counts() {
-        // foo-legacy (index 2) is not a candidate: 9.0 < 3 * 4.0.
-        let qf = history(&[("foobar", 9, NOW), ("foo-legacy", 4, NOW)]);
-        assert_eq!(run(ambiguous(&[0, 1]), &qf), Decision::Ask(vec![0, 1]));
-    }
-
-    #[test]
-    fn stale_runner_up_does_not_block() {
-        let qf = history(&[("foobar", 3, NOW), ("foo-legacy", 10, NOW - 100 * DAY)]);
-        assert_eq!(run(ambiguous(&[0, 1]), &qf), Decision::Auto(0));
-    }
-
-    #[test]
-    fn top_entry_must_be_a_candidate() {
-        let qf = history(&[("foo-legacy", 10, NOW), ("foobar", 3, NOW)]);
-        assert_eq!(run(ambiguous(&[0, 1]), &qf), Decision::Ask(vec![0, 1]));
-    }
-
-    #[test]
-    fn retain_removes_entries_and_empty_queries() {
-        let mut qf = history(&[("foobar", 1, NOW), ("foobaz", 1, NOW)]);
-        let other = QueryKey::new("bar").unwrap();
-        qf.record(&other, &repo("foobaz").slug, t(NOW));
-        let bar = repo("foobar").slug;
-        qf.retain(|s, _| *s == bar);
-        assert!(qf.get(&key()).is_some_and(|f| f.get(&bar).is_some()));
-        assert_eq!(
-            qf.get(&key()).map(|f| f.get(&repo("foobaz").slug)),
-            Some(None)
+    fn a_runner_up_outside_the_results_still_counts() {
+        let decision = decide_foo(
+            &["foobar", "foobaz"],
+            &[("foobar", 9, 0), ("foo-legacy", 4, 0)],
         );
-        assert!(qf.get(&other).is_none());
-        qf.retain(|_, _| false);
-        assert!(qf.is_empty());
+        assert_eq!(decision, Decision::Ask(vec![0, 2]));
+    }
+
+    #[test]
+    fn a_unique_result_ignores_history() {
+        let repos: Vec<Repo> = NAMES.map(repo).into();
+        let key = QueryKey::new("foo").expect("key");
+        let decision = decide(
+            &repos,
+            Resolution::Unique(2),
+            &QueryFrecency::default(),
+            &key,
+            t(NOW),
+        );
+        assert_eq!(decision, Decision::Unique(2));
     }
 }

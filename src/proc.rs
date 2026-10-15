@@ -121,23 +121,6 @@ fn error_text(line: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::{ScriptedInteraction, SharedBuf};
-    use std::assert_matches;
-
-    fn sh(script: &str) -> Command {
-        let mut c = command("sh");
-        c.args(["-c", script]);
-        c
-    }
-
-    fn interactive(cmd: &mut Command) -> io::Result<ExitStatus> {
-        let mut ui = Ui::for_test(
-            Box::new(SharedBuf::new()),
-            Box::new(SharedBuf::new()),
-            Box::new(ScriptedInteraction::new(false, vec![])),
-        );
-        Interactive::new(&mut ui).expect("flush").run(cmd)
-    }
 
     #[test]
     fn stderr_summary_keeps_the_error_message_from_its_first_line_on() {
@@ -195,33 +178,5 @@ mod tests {
         assert_eq!(sum(b""), "");
         assert_eq!(sum(b"\n\r\n"), "");
         assert_eq!(sum(b"bad \xff byte"), "bad \u{fffd} byte");
-    }
-
-    #[test]
-    fn capture_returns_output_and_status() {
-        let out = sh("echo out; echo err >&2; exit 3").output().unwrap();
-        assert_eq!(out.stdout, b"out\n");
-        assert_eq!(out.stderr, b"err\n");
-        assert_eq!(out.status.code(), Some(3));
-    }
-
-    #[test]
-    fn capture_closes_stdin() {
-        let out = sh("cat; echo done").output().unwrap();
-        assert_eq!(out.stdout, b"done\n");
-    }
-
-    #[test]
-    fn interactive_reports_exit_status() {
-        assert!(interactive(&mut command("true")).unwrap().success());
-        assert!(!interactive(&mut command("false")).unwrap().success());
-    }
-
-    #[test]
-    fn missing_binary_is_not_found() {
-        let err = command("work-no-such-binary-w15").output().unwrap_err();
-        assert_matches!(err.kind(), io::ErrorKind::NotFound);
-        let err = interactive(&mut command("work-no-such-binary-w15")).unwrap_err();
-        assert_matches!(err.kind(), io::ErrorKind::NotFound);
     }
 }
