@@ -1,4 +1,4 @@
-//! `about [--style name]` (stage 1: no config needed).
+//! `about [--style name]` (no config needed).
 
 use std::num::NonZeroU32;
 use std::process::ExitCode;

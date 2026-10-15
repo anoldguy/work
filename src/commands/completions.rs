@@ -1,4 +1,4 @@
-//! `completions [shell] [--install]` (stage 1: no config needed).
+//! `completions [shell] [--install]` (no config needed).
 
 use std::fs;
 use std::process::ExitCode;
