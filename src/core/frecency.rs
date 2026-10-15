@@ -49,7 +49,7 @@ fn data_score(d: &FrecencyData, now: StoredTime) -> f64 {
 /// Frecency per repo, keyed by slug. Serialised as a plain JSON object
 /// (`{"github.com/acme/foo": {"access_count": 3, "last_access": "..."}}`).
 ///
-/// Keys compare exactly (case-sensitive), as the API returned them.
+/// Keys compare exactly (case-sensitive).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Frecency(BTreeMap<Slug, FrecencyData>);
@@ -106,7 +106,7 @@ impl Frecency {
         self.0.retain(|slug, data| keep(slug, data));
     }
 
-    /// The raw entry for `s`, if any (tests).
+    /// The raw entry for `s`, if any.
     #[cfg(test)]
     #[must_use]
     pub fn get(&self, s: &Slug) -> Option<&FrecencyData> {

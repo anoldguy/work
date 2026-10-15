@@ -9,11 +9,7 @@ use super::{Domain, NameError, Org, RepoName};
 
 /// A repository's full identity, `{domain}/{org}/{repo}`.
 ///
-/// Serialised as that string (written with `collect_str`, so saving the
-/// cache does not allocate a `String` per frecency key), which is also its
-/// key in the frecency maps.
-/// Ordering compares domain, then org, then name; this is the tie-break
-/// order for search results.
+/// Serialised as that string. Ordering compares domain, then org, then name.
 ///
 /// ```
 /// use work::domain::Slug;

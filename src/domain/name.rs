@@ -1,6 +1,4 @@
 //! Host and account names: [`Domain`], [`Org`], [`RepoName`] (pure).
-//!
-//! Each type validates at construction, so every instance is a legal name.
 
 use std::fmt;
 use std::str::FromStr;
@@ -23,9 +21,8 @@ const MAX_NAME_LEN: usize = 100;
 /// `[a-z0-9-]`, not starting or ending with `-`, separated by single dots;
 /// no scheme, port, path, or user info.
 ///
-/// [`TryFrom<String>`] (used by serde for config and cache files) rejects
-/// uppercase, so `[domains."GitHub.com"]` is an error rather than a silent
-/// alias. [`FromStr`] (used for command-line arguments) lowercases first.
+/// [`TryFrom<String>`] (and so serde) rejects uppercase rather than
+/// aliasing it; [`FromStr`] lowercases first.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Domain(String);
@@ -89,7 +86,7 @@ impl TryFrom<String> for Domain {
 impl FromStr for Domain {
     type Err = NameError;
 
-    /// Lowercases, then validates (for user-typed hostnames).
+    /// Lowercases, then validates.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::try_from(s.to_ascii_lowercase())
     }
@@ -132,8 +129,8 @@ fn name_problem(s: &str) -> Option<&'static str> {
 /// A GitHub login or organisation name.
 ///
 /// Invariant: 1–100 characters of `[A-Za-z0-9._-]`, not `.` or `..`, no
-/// leading `-`. Case is preserved as the API returns it; filters compare with
-/// [`Org::eq_ignore_case`], while frecency keys compare exactly.
+/// leading `-`. Case is preserved; equality is exact, and
+/// [`Org::eq_ignore_case`] ignores case.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Org(String);
@@ -145,8 +142,7 @@ impl Org {
         &self.0
     }
 
-    /// ASCII case-insensitive comparison, used by include/exclude filters,
-    /// favourites, and extra-org de-duplication.
+    /// ASCII case-insensitive comparison.
     #[must_use]
     pub fn eq_ignore_case(&self, other: &Self) -> bool {
         self.0.eq_ignore_ascii_case(&other.0)
