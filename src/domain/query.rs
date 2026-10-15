@@ -12,7 +12,7 @@ use crate::text;
 /// Invariant: non-empty, no control characters, already normalised, so
 /// normalising again is a no-op. That makes it safe to show in a one-line
 /// error with `{}`. Serialised as the string; it is the outer key of the
-/// cache's `query_frecency` map.
+/// `query_frecency` map in `frecency.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct QueryKey(String);

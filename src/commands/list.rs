@@ -7,6 +7,7 @@ use crate::app::App;
 use crate::cache::refresh::{Freshness, load_or_refresh};
 use crate::cache::store::{self, LoadOutcome};
 use crate::cli::ListArgs;
+use crate::commands::resolve::listed_history;
 use crate::config::{Locations, store as config_store};
 use crate::core::search::{Query, filter, search};
 use crate::domain::{Repo, Slug};
@@ -34,8 +35,9 @@ pub fn run(app: &mut App, args: &ListArgs) -> Result<ExitCode, Error> {
             .collect(),
         Some(raw) => {
             let q = Query::parse(raw)?;
+            let history = listed_history(app, &cache);
             let now = app.now;
-            search(&cache.repos, &q, |s| cache.frecency.score(s, now))
+            search(&cache.repos, &q, |s| history.frecency.score(s, now))
                 .into_iter()
                 .map(|r| cache.repos[r.index].slug.to_string())
                 .collect()

@@ -27,6 +27,7 @@ pub mod core;
 pub mod domain;
 pub mod env;
 pub mod error;
+pub mod frecency;
 pub(crate) mod fsutil;
 pub mod gh;
 pub mod git;
