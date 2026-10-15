@@ -13,6 +13,7 @@ use crate::domain::{Domain, Org};
 use crate::env::EnvSnapshot;
 use crate::error::Error;
 use crate::platform::{self, EditorCmd};
+use crate::proc::Interactive;
 use crate::ui::{Ui, UiError};
 
 /// `config path`: prints the config file's path and whether it exists.
@@ -37,13 +38,10 @@ fn file_state(file: &Path) -> &'static str {
 /// file in the editor chain (`$WORK_EDITOR`, `$EDITOR`, `vi`) with stdio
 /// inherited.
 ///
-/// Prints nothing itself, so there is no buffered `Ui` output to flush
-/// before the editor takes the terminal (it takes no `Ui`).
-///
 /// # Errors
 ///
 /// [`Error::CreateDir`] or an editor failure.
-pub fn edit(env: &EnvSnapshot, locations: &Locations) -> Result<ExitCode, Error> {
+pub fn edit(env: &EnvSnapshot, locations: &Locations, ui: &mut Ui) -> Result<ExitCode, Error> {
     let file = &locations.config_file;
     if let Some(dir) = file.parent() {
         fs::create_dir_all(dir).map_err(|source| Error::CreateDir {
@@ -51,7 +49,7 @@ pub fn edit(env: &EnvSnapshot, locations: &Locations) -> Result<ExitCode, Error>
             source,
         })?;
     }
-    platform::spawn_editor(&EditorCmd::from_env(env), file)?;
+    platform::spawn_editor(&mut Interactive::new(ui)?, &EditorCmd::from_env(env), file)?;
     Ok(ExitCode::SUCCESS)
 }
 

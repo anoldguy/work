@@ -98,7 +98,9 @@ fn dispatch(command: Command, env: env::EnvSnapshot, ui: &mut ui::Ui) -> Result<
         Command::Completions(args) => {
             completions::run(&env, &Locations::from_env(&env)?, ui, &args)
         }
-        Command::Config(args) if args.edit => config_cmd::edit(&env, &Locations::from_env(&env)?),
+        Command::Config(args) if args.edit => {
+            config_cmd::edit(&env, &Locations::from_env(&env)?, ui)
+        }
         Command::Config(args) => match args.action {
             Some(ConfigAction::Path) => config_cmd::path(&Locations::from_env(&env)?, ui),
             Some(ConfigAction::Default { domain }) => {

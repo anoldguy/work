@@ -14,11 +14,11 @@ use std::ffi::OsStr;
 use std::fmt::Debug;
 use std::io::{self, BufRead, BufReader, Read};
 use std::panic::{self, AssertUnwindSafe};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::thread;
 
 use crate::domain::{Domain, Org, Repo};
-use crate::proc;
+use crate::proc::{self, Interactive};
 
 /// What `work` asks of the GitHub CLI. `Sync` because fetch workers share
 /// one `&dyn Gh` across scoped threads; implemented by [`ProcessGh`] and by
@@ -62,28 +62,28 @@ pub trait Gh: Sync + Debug {
         on_repo: &mut dyn FnMut(Repo),
     ) -> Result<u32, GhError>;
 
-    /// `gh auth status --hostname <host>` with stdio inherited, so gh prints
-    /// its own report. Flush buffered output before calling it.
+    /// `gh auth status --hostname <host>` on `term`, so gh prints its own
+    /// report.
     ///
     /// # Errors
     ///
     /// [`GhError::NotInstalled`], or [`GhError::Failed`] on a non-zero exit
     /// (not logged in).
-    fn auth_status(&self, host: &Domain) -> Result<(), GhError>;
+    fn auth_status(&self, term: &mut Interactive<'_>, host: &Domain) -> Result<(), GhError>;
 
-    /// `gh auth login --hostname <host>` with stdio inherited (interactive).
+    /// `gh auth login --hostname <host>` on `term` (interactive).
     ///
     /// # Errors
     ///
     /// [`GhError::NotInstalled`], or [`GhError::Failed`] on a non-zero exit.
-    fn login(&self, host: &Domain) -> Result<(), GhError>;
+    fn login(&self, term: &mut Interactive<'_>, host: &Domain) -> Result<(), GhError>;
 
-    /// `gh auth logout --hostname <host>` with stdio inherited.
+    /// `gh auth logout --hostname <host>` on `term`.
     ///
     /// # Errors
     ///
     /// [`GhError::NotInstalled`], or [`GhError::Failed`] on a non-zero exit.
-    fn logout(&self, host: &Domain) -> Result<(), GhError>;
+    fn logout(&self, term: &mut Interactive<'_>, host: &Domain) -> Result<(), GhError>;
 }
 
 /// The real `gh`, run as a child process found on `PATH`.
@@ -112,16 +112,16 @@ impl Gh for ProcessGh {
         repos_via(OsStr::new(GH), host, &org_repos_path(org), on_repo)
     }
 
-    fn auth_status(&self, host: &Domain) -> Result<(), GhError> {
-        interactive_via(OsStr::new(GH), "status", host)
+    fn auth_status(&self, term: &mut Interactive<'_>, host: &Domain) -> Result<(), GhError> {
+        interactive_via(term, OsStr::new(GH), "status", host)
     }
 
-    fn login(&self, host: &Domain) -> Result<(), GhError> {
-        interactive_via(OsStr::new(GH), "login", host)
+    fn login(&self, term: &mut Interactive<'_>, host: &Domain) -> Result<(), GhError> {
+        interactive_via(term, OsStr::new(GH), "login", host)
     }
 
-    fn logout(&self, host: &Domain) -> Result<(), GhError> {
-        interactive_via(OsStr::new(GH), "logout", host)
+    fn logout(&self, term: &mut Interactive<'_>, host: &Domain) -> Result<(), GhError> {
+        interactive_via(term, OsStr::new(GH), "logout", host)
     }
 }
 
@@ -141,7 +141,7 @@ fn org_repos_path(org: &Org) -> String {
 /// no pager, no colour. Captured children also get `GH_PROMPT_DISABLED`;
 /// interactive ones (`auth login` needs its prompts) do not.
 fn gh_command(program: &OsStr, interactive: bool) -> Command {
-    let mut cmd = Command::new(program);
+    let mut cmd = proc::command(program);
     cmd.env("GH_NO_UPDATE_NOTIFIER", "1")
         .env("GH_PAGER", "")
         .env("NO_COLOR", "1");
@@ -183,11 +183,7 @@ fn api_lines(
     on_line: &mut dyn FnMut(&[u8]),
 ) -> Result<(), GhError> {
     let mut cmd = gh_command(program, false);
-    cmd.args(["api", "--hostname", host.as_str()])
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.args(["api", "--hostname", host.as_str()]).args(args);
     let mut child = cmd.spawn().map_err(|e| map_spawn(&e))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -313,11 +309,16 @@ fn repos_via(
     Ok(skipped)
 }
 
-/// Runs `<program> auth <action> --hostname <host>` with inherited stdio.
-fn interactive_via(program: &OsStr, action: &'static str, host: &Domain) -> Result<(), GhError> {
+/// Runs `<program> auth <action> --hostname <host>` on `term`.
+fn interactive_via(
+    term: &mut Interactive<'_>,
+    program: &OsStr,
+    action: &'static str,
+    host: &Domain,
+) -> Result<(), GhError> {
     let mut cmd = gh_command(program, true);
     cmd.args(["auth", action, "--hostname", host.as_str()]);
-    let status = proc::run_inherit(&mut cmd).map_err(|e| map_spawn(&e))?;
+    let status = term.run(&mut cmd).map_err(|e| map_spawn(&e))?;
     if status.success() {
         Ok(())
     } else {
@@ -370,9 +371,23 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
+    use crate::testing::{ScriptedInteraction, SharedBuf};
+    use crate::ui::Ui;
 
     fn host() -> Domain {
         "github.com".parse().expect("valid domain")
+    }
+
+    fn test_ui() -> Ui {
+        Ui::for_test(
+            Box::new(SharedBuf::new()),
+            Box::new(SharedBuf::new()),
+            Box::new(ScriptedInteraction::new(false, vec![])),
+        )
+    }
+
+    fn term(ui: &mut Ui) -> Interactive<'_> {
+        Interactive::new(ui).expect("flush")
     }
 
     /// Installs an executable `#!/bin/sh` shim, safe to exec at once (no
@@ -477,7 +492,7 @@ mod tests {
         let missing = OsStr::new("/nonexistent/work-no-gh");
         assert_matches!(viewer_via(missing, &host()), Err(GhError::NotInstalled));
         assert_matches!(
-            interactive_via(missing, "login", &host()),
+            interactive_via(&mut term(&mut test_ui()), missing, "login", &host()),
             Err(GhError::NotInstalled)
         );
     }
@@ -490,10 +505,15 @@ mod tests {
             "ok",
             r#"[ "$1 $2 $3 $4" = "auth status --hostname github.com" ]"#,
         );
-        assert_matches!(interactive_via(ok.as_os_str(), "status", &host()), Ok(()));
+        let mut ui = test_ui();
+        let mut term = term(&mut ui);
+        assert_matches!(
+            interactive_via(&mut term, ok.as_os_str(), "status", &host()),
+            Ok(())
+        );
         let bad = shim(dir.path(), "bad", "exit 3");
         assert_matches!(
-            interactive_via(bad.as_os_str(), "logout", &host()),
+            interactive_via(&mut term, bad.as_os_str(), "logout", &host()),
             Err(GhError::Failed {
                 action: "logout",
                 ..

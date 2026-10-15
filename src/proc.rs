@@ -1,41 +1,62 @@
-//! Running child processes, and reducing their stderr to one line.
+//! Building child processes, and reducing their stderr to one line.
 //!
-//! Callers build the `Command`; this module never formats a `Command` with
-//! `{:?}` (its argv or environment may hold secrets).
+//! This module never formats a `Command` with `{:?}` (its argv or
+//! environment may hold secrets).
 
+use std::ffi::OsStr;
 use std::io;
-use std::process::{Command, ExitStatus, Output, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 
 use crate::text;
+use crate::ui::{Ui, UiError};
 
-/// Runs `cmd` with stdin closed and stdout/stderr captured, and waits.
-///
-/// # Errors
-///
-/// The spawn error; `io::ErrorKind::NotFound` means the program is not on
-/// `PATH`. A non-zero exit is not an error here; check `Output::status`.
-pub fn run_capture(cmd: &mut Command) -> io::Result<Output> {
+/// The only constructor for a child process. The child is captured: stdin
+/// is null and stdout and stderr are piped. It gets the terminal only
+/// through [`Interactive::run`].
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the one place a child process is built"
+)]
+#[must_use]
+pub fn command(program: impl AsRef<OsStr>) -> Command {
+    let mut cmd = Command::new(program);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
+        .stderr(Stdio::piped());
+    cmd
 }
 
-/// Runs `cmd` with stdio inherited (interactive children such as
-/// `gh auth login` or the editor), and waits.
-///
-/// Caller obligation: stdout is buffered in `Ui`. Flush `Ui` before calling
-/// this, or the child's output can appear ahead of earlier output.
-///
-/// # Errors
-///
-/// The spawn error; `io::ErrorKind::NotFound` means the program is not on
-/// `PATH`.
-pub fn run_inherit(cmd: &mut Command) -> io::Result<ExitStatus> {
-    cmd.stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
+/// The terminal, lent by the [`Ui`] to interactive children (the editor,
+/// `gh auth`). Holding it borrows the `Ui`, so nothing else can write
+/// meanwhile.
+#[derive(Debug)]
+pub struct Interactive<'ui>(&'ui mut Ui);
+
+impl<'ui> Interactive<'ui> {
+    /// Takes the terminal from `ui`, flushing its buffered stdout first so
+    /// earlier output lands before the child's.
+    ///
+    /// # Errors
+    ///
+    /// The flush failure ([`UiError::BrokenPipe`] or [`UiError::Io`]).
+    pub fn new(ui: &'ui mut Ui) -> Result<Self, UiError> {
+        ui.flush()?;
+        Ok(Self(ui))
+    }
+
+    /// Runs `cmd` with stdio inherited and any live progress suspended, and
+    /// waits.
+    ///
+    /// # Errors
+    ///
+    /// The spawn error; `io::ErrorKind::NotFound` means the program is not
+    /// on `PATH`.
+    pub fn run(&mut self, cmd: &mut Command) -> io::Result<ExitStatus> {
+        cmd.stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        self.0.suspend_progress(|| cmd.status())
+    }
 }
 
 /// Reduces a child's stderr to one line: lossy UTF-8, the last non-empty
@@ -120,12 +141,22 @@ fn clean(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{ScriptedInteraction, SharedBuf};
     use std::assert_matches;
 
     fn sh(script: &str) -> Command {
-        let mut c = Command::new("sh");
+        let mut c = command("sh");
         c.args(["-c", script]);
         c
+    }
+
+    fn interactive(cmd: &mut Command) -> io::Result<ExitStatus> {
+        let mut ui = Ui::for_test(
+            Box::new(SharedBuf::new()),
+            Box::new(SharedBuf::new()),
+            Box::new(ScriptedInteraction::new(false, vec![])),
+        );
+        Interactive::new(&mut ui).expect("flush").run(cmd)
     }
 
     #[test]
@@ -191,7 +222,7 @@ mod tests {
 
     #[test]
     fn capture_returns_output_and_status() {
-        let out = run_capture(&mut sh("echo out; echo err >&2; exit 3")).unwrap();
+        let out = sh("echo out; echo err >&2; exit 3").output().unwrap();
         assert_eq!(out.stdout, b"out\n");
         assert_eq!(out.stderr, b"err\n");
         assert_eq!(out.status.code(), Some(3));
@@ -199,29 +230,21 @@ mod tests {
 
     #[test]
     fn capture_closes_stdin() {
-        let out = run_capture(&mut sh("cat; echo done")).unwrap();
+        let out = sh("cat; echo done").output().unwrap();
         assert_eq!(out.stdout, b"done\n");
     }
 
     #[test]
-    fn child_env_is_exactly_what_caller_passes() {
-        let mut c = sh("printf '%s|%s' \"$A\" \"$HOME\"");
-        c.env_clear().env("A", "1");
-        let out = run_capture(&mut c).unwrap();
-        assert_eq!(out.stdout, b"1|");
-    }
-
-    #[test]
-    fn inherit_reports_exit_status() {
-        assert!(run_inherit(&mut Command::new("true")).unwrap().success());
-        assert!(!run_inherit(&mut Command::new("false")).unwrap().success());
+    fn interactive_reports_exit_status() {
+        assert!(interactive(&mut command("true")).unwrap().success());
+        assert!(!interactive(&mut command("false")).unwrap().success());
     }
 
     #[test]
     fn missing_binary_is_not_found() {
-        let err = run_capture(&mut Command::new("work-no-such-binary-w15")).unwrap_err();
+        let err = command("work-no-such-binary-w15").output().unwrap_err();
         assert_matches!(err.kind(), io::ErrorKind::NotFound);
-        let err = run_inherit(&mut Command::new("work-no-such-binary-w15")).unwrap_err();
+        let err = interactive(&mut command("work-no-such-binary-w15")).unwrap_err();
         assert_matches!(err.kind(), io::ErrorKind::NotFound);
     }
 }

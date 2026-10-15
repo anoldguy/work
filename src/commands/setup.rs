@@ -11,6 +11,7 @@ use crate::config::{self, ConfigDoc};
 use crate::domain::{Domain, Org};
 use crate::error::Error;
 use crate::gh::GhError;
+use crate::proc::Interactive;
 use crate::text::plural;
 use crate::ui::Ui;
 use crate::ui::UiError;
@@ -92,9 +93,7 @@ fn ensure_login(app: &App, ui: &mut Ui, domain: &Domain) -> Result<bool, Error> 
     if let Err(err) = &check {
         let question = format!("gh could not reach {domain} ({err}). Run 'gh auth login' now?");
         if ui.interact().confirm(&question, true)? {
-            // gh inherits stdio, so nothing of ours may still be buffered.
-            ui.flush()?;
-            app.gh.login(domain)?;
+            app.gh.login(&mut Interactive::new(ui)?, domain)?;
             check = check_login(app, ui, domain)?;
         }
     }

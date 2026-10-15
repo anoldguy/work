@@ -3,6 +3,10 @@
 //! Each fake is scripted through its constructor and builder methods and
 //! reports what it was asked through inspection methods. Every fake is
 //! `Sync` and records its calls behind a `Mutex`, which is fine in tests.
+#![expect(
+    clippy::disallowed_methods,
+    reason = "test fixtures run their own processes"
+)]
 
 pub mod gh;
 pub mod git;

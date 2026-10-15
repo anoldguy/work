@@ -39,7 +39,6 @@ pub fn pull(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Erro
         return Err(ResolveError::NotCloned { repo: name }.into());
     }
     let domain = slug.domain();
-    ui.flush()?;
     let git = &*app.git;
     let path = target.path.as_path();
     let title = format!("pulling {name}");
@@ -85,7 +84,6 @@ pub fn sync(app: &App, ui: &mut Ui, args: &SyncArgs) -> Result<ExitCode, Error> 
         ))?;
         return Ok(ExitCode::SUCCESS);
     }
-    ui.flush()?;
     let git = &*app.git;
     let reports = ui.with_progress(SYNC_TITLE, |tasks| {
         sync_all(git, &work_dir, &repos, args.jobs, tasks)

@@ -79,7 +79,7 @@ impl ProcessGit {
     /// A `git` command with the child environment applied; with `host`, it
     /// authenticates through `gh` for that domain.
     fn command(&self, repo: Option<&Path>, host: Option<&Domain>, args: &[&OsStr]) -> Command {
-        let mut cmd = Command::new(&self.program);
+        let mut cmd = proc::command(&self.program);
         cmd.args(["-c", "protocol.ext.allow=never"]);
         if let Some(host) = host {
             cmd.args(credential_args(host));
@@ -104,7 +104,9 @@ impl ProcessGit {
         host: Option<&Domain>,
         args: &[&OsStr],
     ) -> Result<Output, GitError> {
-        proc::run_capture(&mut self.command(repo, host, args)).map_err(|e| spawn_error(&e))
+        self.command(repo, host, args)
+            .output()
+            .map_err(|e| spawn_error(&e))
     }
 
     /// Runs git and returns its stdout, or [`GitError::Failed`].
@@ -213,7 +215,7 @@ mod tests {
 
     /// Runs a fixture git command isolated from the user's config.
     fn git(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git")
+        let out = proc::command("git")
             .args(args)
             .current_dir(dir)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -387,7 +389,7 @@ mod tests {
         git(&fx.seed, &["commit", "-q", "-am", "theirs"]);
         git(&fx.seed, &["push", "-q", "origin", "main"]);
         fx.fetch();
-        let merged = Command::new("git")
+        let merged = proc::command("git")
             .args(["merge", "-q", "@{u}"])
             .current_dir(&fx.local)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -618,7 +620,7 @@ mod tests {
         };
         // Control: the user's config alone lets the ext command run.
         let control = tmp.path().join("control");
-        let _ = Command::new("git")
+        let _ = proc::command("git")
             .args(ext_cmd(&control))
             .env("GIT_CONFIG_GLOBAL", &config)
             .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -636,7 +638,7 @@ mod tests {
             .env("GIT_CONFIG_COUNT", "1")
             .env("GIT_CONFIG_KEY_0", "protocol.ext.allow")
             .env("GIT_CONFIG_VALUE_0", "always");
-        let out = proc::run_capture(&mut cmd).expect("runs");
+        let out = cmd.output().expect("runs");
         assert!(!out.status.success());
         assert!(!marker.exists());
     }
@@ -669,7 +671,11 @@ mod tests {
             OsStr::new(url.as_str()),
             dest.as_os_str(),
         ];
-        let _ = proc::run_capture(&mut fx.git.command(None, Some(&github()), &args)).expect("runs");
+        let _ = fx
+            .git
+            .command(None, Some(&github()), &args)
+            .output()
+            .expect("runs");
         assert!(
             !dest.join("sub").join("a").exists(),
             "file:// submodule was populated"

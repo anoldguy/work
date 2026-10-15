@@ -37,8 +37,16 @@ pub(crate) trait Backend: Send + Sync {
     fn panic_writer(&self) -> Box<dyn Write>;
 }
 
-/// The real terminal, through crossterm.
-struct Crossterm;
+/// The real terminal, through crossterm. The panic hook writes to `err`.
+pub(crate) struct Crossterm {
+    err: io::Stderr,
+}
+
+impl Crossterm {
+    pub(crate) const fn new(err: io::Stderr) -> Self {
+        Self { err }
+    }
+}
 
 impl Backend for Crossterm {
     fn enable_raw(&self) -> io::Result<()> {
@@ -62,7 +70,7 @@ impl Backend for Crossterm {
     }
 
     fn panic_writer(&self) -> Box<dyn Write> {
-        Box::new(io::stderr())
+        Box::new(self.err.lock())
     }
 }
 
@@ -129,27 +137,20 @@ pub struct TerminalGuard<'a> {
 }
 
 impl<'a> TerminalGuard<'a> {
-    /// Enters raw mode on `out` (and the alternate screen if asked) and hides
-    /// the cursor. The process stdout handle and `out` are flushed first;
-    /// a caller holding its own stdout buffer (the `Ui`) flushes that before
-    /// calling.
+    /// Enters raw mode through `backend`, on `out` (and the alternate screen
+    /// if asked), and hides the cursor. `out` is flushed first; the caller
+    /// (the `Ui`) flushes its buffered stdout before calling.
     ///
     /// # Errors
     ///
     /// [`UiError::Io`] when the terminal refuses, or when another guard is
     /// already alive.
-    pub fn acquire(out: &'a mut (dyn Write + Send), screen: Screen) -> Result<Self, UiError> {
-        Self::acquire_with(out, screen, Arc::new(Crossterm))
-    }
-
-    /// [`TerminalGuard::acquire`] over an explicit backend.
-    pub(crate) fn acquire_with(
+    pub(crate) fn acquire(
         out: &'a mut (dyn Write + Send),
         screen: Screen,
         backend: Arc<dyn Backend>,
     ) -> Result<Self, UiError> {
         let io_err = |source| UiError::Io { source };
-        io::stdout().flush().map_err(io_err)?;
         out.flush().map_err(io_err)?;
         install_panic_hook();
         if ACTIVE
@@ -282,7 +283,8 @@ impl Ui {
     /// if pending stdout cannot be flushed because its reader went away, or
     /// [`UiError::Io`].
     pub fn terminal(&mut self, screen: Screen) -> Result<TerminalGuard<'_>, UiError> {
-        self.terminal_with(screen, Arc::new(Crossterm))
+        let backend = Arc::clone(&self.backend);
+        self.terminal_with(screen, backend)
     }
 
     /// [`Ui::terminal`] over an explicit backend.
@@ -297,7 +299,7 @@ impl Ui {
             });
         }
         self.flush()?;
-        TerminalGuard::acquire_with(&mut *self.err, screen, backend)
+        TerminalGuard::acquire(&mut *self.err, screen, backend)
     }
 }
 
@@ -510,8 +512,8 @@ mod tests {
         let buf = SharedBuf::new();
         let mut out = buf.clone();
         {
-            let mut guard = TerminalGuard::acquire_with(&mut out, Screen::Inline, backend.clone())
-                .expect("acquire");
+            let mut guard =
+                TerminalGuard::acquire(&mut out, Screen::Inline, backend.clone()).expect("acquire");
             write!(guard, "frame").expect("write");
             assert_eq!(guard.size().expect("size"), (80, 24));
             assert_eq!(backend.log(), ["raw on"]);
@@ -529,8 +531,7 @@ mod tests {
         let buf = SharedBuf::new();
         let mut out = buf.clone();
         drop(
-            TerminalGuard::acquire_with(&mut out, Screen::Alternate, backend.clone())
-                .expect("acquire"),
+            TerminalGuard::acquire(&mut out, Screen::Alternate, backend.clone()).expect("acquire"),
         );
         assert_eq!(
             buf.contents(),
@@ -547,7 +548,7 @@ mod tests {
         let backend = Arc::new(FakeBackend::default());
         let mut out = SharedBuf::new();
         let caught = panic::catch_unwind(AssertUnwindSafe(|| {
-            let _guard = TerminalGuard::acquire_with(&mut out, Screen::Alternate, backend.clone())
+            let _guard = TerminalGuard::acquire(&mut out, Screen::Alternate, backend.clone())
                 .expect("acquire");
             panic!("boom");
         }));
@@ -567,10 +568,7 @@ mod tests {
             .unwrap_or_else(PoisonError::into_inner);
         let backend = Arc::new(FakeBackend::default());
         let mut out = SharedBuf::new();
-        drop(
-            TerminalGuard::acquire_with(&mut out, Screen::Inline, backend.clone())
-                .expect("acquire"),
-        );
+        drop(TerminalGuard::acquire(&mut out, Screen::Inline, backend.clone()).expect("acquire"));
         let caught = panic::catch_unwind(|| panic!("later"));
         assert!(caught.is_err());
         assert_eq!(backend.log(), ["raw on", "raw off"]);
@@ -583,10 +581,10 @@ mod tests {
             .unwrap_or_else(PoisonError::into_inner);
         let backend = Arc::new(FakeBackend::default());
         let (mut first, mut second) = (SharedBuf::new(), SharedBuf::new());
-        let guard = TerminalGuard::acquire_with(&mut first, Screen::Inline, backend.clone())
-            .expect("acquire");
+        let guard =
+            TerminalGuard::acquire(&mut first, Screen::Inline, backend.clone()).expect("acquire");
         assert_matches!(
-            TerminalGuard::acquire_with(&mut second, Screen::Inline, backend.clone()),
+            TerminalGuard::acquire(&mut second, Screen::Inline, backend.clone()),
             Err(UiError::Io { .. })
         );
         drop(guard);
@@ -604,8 +602,7 @@ mod tests {
             ..FakeBackend::default()
         });
         let mut out = SharedBuf::new();
-        let guard =
-            TerminalGuard::acquire_with(&mut out, Screen::Inline, backend).expect("acquire");
+        let guard = TerminalGuard::acquire(&mut out, Screen::Inline, backend).expect("acquire");
         assert_eq!(guard.size().expect("size"), (80, 24));
     }
 
@@ -621,7 +618,7 @@ mod tests {
         let buf = SharedBuf::new();
         let mut out = buf.clone();
         assert_matches!(
-            TerminalGuard::acquire_with(&mut out, Screen::Inline, backend),
+            TerminalGuard::acquire(&mut out, Screen::Inline, backend),
             Err(UiError::Io { .. })
         );
         assert_eq!(buf.contents(), "");
@@ -642,8 +639,7 @@ mod tests {
             .unwrap_or_else(PoisonError::into_inner)
             .extend([Event::Resize(1, 1), Event::Key(release), Event::Key(press)]);
         let mut out = SharedBuf::new();
-        let mut guard =
-            TerminalGuard::acquire_with(&mut out, Screen::Inline, backend).expect("acquire");
+        let mut guard = TerminalGuard::acquire(&mut out, Screen::Inline, backend).expect("acquire");
         let timeout = Duration::from_secs(60);
         assert_eq!(guard.read_key(timeout).expect("read"), Some(press));
         assert_eq!(guard.read_key(Duration::ZERO).expect("read"), None);
