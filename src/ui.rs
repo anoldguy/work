@@ -201,11 +201,6 @@ impl Ui {
         result
     }
 
-    /// Runs `f` with any live progress display cleared, redrawing it after.
-    pub(crate) fn suspend_progress<R>(&mut self, f: impl FnOnce() -> R) -> R {
-        self.progress.suspend(f)
-    }
-
     /// Sets where live progress draws (tests).
     #[cfg(test)]
     pub(crate) fn set_progress_target(&mut self, target: ProgressDrawTarget) {

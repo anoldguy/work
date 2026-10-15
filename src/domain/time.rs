@@ -22,7 +22,7 @@ const NANOS_PER_SEC: i128 = 1_000_000_000;
 pub struct StoredTime(jiff::Timestamp);
 
 impl StoredTime {
-    /// Reads the system clock. Only the edge (`App::load`) calls this.
+    /// Reads the system clock.
     #[must_use]
     pub fn now() -> Self {
         Self(jiff::Timestamp::now())

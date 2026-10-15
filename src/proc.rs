@@ -30,7 +30,9 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
 /// `gh auth`). Holding it borrows the `Ui`, so nothing else can write
 /// meanwhile.
 #[derive(Debug)]
-pub struct Interactive<'ui>(&'ui mut Ui);
+pub struct Interactive<'ui> {
+    _ui: &'ui mut Ui,
+}
 
 impl<'ui> Interactive<'ui> {
     /// Takes the terminal from `ui`, flushing its buffered stdout first so
@@ -41,32 +43,44 @@ impl<'ui> Interactive<'ui> {
     /// The flush failure ([`UiError::BrokenPipe`] or [`UiError::Io`]).
     pub fn new(ui: &'ui mut Ui) -> Result<Self, UiError> {
         ui.flush()?;
-        Ok(Self(ui))
+        Ok(Self { _ui: ui })
     }
 
-    /// Runs `cmd` with stdio inherited and any live progress suspended, and
-    /// waits.
+    /// Runs `cmd` with stdio inherited and waits.
     ///
     /// # Errors
     ///
     /// The spawn error; `io::ErrorKind::NotFound` means the program is not
     /// on `PATH`.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the only child that gets the terminal, while holding the Ui"
+    )]
     pub fn run(&mut self, cmd: &mut Command) -> io::Result<ExitStatus> {
         cmd.stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
-        self.0.suspend_progress(|| cmd.status())
+        cmd.status()
     }
 }
 
+/// What [`stderr_summary`] keeps when stderr has no `fatal:`/`error:` line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fallback {
+    /// The last line (git: earlier lines are progress and `remote:` noise).
+    LastLine,
+    /// Every line, joined (gh splits one message over several lines).
+    AllLines,
+}
+
 /// A child's stderr reduced to one line. Each line (lossy UTF-8) keeps only
-/// its last `\r`-separated state, so progress redraws collapse, and is made
-/// safe by [`text::one_line`]. The last `fatal: `/`error: ` line wins, with
-/// that prefix removed (git puts the real error last); without one, every
-/// line that is not a `hint:` is joined with spaces (gh splits one message
-/// over several lines).
+/// its last `\r`-separated state, so progress redraws collapse, is made safe
+/// by [`text::one_line`], and `hint:` lines are dropped. From the first
+/// `fatal: `/`error: ` line on, every line is kept with that prefix removed,
+/// so a message git spreads over several lines stays whole; without such a
+/// line, `fallback` decides.
 #[must_use]
-pub fn stderr_summary(stderr: &[u8]) -> String {
+pub fn stderr_summary(stderr: &[u8], fallback: Fallback) -> String {
     let text = String::from_utf8_lossy(stderr);
     let lines: Vec<String> = text
         .split(['\n', '\u{2028}', '\u{2029}'])
@@ -76,23 +90,32 @@ pub fn stderr_summary(stderr: &[u8]) -> String {
                 .rfind(|state| !state.is_empty())
         })
         .collect();
-    let error = lines.iter().rev().find_map(|line| {
-        line.strip_prefix("fatal: ")
-            .or_else(|| line.strip_prefix("error: "))
-    });
-    if let Some(error) = error {
-        return error.trim().to_owned();
-    }
-    let told: Vec<&str> = lines
+    let mut told: Vec<&str> = lines
         .iter()
         .map(String::as_str)
         .filter(|line| !line.starts_with("hint:"))
         .collect();
     if told.is_empty() {
-        lines.join(" ")
-    } else {
-        told.join(" ")
+        told = lines.iter().map(String::as_str).collect();
     }
+    if let Some(first) = told.iter().position(|line| error_text(line).is_some()) {
+        return told[first..]
+            .iter()
+            .map(|line| error_text(line).unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
+    match fallback {
+        Fallback::LastLine => told.last().copied().unwrap_or_default().to_owned(),
+        Fallback::AllLines => told.join(" "),
+    }
+}
+
+/// `line` without its `fatal: `/`error: ` prefix, if it has one.
+fn error_text(line: &str) -> Option<&str> {
+    line.strip_prefix("fatal: ")
+        .or_else(|| line.strip_prefix("error: "))
+        .map(str::trim)
 }
 
 #[cfg(test)]
@@ -117,43 +140,61 @@ mod tests {
     }
 
     #[test]
-    fn stderr_summary_keeps_the_last_error_without_its_prefix() {
+    fn stderr_summary_keeps_the_error_message_from_its_first_line_on() {
+        use Fallback::LastLine;
         assert_eq!(
-            stderr_summary(b"hint: x\nfatal: not a repo\n\n  \n"),
-            "not a repo"
+            stderr_summary(
+                b"Cloning into 'x'...\nremote: nope\nfatal: not found\n",
+                LastLine
+            ),
+            "not found"
         );
-        assert_eq!(stderr_summary(b"error: boom"), "boom");
         assert_eq!(
-            stderr_summary(b"error: red\nhint: use --foo to override\n"),
+            stderr_summary(
+                b"error: Your local changes would be overwritten by merge:\n\ta.txt\nPlease commit your changes or stash them before you merge.\nAborting\n",
+                LastLine
+            ),
+            "Your local changes would be overwritten by merge: a.txt Please commit your changes or stash them before you merge. Aborting"
+        );
+        assert_eq!(
+            stderr_summary(
+                b"error: cannot pull with rebase: You have unstaged changes.\nerror: Please commit or stash them.\n",
+                LastLine
+            ),
+            "cannot pull with rebase: You have unstaged changes. Please commit or stash them."
+        );
+        assert_eq!(
+            stderr_summary(b"error: red\nhint: use --foo to override\n", LastLine),
             "red"
-        );
-        assert_eq!(
-            stderr_summary("first\u{2028}fatal: last".as_bytes()),
-            "last"
         );
     }
 
     #[test]
-    fn stderr_summary_joins_a_message_without_an_error_line() {
+    fn stderr_summary_without_an_error_line_follows_the_fallback() {
+        let git = b"Cloning into 'p'...\nremote: Counting objects: 100%\nReceiving objects: 100% (8/8), done.\n";
         assert_eq!(
-            stderr_summary(b"not logged in\nrun gh auth login\n"),
+            stderr_summary(git, Fallback::LastLine),
+            "Receiving objects: 100% (8/8), done."
+        );
+        assert_eq!(
+            stderr_summary(b"not logged in\nrun gh auth login\n", Fallback::AllLines),
             "not logged in run gh auth login"
         );
-        assert_eq!(stderr_summary(b"warning: w\nhint: h\n"), "warning: w");
-        assert_eq!(stderr_summary(b"hint: only\n"), "hint: only");
+        assert_eq!(
+            stderr_summary(b"hint: only\n", Fallback::AllLines),
+            "hint: only"
+        );
     }
 
     #[test]
     fn stderr_summary_keeps_the_final_progress_state_and_no_controls() {
-        assert_eq!(
-            stderr_summary(b"a\rprogress 50%\rdone\x1b[0m\x07\r"),
-            "done"
-        );
-        assert_eq!(stderr_summary(b"\x1b[1;31mboom\x1b[0m"), "boom");
-        assert_eq!(stderr_summary("a\u{202e}b\u{200b}c".as_bytes()), "abc");
-        assert_eq!(stderr_summary(b""), "");
-        assert_eq!(stderr_summary(b"\n\r\n"), "");
-        assert_eq!(stderr_summary(b"bad \xff byte"), "bad \u{fffd} byte");
+        let sum = |b: &[u8]| stderr_summary(b, Fallback::AllLines);
+        assert_eq!(sum(b"a\rprogress 50%\rdone\x1b[0m\x07\r"), "done");
+        assert_eq!(sum(b"\x1b[1;31mboom\x1b[0m"), "boom");
+        assert_eq!(sum("a\u{202e}b\u{200b}c".as_bytes()), "abc");
+        assert_eq!(sum(b""), "");
+        assert_eq!(sum(b"\n\r\n"), "");
+        assert_eq!(sum(b"bad \xff byte"), "bad \u{fffd} byte");
     }
 
     #[test]

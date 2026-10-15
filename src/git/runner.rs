@@ -141,7 +141,7 @@ fn spawn_error(err: &io::Error) -> GitError {
 
 /// A failed run, with git's stderr reduced to one line.
 fn failed(action: &'static str, out: &Output) -> GitError {
-    let line = proc::stderr_summary(&out.stderr);
+    let line = proc::stderr_summary(&out.stderr, proc::Fallback::LastLine);
     GitError::Failed {
         action,
         detail: if line.is_empty() {

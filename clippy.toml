@@ -1,7 +1,5 @@
 # The terminal has one owner (`ui::Ui`) and every child process is built by
-# `proc::command`. Allowed only at `Ui::new`, `main`, and `proc::command`
-# (each with a scoped `#[expect(..., reason = "...")]`), and in test code
-# (one `#![expect]` at `tests/cli/main.rs` and at `src/testing.rs`).
+# `proc::command`. Exemptions are scoped `#[expect(..., reason = "...")]`.
 
 disallowed-macros = [
     { path = "std::print", reason = "write through ui::Ui" },
@@ -14,4 +12,5 @@ disallowed-methods = [
     { path = "std::io::stdout", reason = "only ui::Ui owns stdout" },
     { path = "std::io::stderr", reason = "only ui::Ui owns stderr" },
     { path = "std::process::Command::new", reason = "build children with proc::command" },
+    { path = "std::process::Stdio::inherit", reason = "hand a child the terminal through proc::Interactive" },
 ]

@@ -92,16 +92,25 @@ fn strip_escapes(text: &str) -> String {
                 }
             }
             Some(']') => {
-                while let Some(n) = chars.next() {
-                    if n == '\x07' || n == '\u{9c}' {
-                        break;
-                    }
-                    if n == '\x1b' {
-                        if chars.peek() == Some(&'\\') {
-                            chars.next();
+                // An OSC without a terminator drops only the ESC and `]`, so
+                // text after a stray ESC is never hidden.
+                let mut rest = chars.clone();
+                let terminated = loop {
+                    match rest.next() {
+                        Some('\x07' | '\u{9c}') => break true,
+                        Some('\x1b') => {
+                            if rest.peek() == Some(&'\\') {
+                                rest.next();
+                            }
+                            break true;
                         }
-                        break;
+                        Some(n) if n.is_control() => break false,
+                        Some(_) => {}
+                        None => break false,
                     }
+                };
+                if terminated {
+                    chars = rest;
                 }
             }
             _ => {}
@@ -174,6 +183,16 @@ mod tests {
         '\u{061C}', '\u{200E}', '\u{200F}', '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}',
         '\u{202E}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
     ];
+
+    #[test]
+    fn an_unterminated_escape_never_hides_the_text_after_it() {
+        assert_eq!(
+            one_line("unexpected '--bogus\x1b]x' found (see 'work --help')"),
+            "unexpected '--bogusx' found (see 'work --help')"
+        );
+        assert_eq!(one_line("a\x1b]0;title\x07b"), "ab");
+        assert_eq!(one_line("a\x1b]8;;url\x1b\\b"), "ab");
+    }
 
     #[test]
     fn separators_bidi_controls_and_zero_widths_are_invisible() {
