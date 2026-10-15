@@ -15,11 +15,10 @@ use crate::error::Error;
 use crate::sync::{SyncError, SyncTarget, failures, pull_one, sync_all};
 use crate::ui::Ui;
 
-/// Shown by the progress display until `sync_all` sends its header.
 const SYNC_TITLE: &str = "Syncing repositories";
 
-/// `pull <query>`: fetch and fast-forward one cloned repo, print its outcome,
-/// record frecency. Never refreshes the cache.
+/// Fetches and fast-forwards one cloned repo, prints its outcome and records
+/// frecency. Never refreshes the cache.
 ///
 /// # Errors
 ///
@@ -28,8 +27,7 @@ const SYNC_TITLE: &str = "Syncing repositories";
 ///
 /// # Panics
 ///
-/// Only on a broken `Target` invariant (see
-/// [`crate::commands::resolve::Target::repo`]).
+/// Only on a broken `Target` invariant.
 pub fn pull(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Error> {
     let cache = load_or_refresh(app, ui, Freshness::NoUpdate)?;
     let target = resolve_target(app, ui, &cache, &args.query, args.pick)?;
@@ -51,11 +49,9 @@ pub fn pull(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Erro
     Ok(ExitCode::SUCCESS)
 }
 
-/// `sync`: sync every repo that is in the cache and cloned at its expected
-/// path, print one outcome line per repo sorted by relative path. Loads the
-/// cache without refreshing it and records no frecency. Each repo is fetched
-/// with git authenticating for its cached domain, as in `pull`. When no
-/// cached repo is cloned, says so on stderr and succeeds.
+/// Syncs every cached repo cloned at its expected path, printing one outcome
+/// line per repo sorted by relative path. Never refreshes the cache or
+/// records frecency.
 ///
 /// # Errors
 ///

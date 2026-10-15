@@ -1,14 +1,4 @@
 //! The `work` binary: runs [`work::run`] and renders its error.
-//!
-//! The `writeln!` calls here are the one sanctioned terminal write outside
-//! `ui::Ui`: they run after the `Ui` has been dropped, to print the final
-//! error. They ignore failures, so a closed stderr cannot turn a usage error
-//! into a panic.
-//!
-//! A panic hook turns any panic into one line and leaves the exit status at
-//! 101. Code that installs its own hook (`TerminalGuard`) must chain to this
-//! one with `std::panic::take_hook`. The crate relies on unwinding
-//! (`with_progress`), so never set `panic = "abort"`.
 
 use std::io::{self, Write};
 use std::panic;
@@ -27,6 +17,7 @@ fn main() -> ExitCode {
             .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
             .unwrap_or("unknown panic");
         let message = work::text::one_line(message);
+        // Not `eprintln!`: a closed stderr must not panic again.
         let _ = writeln!(
             io::stderr().lock(),
             "work: internal error: {message} (please report this)"

@@ -15,7 +15,7 @@ use crate::error::Error;
 use crate::ui::Ui;
 
 /// Prints every slug (sorted), ranked results, or filter results, one per
-/// line (refreshing a stale cache first). Not called for `--complete`.
+/// line, refreshing a stale cache first.
 ///
 /// # Errors
 ///
@@ -49,17 +49,15 @@ pub fn run(app: &App, ui: &mut Ui, args: &ListArgs) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Every slug, sorted.
 fn sorted_slugs(repos: &[Repo]) -> Vec<String> {
     let mut slugs: Vec<&Slug> = repos.iter().map(|r| &r.slug).collect();
     slugs.sort();
     slugs.into_iter().map(ToString::to_string).collect()
 }
 
-/// `list --complete`: loads the config and the cache without any
-/// network, and prints de-duplicated `name` and `org/name` entries. Prints
-/// nothing and exits 0 on any failure (missing or broken config or cache,
-/// broken pipe), because a shell runs it on every Tab press.
+/// Prints de-duplicated `name` and `org/name` completion candidates from the
+/// cache, without any network. Prints nothing and exits 0 on any failure,
+/// because a shell runs it on every Tab press.
 #[must_use]
 pub fn complete(locations: &Locations, ui: &mut Ui) -> ExitCode {
     let Ok(config) = config_store::load(locations) else {
