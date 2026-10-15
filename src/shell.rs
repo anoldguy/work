@@ -1,25 +1,44 @@
-//! Shell integration: detection, quoting, the `sh-*` scripts, activation,
-//! and completions.
+//! Shell integration: detection, the `sh-*` path line, activation, and
+//! completions.
 //!
 //! The wrapper scripts in `shell/` are the contract and are embedded
-//! unchanged. `sh-*` output is one shell-agnostic line, so it needs no shell
-//! detection; detection is for `activate`, `completions` and hints only.
+//! unchanged. `sh-cd`/`sh-on` print data (one absolute path), never shell
+//! code, so they need no shell detection; detection is for `activate`,
+//! `completions` and hints only.
 
 pub mod activate;
 pub mod completions;
 pub mod detect;
-pub mod quote;
-pub mod script;
 
 pub use activate::activation_script;
 pub use completions::{completion_script, install_path};
 pub use detect::detect;
-pub use quote::quote;
-pub use script::{cd_script, on_script};
 
 use std::fmt;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// The line `sh-cd`/`sh-on` print for `path`: the path made absolute
+/// (against the current directory, without touching the file system).
+///
+/// # Errors
+///
+/// [`ShellError::NonUtf8Path`] or [`ShellError::NewlineInPath`], since the
+/// wrapper reads exactly one line of text; [`ShellError::Absolute`] when
+/// the current directory is needed and unavailable.
+pub fn path_line(path: &Path) -> Result<String, ShellError> {
+    let absolute = std::path::absolute(path).map_err(|source| ShellError::Absolute {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let Some(line) = absolute.to_str() else {
+        return Err(ShellError::NonUtf8Path { path: absolute });
+    };
+    if line.contains(['\n', '\r']) {
+        return Err(ShellError::NewlineInPath { path: absolute });
+    }
+    Ok(line.to_owned())
+}
 
 /// A supported shell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -95,20 +114,25 @@ pub enum ShellError {
         /// The offending path.
         path: PathBuf,
     },
-    /// Scripts are text; a non-UTF-8 path cannot be quoted into one.
+    /// The wrapper reads text; a non-UTF-8 path cannot be printed as one.
     #[error("path {path:?} is not valid UTF-8")]
     NonUtf8Path {
         /// The offending path.
         path: PathBuf,
     },
-    /// `sh-on`'s editor command contains a control character, which would
-    /// split the one-line script and run the rest as a separate command.
-    #[error(
-        "invalid editor command {given:?} (control characters are not allowed; check $WORK_EDITOR and $EDITOR)"
-    )]
-    ControlCharInEditor {
-        /// The editor command as resolved from the environment.
-        given: String,
+    /// A relative path could not be made absolute.
+    #[error("cannot make {path:?} absolute: {source}")]
+    Absolute {
+        /// The relative path.
+        path: PathBuf,
+        /// Why the current directory is unavailable.
+        source: io::Error,
+    },
+    /// `sh-editor` could not determine the current directory.
+    #[error("cannot read the current directory: {source}")]
+    CurrentDir {
+        /// The I/O error.
+        source: io::Error,
     },
     /// `about --style` with an unknown name. A list error: `valid` is printed
     /// as `  - <name>` lines after the summary.
@@ -127,4 +151,27 @@ pub enum ShellError {
         /// The I/O error.
         source: io::Error,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use std::assert_matches;
+    use std::path::Path;
+
+    use super::{ShellError, path_line};
+
+    #[test]
+    fn relative_paths_print_absolute() {
+        let line = path_line(Path::new("-x/y")).expect("printable");
+        assert!(Path::new(&line).is_absolute(), "{line}");
+        assert!(line.ends_with("/-x/y"), "{line}");
+    }
+
+    #[test]
+    fn non_utf8_paths_are_rejected() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let path = Path::new(OsStr::from_bytes(b"/a\xffb"));
+        assert_matches!(path_line(path), Err(ShellError::NonUtf8Path { .. }));
+    }
 }
