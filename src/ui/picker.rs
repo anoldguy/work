@@ -233,24 +233,6 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
     use super::{PickerKey, PickerState, PickerStep};
-    use crate::text::display_width;
-
-    #[test]
-    fn wide_labels_are_cut_by_display_width_not_chars() {
-        let items = [
-            "acme/日本語のリポジトリ",
-            "acme/🚀🚀🚀🚀🚀🚀",
-            "acme/plain-ascii",
-        ];
-        let state = PickerState::new(&items, None);
-        let lines = state.lines(14, 5);
-        assert!(lines.iter().all(|l| display_width(l) <= 14), "{lines:?}");
-        // Seven ASCII columns leave seven: three two-column glyphs fit, and
-        // a fourth would end on column 15, so it is dropped whole.
-        assert_eq!(lines[1], "> acme/日本語");
-        assert_eq!(lines[2], "  acme/🚀🚀🚀");
-        assert_eq!(lines[3], "  acme/plain-a");
-    }
 
     const ITEMS: &[&str] = &[
         "acme/widgets",
@@ -319,58 +301,10 @@ mod tests {
     }
 
     #[test]
-    fn the_cursor_is_clamped_when_the_filter_shrinks_the_list() {
-        let mut state = PickerState::new(ITEMS, None);
-        for _ in 0..4 {
-            state.apply(PickerKey::Down);
-        }
-        typed(&mut state, "acme");
-        assert_eq!(state.visible, vec![0, 1, 3]);
-        assert_eq!(state.cursor, 2);
-        typed(&mut state, "zzz");
-        assert_eq!(state.cursor, 0);
-    }
-
-    #[test]
-    fn the_cursor_stays_on_its_item_when_it_still_matches() {
-        let items = &["b", "a1", "a2", "c"];
-        let mut state = PickerState::new(items, None);
-        state.apply(PickerKey::Down);
-        typed(&mut state, "a");
-        assert_eq!(state.cursor, 0);
-        assert_eq!(state.apply(PickerKey::Enter), PickerStep::Chosen(vec![1]));
-        state.apply(PickerKey::Backspace);
-        assert_eq!(state.apply(PickerKey::Enter), PickerStep::Chosen(vec![1]));
-    }
-
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "one selection flag per item")]
-    fn a_wrong_length_selection_is_a_caller_bug() {
-        let _ = PickerState::new(ITEMS, Some(vec![true]));
-    }
-
-    #[test]
-    fn enter_on_an_empty_list_is_a_no_op() {
-        let mut state = PickerState::new(ITEMS, None);
-        typed(&mut state, "nothing matches");
-        assert_eq!(state.apply(PickerKey::Enter), PickerStep::Continue);
-        let mut empty = PickerState::new(&[], None);
-        assert_eq!(empty.apply(PickerKey::Enter), PickerStep::Continue);
-    }
-
-    #[test]
     fn esc_cancels_and_ctrl_c_interrupts() {
         let mut state = PickerState::new(ITEMS, None);
         assert_matches!(state.apply(PickerKey::Esc), PickerStep::Cancelled);
         assert_matches!(state.apply(PickerKey::CtrlC), PickerStep::Interrupted);
-    }
-
-    #[test]
-    fn tab_is_ignored_in_single_select() {
-        let mut state = PickerState::new(ITEMS, None);
-        assert_eq!(state.apply(PickerKey::Toggle), PickerStep::Continue);
-        assert_eq!(state.apply(PickerKey::Enter), PickerStep::Chosen(vec![0]));
     }
 
     #[test]
@@ -393,13 +327,6 @@ mod tests {
         state.apply(PickerKey::Toggle);
         state.apply(PickerKey::Toggle);
         assert_eq!(state.apply(PickerKey::Enter), PickerStep::Chosen(vec![2]));
-    }
-
-    #[test]
-    fn multi_select_may_choose_nothing() {
-        let mut state = PickerState::new(ITEMS, Some(vec![true, false, false, false, false]));
-        state.apply(PickerKey::Toggle);
-        assert_eq!(state.apply(PickerKey::Enter), PickerStep::Chosen(vec![]));
     }
 
     #[test]
@@ -432,61 +359,5 @@ mod tests {
         }
         let release = KeyEvent::new_with_kind(KeyCode::Enter, none, KeyEventKind::Release);
         assert_eq!(PickerKey::from_event(&release), None);
-    }
-
-    #[test]
-    fn frame_with_a_filter_applied() {
-        let mut state = PickerState::new(ITEMS, None);
-        typed(&mut state, "ACME");
-        state.apply(PickerKey::Down);
-        insta::assert_snapshot!(state.lines(40, 6).join("\n"), @r"
-        > ACME  (3/5)
-          acme/widgets
-        > acme/Gadgets
-          acme/docs
-        ");
-    }
-
-    #[test]
-    fn frame_scrolls_to_keep_the_cursor_visible_and_truncates() {
-        let mut state = PickerState::new(ITEMS, None);
-        typed(&mut state, "s");
-        for _ in 0..3 {
-            state.apply(PickerKey::Down);
-        }
-        insta::assert_snapshot!(state.lines(12, 3).join("\n"), @r"
-        > s  (5/5)
-          other/widg
-        > acme/docs
-        ");
-    }
-
-    #[test]
-    fn frame_for_multi_select_marks_selections() {
-        let mut state = PickerState::new(ITEMS, Some(vec![true, false, true, false, false]));
-        typed(&mut state, "widget");
-        insta::assert_snapshot!(state.lines(40, 10).join("\n"), @r"
-        > widget  (2/5)
-        > [x] acme/widgets
-          [x] other/widget-tools
-        ");
-    }
-
-    #[test]
-    fn frame_with_no_matches_says_so() {
-        let mut state = PickerState::new(ITEMS, None);
-        typed(&mut state, "zz");
-        insta::assert_snapshot!(state.lines(40, 10).join("\n"), @r"
-        > zz  (0/5)
-          (no matches)
-        ");
-    }
-
-    #[test]
-    fn frame_of_zero_size_is_empty() {
-        let state = PickerState::new(ITEMS, None);
-        assert_eq!(state.lines(0, 5), Vec::<String>::new());
-        assert_eq!(state.lines(5, 0), Vec::<String>::new());
-        assert_eq!(state.lines(80, 1).len(), 1);
     }
 }

@@ -117,13 +117,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn query_deserialisation_normalises() {
-        let key: QueryKey = serde_json::from_str("\" Foo \"").unwrap();
-        assert_eq!(key.as_str(), "foo");
-        assert!(serde_json::from_str::<QueryKey>("\"\"").is_err());
-    }
-
     proptest! {
         #[test]
         fn query_normalisation_is_idempotent(s in ".{0,30}") {

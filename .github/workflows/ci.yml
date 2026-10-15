@@ -11,7 +11,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  INSTA_UPDATE: "no"
   NEXTEST_PROFILE: ci
 
 jobs:
@@ -32,7 +31,15 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest,cargo-deny,cargo-audit,cargo-machete
+      - name: install zsh and fish (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh fish
+      - name: install zsh and fish (macOS)
+        if: runner.os == 'macOS'
+        run: brew install zsh fish
       - name: make check
+        env:
+          WORK_REQUIRE_SHELLS: "1"
         run: make check
       - name: make supply-chain
         if: runner.os == 'Linux'

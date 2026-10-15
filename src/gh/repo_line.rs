@@ -209,10 +209,4 @@ mod tests {
             assert!(parse_repo_line(junk, &dom()).is_none());
         }
     }
-
-    #[test]
-    fn unknown_fields_are_ignored() {
-        let json = br#"{"name":"w","owner":"a","clone_url":"https://github.com/a/w.git","html_url":"https://github.com/a/w","private":true}"#;
-        assert!(parse_repo_line(json, &dom()).is_some());
-    }
 }

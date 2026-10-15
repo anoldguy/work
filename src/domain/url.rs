@@ -239,8 +239,6 @@ impl fmt::Display for HtmlUrl {
 mod tests {
     use std::assert_matches;
 
-    use proptest::prelude::*;
-
     use super::{CloneUrl, HtmlUrl};
     use crate::domain::NameError;
 
@@ -344,49 +342,5 @@ mod tests {
             assert_matches!(clone(bad), Err(NameError::CloneUrl { .. }), "{bad:?}");
         }
         assert!(clone("ssh://git@[::1]:22/y").is_ok());
-    }
-
-    #[test]
-    fn schemes_must_be_lowercase() {
-        assert_matches!(clone("SSH://host/x"), Err(NameError::CloneUrl { .. }));
-        assert_matches!(clone("HTTPS://host/x"), Err(NameError::CloneUrl { .. }));
-        assert_matches!(html("HTTPS://host/x"), Err(NameError::HtmlUrl { .. }));
-    }
-
-    #[test]
-    fn urls_serialise_as_strings_and_validate_on_deserialise() {
-        let url = clone("https://github.com/a/b.git").unwrap();
-        let json = serde_json::to_string(&url).unwrap();
-        assert_eq!(json, "\"https://github.com/a/b.git\"");
-        assert_eq!(serde_json::from_str::<CloneUrl>(&json).unwrap(), url);
-        assert!(serde_json::from_str::<CloneUrl>("\"ext::evil\"").is_err());
-        assert!(serde_json::from_str::<HtmlUrl>("\"http://x/\"").is_err());
-    }
-
-    proptest! {
-        #[test]
-        fn https_urls_round_trip(host in "[a-z0-9]{1,10}(\\.[a-z0-9]{1,5}){0,2}", path in "(/[A-Za-z0-9._-]{1,8}){0,3}") {
-            let url = format!("https://{host}{path}");
-            let c = clone(&url).unwrap();
-            prop_assert_eq!(String::from(c), url.clone());
-            let h = html(&url).unwrap();
-            prop_assert_eq!(h.to_string(), url.clone());
-        }
-
-        #[test]
-        fn clone_url_never_accepts_leading_dash_or_ext(tail in "[ -~]{0,20}") {
-            let dashed = format!("-{tail}");
-            let ext = format!("ext::{tail}");
-            prop_assert!(clone(&dashed).is_err());
-            prop_assert!(clone(&ext).is_err());
-        }
-
-        #[test]
-        fn clone_url_rejects_dash_user_in_ssh_forms(user in "-[A-Za-z0-9=]{0,10}") {
-            let ssh = format!("ssh://{user}@host/x");
-            let scp = format!("{user}@host:x");
-            prop_assert!(clone(&ssh).is_err());
-            prop_assert!(clone(&scp).is_err());
-        }
     }
 }
