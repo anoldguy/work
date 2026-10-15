@@ -8,7 +8,7 @@ use crate::auth::GitAuth;
 use crate::core::sync_outcome::{Plan, SyncOutcome, classify};
 use crate::git::{Git, GitError};
 use crate::pool::run_bounded;
-use crate::progress::{Header, Noun, ProgressSink, Step, TaskDetail, TaskOutcome, UiEvent, Verb};
+use crate::progress::{Noun, Step, Tasks, Verb};
 use crate::sync::SyncError;
 
 /// One repo for [`sync_all`]: where it is and the auth to fetch it with.
@@ -91,7 +91,7 @@ pub fn failures(reports: &[SyncReport]) -> Option<SyncError> {
 }
 
 /// Runs [`pull_one`] over `repos` with `jobs` workers, reporting a `Header`
-/// and per-repo task events to `sink`. Each repo is fetched with its own
+/// and one task per repo to `tasks`. Each repo is fetched with its own
 /// [`SyncTarget::auth`]. Results are sorted by relative path.
 #[must_use]
 pub fn sync_all(
@@ -99,38 +99,23 @@ pub fn sync_all(
     work_dir: &Path,
     repos: &[SyncTarget<'_>],
     jobs: NonZeroUsize,
-    sink: &ProgressSink,
+    tasks: &Tasks,
 ) -> Vec<SyncReport> {
-    sink.send(UiEvent::Header(Header {
-        verb: Verb::Syncing,
-        total: u32::try_from(repos.len()).unwrap_or(u32::MAX),
-        noun: Noun::Repositories,
-        domains: None,
-    }));
-    let indexed: Vec<(u32, &SyncTarget<'_>)> = (0..).zip(repos).collect();
-    let mut reports = run_bounded(&indexed, jobs, |&(id, target)| {
-        sink.send(UiEvent::TaskStarted {
-            id,
-            label: target.path.display().to_string(),
-        });
+    tasks.set_total(
+        Verb::Syncing,
+        u32::try_from(repos.len()).unwrap_or(u32::MAX),
+        Noun::Repositories,
+        None,
+    );
+    let mut reports = run_bounded(repos, jobs, |target| {
+        let task = tasks.start(&target.path.display().to_string());
         let path = work_dir.join(&target.path);
-        let on_step = |step| {
-            sink.send(UiEvent::TaskProgress {
-                id,
-                detail: TaskDetail::Step(step),
-            });
-        };
+        let on_step = |step: Step| task.detail(step.label());
         let outcome = pull_one(git, &path, target.auth.as_ref(), &on_step);
-        let task_outcome = match &outcome {
-            SyncOutcome::Error(reason) => TaskOutcome::Failed {
-                reason: reason.clone(),
-            },
-            _ => TaskOutcome::Ok { repos: None },
-        };
-        sink.send(UiEvent::TaskFinished {
-            id,
-            outcome: task_outcome,
-        });
+        match &outcome {
+            SyncOutcome::Error(reason) => task.fail(reason),
+            _ => task.ok(None),
+        }
         SyncReport {
             path: target.path.clone(),
             outcome,
@@ -149,6 +134,7 @@ mod tests {
     use crate::auth::SecretToken;
     use crate::core::sync_outcome::{FetchedReason, RepoFacts, Upstream};
     use crate::domain::Domain;
+    use crate::progress::{Header, TaskDetail, TaskOutcome, UiEvent};
     use crate::testing::git::{FakeGit, GitOp, RepoScript};
 
     fn dom(s: &str) -> Domain {
@@ -290,7 +276,7 @@ mod tests {
             },
         ];
         let git = FakeGit::new();
-        let (sink, _rx) = ProgressSink::channel();
+        let (sink, _rx) = Tasks::channel();
         let reports = sync_all(&git, w, &repos, one(), &sink);
         assert_eq!(reports.len(), 3);
         let fetches: Vec<_> = git
@@ -320,7 +306,7 @@ mod tests {
         let git = FakeGit::new()
             .with_repo(&w.join("b/bad"), bad)
             .with_repo(&w.join("a/ok"), script(behind(2)));
-        let (sink, rx) = ProgressSink::channel();
+        let (sink, rx) = Tasks::channel();
         let repos = targets(&["b/bad", "a/ok"]);
         let reports = sync_all(&git, w, &repos, one(), &sink);
         drop(sink);
@@ -344,8 +330,8 @@ mod tests {
             &events[2],
             UiEvent::TaskProgress {
                 id: 0,
-                detail: TaskDetail::Step(Step::Fetching)
-            }
+                detail: TaskDetail::Text(t)
+            } if t == Step::Fetching.label()
         );
         assert_matches!(
             &events[3],
@@ -359,8 +345,8 @@ mod tests {
             e,
             UiEvent::TaskProgress {
                 id: 1,
-                detail: TaskDetail::Step(Step::FastForwarding)
-            }
+                detail: TaskDetail::Text(t)
+            } if t == Step::FastForwarding.label()
         )));
         assert_matches!(
             events.last(),
@@ -376,7 +362,7 @@ mod tests {
         let names: Vec<String> = (0..24).map(|i| format!("o/r{i:02}")).collect();
         let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
         let repos = targets(&name_refs);
-        let (sink, _rx) = ProgressSink::channel();
+        let (sink, _rx) = Tasks::channel();
         let git = FakeGit::new();
         let jobs = NonZeroUsize::new(3).expect("nonzero");
         let reports = sync_all(&git, Path::new("/w"), &repos, jobs, &sink);

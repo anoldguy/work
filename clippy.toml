@@ -1,0 +1,18 @@
+# The terminal has one owner (`ui::Ui`) and every child process is built by
+# `proc::command`. Wave 8 turns these lists on; until then they are inert.
+# Allowed only at `Ui::new`, `main`, and `proc::command` (each with a scoped
+# `#[expect(..., reason = "...")]`), and in test code (one `#![expect]` at
+# `tests/cli/main.rs` and at `src/testing.rs`).
+
+# disallowed-macros = [
+#     { path = "std::print", reason = "write through ui::Ui" },
+#     { path = "std::println", reason = "write through ui::Ui" },
+#     { path = "std::eprint", reason = "write through ui::Ui" },
+#     { path = "std::eprintln", reason = "write through ui::Ui" },
+#     { path = "std::dbg", reason = "write through ui::Ui" },
+# ]
+# disallowed-methods = [
+#     { path = "std::io::stdout", reason = "only ui::Ui owns stdout" },
+#     { path = "std::io::stderr", reason = "only ui::Ui owns stderr" },
+#     { path = "std::process::Command::new", reason = "build children with proc::command" },
+# ]

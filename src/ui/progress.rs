@@ -19,7 +19,7 @@ use crossterm::cursor::MoveToPreviousLine;
 use crossterm::queue;
 use crossterm::terminal::{self, Clear, ClearType};
 
-use crate::progress::{ProgressSink, ProgressView, UiEvent};
+use crate::progress::{ProgressSink, ProgressView, Tasks, UiEvent};
 use crate::ui::{Mode, Ui, terminal::install_panic_hook};
 
 /// How often the live display is redrawn (and the spinner advances).
@@ -134,13 +134,13 @@ impl Drop for Live<'_> {
 }
 
 impl Ui {
-    /// Runs `work` on a scoped thread with a [`ProgressSink`], while this
+    /// Runs `work` on a scoped thread with [`Tasks`], while this
     /// thread folds its events into a `ProgressView` and (in `Tty` mode)
     /// redraws it in place on stderr every 80 ms, until the work's thread
     /// has finished. Then clears the area, prints the summary line (`Tty`
     /// only), and flushes deferred warnings (both modes). `title` is shown
     /// until the work sends a `Header`. Events sent after the work returns
-    /// (from a sink clone that escaped it) are dropped.
+    /// (from a `Tasks` clone that escaped it) are dropped.
     ///
     /// # Panics
     ///
@@ -150,7 +150,7 @@ impl Ui {
     pub fn with_progress<R: Send>(
         &mut self,
         title: &str,
-        work: impl FnOnce(&ProgressSink) -> R + Send,
+        work: impl FnOnce(&Tasks) -> R + Send,
     ) -> R {
         let seams = Seams {
             interval: REDRAW,
@@ -167,7 +167,7 @@ impl Ui {
     fn progress_with<R: Send>(
         &mut self,
         title: &str,
-        work: impl FnOnce(&ProgressSink) -> R + Send,
+        work: impl FnOnce(&Tasks) -> R + Send,
         seams: Seams<impl Fn() -> (u16, u16)>,
     ) -> R {
         let tty = self.mode == Mode::Tty;
@@ -209,7 +209,7 @@ impl Ui {
             other => view.apply(other),
         };
         let joined = thread::scope(|scope| {
-            let worker = scope.spawn(move || work(&sink));
+            let worker = scope.spawn(move || work(&Tasks::new(sink)));
             let mut last_draw = Instant::now();
             loop {
                 let wait = seams.interval.saturating_sub(last_draw.elapsed());
@@ -261,7 +261,7 @@ mod tests {
     use std::time::Duration;
 
     use super::{FALLBACK_SIZE, REDRAW, Seams};
-    use crate::progress::{Header, Noun, ProgressSink, TaskOutcome, UiEvent, Verb};
+    use crate::progress::{Header, Noun, TaskOutcome, Tasks, UiEvent, Verb};
     use crate::testing::{ScriptedInteraction, SharedBuf};
     use crate::ui::terminal::fake::{FakeBackend, HOOK_TEST_LOCK, with_hook_line};
     use crate::ui::{Mode, Screen, TerminalGuard, Ui};
@@ -352,7 +352,7 @@ mod tests {
     }
 
     /// Two orgs: one fetches 3 repos, one fails; one warning.
-    fn two_orgs(sink: &ProgressSink) -> &'static str {
+    fn two_orgs(sink: &Tasks) -> &'static str {
         sink.send(header(2));
         for (id, label) in [(0, "github.com/acme"), (1, "github.com/widgets")] {
             sink.send(UiEvent::TaskStarted {
@@ -462,12 +462,12 @@ mod tests {
     }
 
     #[test]
-    fn returns_even_when_a_sink_clone_escapes_the_work() {
+    fn returns_even_when_a_task_escapes_the_work() {
         let (done_tx, done_rx) = mpsc::channel();
         thread::spawn(move || {
             let (mut ui, _out, _err) = ui(Mode::Plain);
-            let escaped: ProgressSink = ui.with_progress("t", ProgressSink::clone);
-            escaped.warn("too late");
+            let escaped = ui.with_progress("t", |tasks| tasks.start("x"));
+            escaped.detail("too late");
             done_tx.send(()).ok();
         });
         // A watchdog, not a sleep: fails instead of hanging forever.

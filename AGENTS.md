@@ -38,10 +38,10 @@ Clippy runs with `-D warnings`, so any warning fails the build.
 ## Key Constraints
 
 - Shell out to `git` for all git operations (no libgit2, gix, or go-git).
-- Shell out to `gh` for authentication. Token resolution is `GITHUB_TOKEN`, then `gh auth token --hostname <domain>`.
+- Shell out to `gh` for every GitHub API call (`gh api --hostname <domain>`) and for git credentials (`gh auth git-credential`, scoped to the repo's domain). `work` never reads, stores, or forwards a token. Do not extend the token code still in `src/auth/`; Wave 7.1 removes it.
 - stdout carries only command output and the eval script that `sh-*` commands print for the shell wrapper. All progress, spinners, prompts, and warnings go to stderr.
 - Error messages are single-line. Don't embed `\n` in error text. Put actionable hints inline with parentheses instead. Sole exception: an error that lists repos/matches (e.g. ambiguous query) prints its one-line summary followed by one `  - item` line per entry, rendered from a `Vec` the error carries (never from `\n` in the message).
-- Internal program state is separate from terminal output. The terminal has ONE owner, and it is responsible for all updates/output. 
+- Internal program state is separate from terminal output. The terminal has ONE owner (`ui::Ui`), and it is responsible for all updates/output. From Wave 8, `clippy.toml` enforces this: printing macros, `std::io::stdout`/`stderr`, and `std::process::Command::new` are disallowed everywhere except `Ui::new`, `main`, `proc::command`, and test code.
 - **MUST:** `specs/` is read-only. Do not edit any file under `specs/` without explicit user approval. If a design or implementation decision would change specified behavior, stop and ask the user first; until they approve, follow the spec as written.
 
 ## Rust Engineering Standards
@@ -85,8 +85,8 @@ When one conflicts with a Key Constraint above, the Key Constraint wins
 - `unwrap()`/`expect()`/`panic!` are for tests and violated invariants only.
   In library code return a typed error; document any `expect` with the
   invariant it relies on.
-- Derive `Debug` on public types — but redact secrets (see the `SecretToken`
-  pattern in `auth.rs`); never let a token reach a log or error chain.
+- Derive `Debug` on public types. Never let a credential reach a log or
+  error chain.
 - Use `impl From`/`TryFrom` for conversions, never implement `Into`
   directly. Provide `Default` where sensible; mark pure helpers `#[must_use]`
   / `const fn` where feasible.
@@ -117,17 +117,18 @@ When one conflicts with a Key Constraint above, the Key Constraint wins
 
 ### Testing (§3)
 
-- Every bug fix gets a regression test; every new public function gets at
-  least one test (this restates the Key Constraint above). Name tests after
-  behavior, test outputs not internals.
+- Fewer tests, each guarding behavior a user would notice. Every bug fix
+  gets a regression test; new behavior gets a test at the level a user would
+  notice (usually an integration test through the binary). Private helpers
+  do not need their own tests. Name tests after behavior; test outputs, not
+  internals or exact wording.
 - Prefer `assert_matches!(value, Pattern)` (stable 1.96; `use
   std::assert_matches;` in the test module) over `assert!(matches!(...))` so
   failures print the actual value. The codebase's `panic!("expected X, got
   {other:?}")` arms can move to this.
-- Use `tempfile` for filesystem tests (already the norm). No sleeps, no
-  wall-clock or network reliance. Consider `insta` snapshots for the large
-  structured golden output and `proptest` for parsers (`parse_link_header`,
-  `Slug`, `StoredTime`).
+- Use `tempfile` for filesystem tests. No sleeps, no wall-clock or network
+  reliance. Integration tests use real `git` and a fake `gh` script on
+  `PATH`. Use `proptest` only for parsers (`Slug`, query parsing).
 
 ### Dependencies and crate metadata (§8)
 

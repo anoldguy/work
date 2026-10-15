@@ -82,9 +82,9 @@ fn refresh(
     let domains: Vec<Domain> = plan.domains.iter().map(|d| d.domain.clone()).collect();
     let tokens = Tokens::resolve(&*app.gh, &app.env.github_token, &domains);
     let api = &*app.api;
-    let outcomes = app
-        .ui
-        .with_progress(PROGRESS_TITLE, |sink| fetch_all(&plan, api, &tokens, sink));
+    let outcomes = app.ui.with_progress(PROGRESS_TITLE, |tasks| {
+        fetch_all(&plan, api, &tokens, tasks)
+    });
 
     if all_failed(&outcomes) {
         return match (freshness, previous) {
