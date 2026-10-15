@@ -8,7 +8,6 @@
 pub mod classic;
 pub mod decode;
 pub mod dropin;
-pub mod fire;
 pub mod frame;
 pub mod logo;
 pub mod plasma;
@@ -41,7 +40,6 @@ pub static STYLES: &[&dyn Style] = &[
     &classic::Classic,
     &decode::Decode,
     &plasma::Plasma,
-    &fire::Fire,
     &dropin::Dropin,
 ];
 
@@ -89,11 +87,6 @@ mod tests {
     #[test]
     fn plasma_renders() {
         renders_without_panicking("plasma");
-    }
-
-    #[test]
-    fn fire_renders() {
-        renders_without_panicking("fire");
     }
 
     #[test]

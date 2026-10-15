@@ -36,8 +36,6 @@ Displays a full-screen animated about screen with project branding, version, and
     The footer types itself in after the lock completes.
   - `plasma`: a full-screen sine-field plasma cycling through the hue wheel,
     with the logo drawn over it in white on a dark box.
-  - `fire`: a demoscene heat-map fire rising from the bottom of the screen at
-    half-cell vertical resolution, with the logo lit from below above the flames.
   - `dropin`: each logo column falls in from above on a spring, staggered left
     to right, overshoots once and settles; the footer then springs up from below.
 - Every style is time-based rather than frame-counted, so a dropped frame skips

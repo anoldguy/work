@@ -128,7 +128,7 @@ Type to filter, Backspace to edit what you typed. Arrow keys or Ctrl-n/Ctrl-p mo
 | `work auth status` | Show token status for every domain |
 | `work completions [shell] [--install]` | Print or install shell completions |
 | `work activate [shell]` | Print the shell integration script (auto-detects from `$SHELL` if omitted) |
-| `work about` | Show the animated about screen; any key exits. Styles: `classic`, `decode`, `plasma`, `fire`, `dropin` (via a hidden `--style <name>` flag). Without a TTY it prints the static logo to stderr |
+| `work about` | Show the animated about screen; any key exits. Styles: `classic`, `decode`, `plasma`, `dropin` (via a hidden `--style <name>` flag). Without a TTY it prints the static logo to stderr |
 
 ## Configuration
 
