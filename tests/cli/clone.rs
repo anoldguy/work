@@ -1,5 +1,4 @@
-//! Auto-clone: the target path, the scoped credential helper, and cleanup
-//! after a failed clone.
+//! Auto-clone into the expected path, and cleanup after a failed clone.
 
 use crate::support::{TestEnv, dirs_under, line, text};
 

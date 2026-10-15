@@ -2,8 +2,7 @@
 
 use crate::shell::Shell;
 
-/// The wrapper for `shell`, byte-for-byte from `shell/work.<shell>`
-/// (embedded with `include_str!`).
+/// The wrapper script for `shell`.
 #[must_use]
 pub fn activation_script(shell: Shell) -> &'static str {
     match shell {

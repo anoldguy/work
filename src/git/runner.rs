@@ -22,20 +22,15 @@ const REPO_VARS: &[&str] = &[
     "GIT_NAMESPACE",
 ];
 
-/// Set on every git child: git's messages are never localised, git never
-/// prompts on the terminal, and `status` never takes `index.lock` under the
-/// user's editor.
+/// `GIT_OPTIONAL_LOCKS=0` keeps `status` from taking `index.lock` under the user's editor.
 const CHILD_ENV: &[(&str, &str)] = &[
     ("LC_ALL", "C"),
     ("GIT_TERMINAL_PROMPT", "0"),
     ("GIT_OPTIONAL_LOCKS", "0"),
 ];
 
-/// The `-c` settings that make git authenticate through `gh` for `host`
-/// only: an empty `credential.helper` clears every helper configured
-/// before it (the user's, for this one command), and the URL-scoped helper
-/// answers for `https://<host>` alone. git hands `-c` settings to its own
-/// children, so submodules on the same host authenticate too.
+/// An empty `credential.helper` clears the user's helpers for this command,
+/// so only the URL-scoped `gh` helper answers, and only for `https://<host>`.
 fn credential_args(host: &Domain) -> [String; 4] {
     [
         "-c".to_owned(),
@@ -46,12 +41,6 @@ fn credential_args(host: &Domain) -> [String; 4] {
 }
 
 /// Runs `git` from `PATH`.
-///
-/// Every child gets `-c protocol.ext.allow=never` (which keeps `ext::`
-/// blocked even if user config allows it; git's other protocol defaults are
-/// left alone), the [`CHILD_ENV`] variables, and loses the [`REPO_VARS`] so
-/// `-C <repo>` means what it says. Clone and fetch also get
-/// [`credential_args`] for the repo's domain.
 #[derive(Debug)]
 pub struct ProcessGit {
     program: OsString,
@@ -72,8 +61,7 @@ impl ProcessGit {
         }
     }
 
-    /// A `git` command with the child environment applied; with `host`, it
-    /// authenticates through `gh` for that domain.
+    /// `protocol.ext.allow=never` keeps `ext::` blocked even if user config allows it.
     fn command(&self, repo: Option<&Path>, host: Option<&Domain>, args: &[&OsStr]) -> Command {
         let mut cmd = proc::command(&self.program);
         cmd.args(["-c", "protocol.ext.allow=never"]);
@@ -91,7 +79,6 @@ impl ProcessGit {
         cmd
     }
 
-    /// Runs git and returns its output whatever the exit status.
     fn run_raw(
         &self,
         repo: Option<&Path>,
@@ -103,7 +90,6 @@ impl ProcessGit {
             .map_err(|e| spawn_error(&e))
     }
 
-    /// Runs git and returns its stdout, or [`GitError::Failed`].
     fn run(
         &self,
         action: &'static str,
@@ -121,7 +107,6 @@ impl ProcessGit {
     }
 }
 
-/// Maps a spawn error: not found means git is not installed.
 fn spawn_error(err: &io::Error) -> GitError {
     if err.kind() == io::ErrorKind::NotFound {
         GitError::NotInstalled
@@ -132,7 +117,6 @@ fn spawn_error(err: &io::Error) -> GitError {
     }
 }
 
-/// A failed run, with git's stderr reduced to one line.
 fn failed(action: &'static str, out: &Output) -> GitError {
     let line = proc::stderr_summary(&out.stderr, proc::Fallback::LastLine);
     GitError::Failed {
