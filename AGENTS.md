@@ -13,8 +13,8 @@ cargo build --release      # binary at target/release/work
 ## Test
 
 ```bash
-cargo nextest run                  # optional; what CI runs
-cargo test --doc                   # doc tests only; CI runs these separately
+cargo nextest run                  # what make check runs
+cargo test --doc                   # doc tests only; make check runs these separately
 cargo test --test cli_about        # one integration test file
 ```
 
@@ -29,7 +29,7 @@ cargo run -- <command>     # e.g. cargo run -- list
 ```bash
 cargo clippy --all-targets -- -D warnings
 cargo fmt (rewrites files)
-cargo fmt --check (what CI runs)
+cargo fmt --check (what make check runs)
 ```
 
 Clippy runs with `-D warnings`, so any warning fails the build.
@@ -138,7 +138,7 @@ When one conflicts with a Key Constraint above, the Key Constraint wins
   bare major like `"0"`/`"1"`, so a breaking 0.x bump can't slip in silently.
 - Declare `rust-version` (MSRV) in `[package]` and keep edition 2024 set.
   Honor the `incompatible_msrv` clippy lint; never `allow` it.
-- Run the supply-chain tools in CI: `cargo deny check` (add a `deny.toml`),
+- Run the supply-chain tools before every release (`make supply-chain`): `cargo deny check` (add a `deny.toml`),
   `cargo audit`, `cargo machete`. List any skipped because a tool isn't
   installed; never report a skipped check as passed.
 - Keep `main.rs` thin (it is): parse, dispatch, map errors to one line.
@@ -153,4 +153,4 @@ dependency. State exactly what was run and its result.
 
 ## Release
 
-Use cargo-dist to provide builds and push releases to github.
+`make release v<semver>` (scripts/release.sh) cuts a release locally: it runs `make check` and `make supply-chain`, bumps `Cargo.toml`, cross-builds Linux and macOS (x86_64, aarch64) with zig, then tags, pushes and publishes the GitHub release with `gh`. There is no GitHub Actions CI. Tool versions for the build are pinned in `mise.toml` (`mise install`).
