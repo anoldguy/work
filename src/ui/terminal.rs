@@ -76,7 +76,7 @@ struct Active {
 static ACTIVE: Mutex<Option<Active>> = Mutex::new(None);
 
 /// Installs (once per process) the panic hook that restores the active
-/// guard session and erases a live progress area, if any, and then chains
+/// guard session, if any, and then chains
 /// to the previous hook (`main`'s), so its one-line message is readable.
 ///
 /// The hook is process-wide: a panic on any thread restores the terminal,
@@ -99,7 +99,6 @@ pub(super) fn install_panic_hook() {
                 let mut out = active.backend.panic_writer();
                 restore(&mut *out, active.screen, &*active.backend);
             }
-            super::progress::erase_after_panic();
             previous(info);
         }));
     });
@@ -310,9 +309,8 @@ pub(crate) mod fake {
     use std::cell::Cell;
     use std::collections::VecDeque;
     use std::io::{self, Write};
-    use std::panic;
     use std::rc::Rc;
-    use std::sync::{Arc, Mutex, PoisonError};
+    use std::sync::{Mutex, PoisonError};
     use std::time::Duration;
 
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -420,36 +418,6 @@ pub(crate) mod fake {
             Ok(self.size)
         }
     }
-
-    /// Runs `f` with the panic hook extended to append `main`'s one-line
-    /// message (`work: internal error: <msg> (please report this)`) to
-    /// `buf` after the crate's own hook has run, as `main`'s hook would
-    /// print it. Caller holds [`HOOK_TEST_LOCK`].
-    pub(crate) fn with_hook_line<T>(buf: &SharedBuf, f: impl FnOnce() -> T) -> T {
-        super::install_panic_hook();
-        let ours: Arc<PanicHook> = Arc::new(panic::take_hook());
-        let chained = Arc::clone(&ours);
-        let out = buf.clone();
-        panic::set_hook(Box::new(move |info| {
-            chained(info);
-            let payload = info.payload();
-            let message = payload
-                .downcast_ref::<&str>()
-                .copied()
-                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-                .unwrap_or("unknown panic");
-            let _ = writeln!(
-                out.clone(),
-                "work: internal error: {message} (please report this)"
-            );
-        }));
-        let result = f();
-        drop(panic::take_hook());
-        panic::set_hook(Box::new(move |info| ours(info)));
-        result
-    }
-
-    type PanicHook = Box<dyn Fn(&panic::PanicHookInfo<'_>) + Sync + Send + 'static>;
 
     /// Held by every test that installs a guard or panics on purpose.
     pub(crate) static HOOK_TEST_LOCK: Mutex<()> = Mutex::new(());
