@@ -58,7 +58,7 @@ impl App {
     pub fn new(env: EnvSnapshot, locations: Locations, ui: Ui) -> Result<Self, Error> {
         let config = config::store::load(&locations)?;
         let adapters = Adapters {
-            git: Box::new(ProcessGit::new(&env)),
+            git: Box::new(ProcessGit::new()),
             gh: Box::new(ProcessGh),
             api: Box::new(HttpGitHub::new(config.api_bases())),
         };
