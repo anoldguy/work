@@ -94,28 +94,6 @@ fn version_subcommand_prints_the_package_version() {
 }
 
 #[test]
-fn commands_sh_prints_exactly_cd_and_on() {
-    let env = TestEnv::new();
-    env.command()
-        .args(["commands", "--sh"])
-        .assert()
-        .success()
-        .stdout("cd\non\n")
-        .stderr(predicate::str::is_empty());
-}
-
-#[test]
-fn commands_without_sh_is_a_one_line_usage_error() {
-    let env = TestEnv::new();
-    let assert = env.command().arg("commands").assert().code(2).stdout("");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8");
-    assert_eq!(
-        stderr,
-        "work: missing required argument --sh (see 'work commands --help')\n"
-    );
-}
-
-#[test]
 fn activate_prints_the_bash_wrapper_byte_for_byte() {
     let env = TestEnv::new();
     env.command()

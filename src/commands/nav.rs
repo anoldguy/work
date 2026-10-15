@@ -1,4 +1,5 @@
-//! `cd`, `on`, `edit`, `clone`, `browse`, `open`, and their `sh-*` forms.
+//! `cd`, `on`, `edit`, `clone`, `browse`, `open`, their `sh-*` forms, and
+//! `sh-editor`.
 //!
 //! Every command that names a repo runs the shared pipeline: load the cache
 //! (refreshing it when stale), resolve the query, clone when the command
@@ -13,14 +14,16 @@ use crate::cache::Cache;
 use crate::cache::refresh::{Freshness, load_or_refresh};
 use crate::cli::{CdArgs, ResolveArgs};
 use crate::commands::resolve::{Target, ensure_cloned, record_access, resolve_target};
+use crate::env::EnvSnapshot;
 use crate::error::Error;
 use crate::platform::{self, EditorCmd};
 use crate::shell::{self, ShellError};
+use crate::ui::Ui;
 
 /// How `cd`/`on` were invoked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Invocation {
-    /// `sh-cd`/`sh-on` from the wrapper: print a script on stdout.
+    /// `sh-cd`/`sh-on` from the wrapper: print the target path on stdout.
     Wrapped,
     /// Plain `cd`/`on`: fail with `ShellError::NotActive` without resolving.
     Direct,
@@ -35,48 +38,62 @@ enum Local {
     NotNeeded,
 }
 
-/// `cd [query]`: prints `cd '<path>'` (the work directory, created if
-/// missing, when there is no query).
+/// `cd [query]`: prints the repo's absolute path (the work directory,
+/// created if missing, when there is no query) for the wrapper to `cd` to.
 ///
 /// # Errors
 ///
-/// Not wrapped, resolution, clone, or cache failures.
+/// Not wrapped, an unprintable path, resolution, clone, or cache failures.
 pub fn cd(app: &mut App, args: &CdArgs, via: Invocation) -> Result<ExitCode, Error> {
     require_wrapper(app, via)?;
     let Some(query) = &args.query else {
         let dir = app.config.work_dir();
         // Check the path can be printed before creating anything.
-        let script = shell::cd_script(dir)?;
+        let line = shell::path_line(dir)?;
         fs::create_dir_all(dir).map_err(|source| Error::CreateDir {
             path: dir.to_path_buf(),
             source,
         })?;
-        app.ui.stdout_line(&script)?;
+        app.ui.stdout_line(&line)?;
         return Ok(ExitCode::SUCCESS);
     };
-    let (mut cache, target) = resolve(app, query, args.pick)?;
-    // Check the path can be printed before cloning anything.
-    let script = shell::cd_script(&target.path)?;
-    ensure_cloned(app, &cache, &target)?;
-    record_access(app, &mut cache, &target)?;
-    app.ui.stdout_line(&script)?;
-    Ok(ExitCode::SUCCESS)
+    wrapped_target(app, query, args.pick)
 }
 
-/// `on <query>`: prints `cd '<path>' && <editor> '<path>'`.
+/// `on <query>`: prints the repo's absolute path, like [`cd`]; the wrapper
+/// changes to it and then runs `sh-editor` (see [`sh_editor`]).
 ///
 /// # Errors
 ///
-/// Not wrapped, resolution, clone, or cache failures.
+/// Not wrapped, an unprintable path, resolution, clone, or cache failures.
 pub fn on(app: &mut App, args: &ResolveArgs, via: Invocation) -> Result<ExitCode, Error> {
     require_wrapper(app, via)?;
-    let editor = script_editor(app)?;
-    let (mut cache, target) = resolve(app, &args.query, args.pick)?;
+    wrapped_target(app, &args.query, args.pick)
+}
+
+/// `sh-editor`: runs the editor on the current directory with the terminal
+/// attached. Resolves nothing and records nothing, so it needs no config.
+///
+/// # Errors
+///
+/// The current directory is unreadable, or the editor fails.
+pub fn sh_editor(env: &EnvSnapshot, ui: &mut Ui) -> Result<ExitCode, Error> {
+    let dir = std::env::current_dir().map_err(|source| ShellError::CurrentDir { source })?;
+    // The editor inherits stdout: pending output must land first.
+    ui.flush()?;
+    platform::spawn_editor(&EditorCmd::from_env(env), &dir)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Resolves `query`, clones it when missing, records the access, and prints
+/// the target's absolute path.
+fn wrapped_target(app: &mut App, query: &str, pick: bool) -> Result<ExitCode, Error> {
+    let (mut cache, target) = resolve(app, query, pick)?;
     // Check the path can be printed before cloning anything.
-    let script = shell::on_script(&target.path, editor.as_str())?;
+    let line = shell::path_line(&target.path)?;
     ensure_cloned(app, &cache, &target)?;
     record_access(app, &mut cache, &target)?;
-    app.ui.stdout_line(&script)?;
+    app.ui.stdout_line(&line)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -145,19 +162,6 @@ fn require_wrapper(app: &App, via: Invocation) -> Result<(), ShellError> {
             shell: shell::detect(&app.env),
         }),
     }
-}
-
-/// The editor for `sh-on`'s script. It is inserted verbatim as a command
-/// fragment, so a control character (a newline above all) would split the
-/// one-line script and run the rest as a separate command: reject it.
-fn script_editor(app: &App) -> Result<EditorCmd, ShellError> {
-    let editor = EditorCmd::from_env(&app.env);
-    if editor.as_str().chars().any(char::is_control) {
-        return Err(ShellError::ControlCharInEditor {
-            given: editor.as_str().to_owned(),
-        });
-    }
-    Ok(editor)
 }
 
 /// Loads the cache (refreshing it when needed) and resolves `query`.
