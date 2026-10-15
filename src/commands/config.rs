@@ -1,8 +1,7 @@
 //! `config [--edit] [path | default [domain]]`.
 //!
-//! `path` and `--edit` run in stage 1 with only `Locations`, so they work
-//! (and `--edit` can repair the file) when the config is broken. The summary
-//! and `default` run with an `App`.
+//! `path` and `--edit` take only `Locations`, so they work (and `--edit` can
+//! repair the file) when the config is broken.
 
 use std::fs;
 use std::path::Path;
@@ -61,12 +60,9 @@ pub fn edit(env: &EnvSnapshot, locations: &Locations) -> Result<ExitCode, Error>
 /// # Errors
 ///
 /// A broken pipe.
-pub fn show(app: &mut App) -> Result<ExitCode, Error> {
+pub fn show(app: &App, ui: &mut Ui) -> Result<ExitCode, Error> {
     let App {
-        locations,
-        config,
-        ui,
-        ..
+        locations, config, ..
     } = app;
     let file = &locations.config_file;
     let mut lines = vec![
@@ -111,12 +107,9 @@ pub fn show(app: &mut App) -> Result<ExitCode, Error> {
 ///
 /// `ConfigError::UnknownDomain` or `NoDomains`, picker failures, or config
 /// write failures.
-pub fn set_default(app: &mut App, domain: Option<Domain>) -> Result<ExitCode, Error> {
+pub fn set_default(app: &App, ui: &mut Ui, domain: Option<Domain>) -> Result<ExitCode, Error> {
     let App {
-        locations,
-        config,
-        ui,
-        ..
+        locations, config, ..
     } = app;
     let picked = match domain {
         Some(domain) => Some(domain),

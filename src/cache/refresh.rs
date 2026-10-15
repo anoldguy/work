@@ -9,6 +9,7 @@ use crate::cache::store::{self, LoadOutcome};
 use crate::cache::{Cache, CacheError};
 use crate::domain::{Domain, StoredTime};
 use crate::text::plural;
+use crate::ui::Ui;
 
 /// Shown by the progress display until the fetch sends its header.
 const PROGRESS_TITLE: &str = "Updating repositories";
@@ -31,8 +32,7 @@ pub enum Freshness {
     },
 }
 
-/// Returns an owned cache, held by the command separately from `app` so both
-/// can be borrowed mutably. Fetching runs under `app.ui.with_progress`.
+/// Returns an owned cache. Fetching runs under `ui.with_progress`.
 ///
 /// The merge starts from the copy read before the fetch and is written with
 /// [`store::replace`]; a concurrent refresh's copy is simply overwritten
@@ -46,13 +46,12 @@ pub enum Freshness {
 /// [`CacheError::Missing`] under `NoUpdate`; [`CacheError::AllFailed`]
 /// when a needed refresh fails for every domain and there is nothing to fall
 /// back on (or under `Force`); store errors.
-pub fn load_or_refresh(app: &mut App, freshness: Freshness) -> Result<Cache, CacheError> {
+pub fn load_or_refresh(app: &App, ui: &mut Ui, freshness: Freshness) -> Result<Cache, CacheError> {
     let previous = match store::load(app.config.cache_dir()) {
         LoadOutcome::Loaded(cache) => Some(cache),
         LoadOutcome::Missing => None,
         LoadOutcome::Corrupt(reason) => {
-            app.ui
-                .warn(&format!("the repository cache is unreadable ({reason})"));
+            ui.warn(&format!("the repository cache is unreadable ({reason})"));
             None
         }
     };
@@ -60,13 +59,14 @@ pub fn load_or_refresh(app: &mut App, freshness: Freshness) -> Result<Cache, Cac
     match (freshness, previous) {
         (Freshness::NoUpdate, previous) => previous.ok_or(CacheError::Missing),
         (Freshness::AutoUpdate, Some(cache)) if !cache.is_stale(app.now) => Ok(cache),
-        (_, previous) => refresh(app, freshness, previous),
+        (_, previous) => refresh(app, ui, freshness, previous),
     }
 }
 
 /// Fetches every effective domain, then merges and saves, or falls back.
 fn refresh(
-    app: &mut App,
+    app: &App,
+    ui: &mut Ui,
     freshness: Freshness,
     previous: Option<Cache>,
 ) -> Result<Cache, CacheError> {
@@ -74,14 +74,12 @@ fn refresh(
     let plan = FetchPlan::from_config(&app.config, all_orgs);
     let domains: Vec<Domain> = plan.domains.iter().map(|d| d.domain.clone()).collect();
     let gh = &*app.gh;
-    let outcomes = app
-        .ui
-        .with_progress(PROGRESS_TITLE, |tasks| fetch_all(&plan, gh, tasks));
+    let outcomes = ui.with_progress(PROGRESS_TITLE, |tasks| fetch_all(&plan, gh, tasks));
 
     if all_failed(&outcomes) {
         return match (freshness, previous) {
             (Freshness::AutoUpdate, Some(stale)) => {
-                app.ui.warn(&format!(
+                ui.warn(&format!(
                     "could not refresh the repository cache; using the copy from {}",
                     describe_age(stale.updated_at, app.now)
                 ));
@@ -214,10 +212,11 @@ mod tests {
                 git: Box::new(FakeGit::new()),
                 gh: Box::new(Arc::clone(&gh)),
             };
-            let app = App::with_parts(env, locations, config, ui, adapters, t(NOW));
+            let app = App::with_parts(env, locations, config, adapters, t(NOW));
             Harness {
                 _dir: dir,
                 app,
+                ui,
                 err,
                 gh,
             }
@@ -227,6 +226,7 @@ mod tests {
     struct Harness {
         _dir: tempfile::TempDir,
         app: App,
+        ui: Ui,
         err: SharedBuf,
         gh: Arc<FakeGh>,
     }
@@ -278,7 +278,7 @@ mod tests {
         let mut h = Setup::new(FakeGh::new()).build();
         let fresh = old_cache(NOW - DAY);
         h.seed(&fresh);
-        let cache = load_or_refresh(&mut h.app, Freshness::AutoUpdate).expect("cache");
+        let cache = load_or_refresh(&h.app, &mut h.ui, Freshness::AutoUpdate).expect("cache");
         assert_eq!(cache, fresh);
         assert_eq!(h.err.contents(), "");
         assert_eq!(h.gh.api_calls(), []);
@@ -288,7 +288,7 @@ mod tests {
     fn auto_update_refreshes_a_stale_cache_and_saves_it() {
         let mut h = Setup::new(healthy()).build();
         h.seed(&old_cache(NOW - DAY - 1));
-        let cache = load_or_refresh(&mut h.app, Freshness::AutoUpdate).expect("cache");
+        let cache = load_or_refresh(&h.app, &mut h.ui, Freshness::AutoUpdate).expect("cache");
         assert_eq!(
             slugs(&cache),
             [
@@ -308,7 +308,7 @@ mod tests {
     fn auto_update_quarantines_a_corrupt_cache_then_rebuilds() {
         let mut h = Setup::new(healthy()).build();
         h.seed_raw("{not json");
-        let cache = load_or_refresh(&mut h.app, Freshness::AutoUpdate).expect("cache");
+        let cache = load_or_refresh(&h.app, &mut h.ui, Freshness::AutoUpdate).expect("cache");
         assert_eq!(cache.repos.len(), 3);
         assert_eq!(
             fs::read_to_string(h.corrupt_path()).expect("quarantined"),
@@ -326,7 +326,7 @@ mod tests {
         let stale = old_cache(NOW - 2 * DAY);
         h.seed(&stale);
         let before = h.on_disk();
-        let cache = load_or_refresh(&mut h.app, Freshness::AutoUpdate).expect("stale");
+        let cache = load_or_refresh(&h.app, &mut h.ui, Freshness::AutoUpdate).expect("stale");
         assert_eq!(cache, stale);
         assert_eq!(h.on_disk(), before);
         let err = h.err.contents();
@@ -339,7 +339,7 @@ mod tests {
     fn auto_update_errors_when_every_domain_fails_and_there_is_no_cache() {
         let mut h = Setup::new(FakeGh::new()).build();
         assert_matches!(
-            load_or_refresh(&mut h.app, Freshness::AutoUpdate),
+            load_or_refresh(&h.app, &mut h.ui, Freshness::AutoUpdate),
             Err(CacheError::AllFailed)
         );
         assert!(!h.cache_path().exists());
@@ -350,7 +350,7 @@ mod tests {
         let mut h = Setup::new(FakeGh::new()).build();
         h.seed_raw("{not json");
         assert_matches!(
-            load_or_refresh(&mut h.app, Freshness::AutoUpdate),
+            load_or_refresh(&h.app, &mut h.ui, Freshness::AutoUpdate),
             Err(CacheError::AllFailed)
         );
         assert_eq!(h.on_disk(), b"{not json");
@@ -368,7 +368,7 @@ mod tests {
         setup.mode = Mode::Tty;
         let mut h = setup.build();
         h.seed(&old_cache(NOW - 2 * DAY));
-        let cache = load_or_refresh(&mut h.app, Freshness::AutoUpdate).expect("cache");
+        let cache = load_or_refresh(&h.app, &mut h.ui, Freshness::AutoUpdate).expect("cache");
         assert!(slugs(&cache).contains(&"github.com/acme/old".to_owned()));
         assert_eq!(cache.updated_at, t(NOW));
         // The one warning follows the progress display.
@@ -388,7 +388,7 @@ mod tests {
         let mut h = Setup::new(FakeGh::new()).build();
         let stale = old_cache(NOW - 10 * DAY);
         h.seed(&stale);
-        let cache = load_or_refresh(&mut h.app, Freshness::NoUpdate).expect("cache");
+        let cache = load_or_refresh(&h.app, &mut h.ui, Freshness::NoUpdate).expect("cache");
         assert_eq!(cache, stale);
         assert_eq!(h.gh.api_calls(), []);
     }
@@ -397,7 +397,7 @@ mod tests {
     fn no_update_reports_a_missing_cache() {
         let mut h = Setup::new(FakeGh::new()).build();
         assert_matches!(
-            load_or_refresh(&mut h.app, Freshness::NoUpdate),
+            load_or_refresh(&h.app, &mut h.ui, Freshness::NoUpdate),
             Err(CacheError::Missing)
         );
         assert!(!h.cache_path().exists());
@@ -409,8 +409,8 @@ mod tests {
     fn force_refreshes_even_a_fresh_cache() {
         let mut h = Setup::new(healthy()).build();
         h.seed(&old_cache(NOW - 60));
-        let cache =
-            load_or_refresh(&mut h.app, Freshness::Force { all_orgs: false }).expect("cache");
+        let cache = load_or_refresh(&h.app, &mut h.ui, Freshness::Force { all_orgs: false })
+            .expect("cache");
         assert_eq!(cache.updated_at, t(NOW));
         assert!(!slugs(&cache).contains(&"github.com/acme/old".to_owned()));
     }
@@ -421,7 +421,7 @@ mod tests {
         h.seed(&old_cache(NOW - 60));
         let before = h.on_disk();
         assert_matches!(
-            load_or_refresh(&mut h.app, Freshness::Force { all_orgs: false }),
+            load_or_refresh(&h.app, &mut h.ui, Freshness::Force { all_orgs: false }),
             Err(CacheError::AllFailed)
         );
         assert_eq!(h.on_disk(), before);
@@ -434,13 +434,13 @@ mod tests {
         let mut setup = Setup::new(healthy());
         setup.config = Some(FAVORITES);
         let mut h = setup.build();
-        load_or_refresh(&mut h.app, Freshness::Force { all_orgs: false }).expect("cache");
+        load_or_refresh(&h.app, &mut h.ui, Freshness::Force { all_orgs: false }).expect("cache");
         assert_eq!(org_calls(&h.gh.api_calls()), [org("acme")]);
 
         let mut setup = Setup::new(healthy());
         setup.config = Some(FAVORITES);
         let mut h = setup.build();
-        load_or_refresh(&mut h.app, Freshness::Force { all_orgs: true }).expect("cache");
+        load_or_refresh(&h.app, &mut h.ui, Freshness::Force { all_orgs: true }).expect("cache");
         assert_eq!(org_calls(&h.gh.api_calls()), [org("acme"), org("widgets")]);
     }
 
@@ -467,7 +467,7 @@ mod tests {
             vec![repo("acme", "old"), ghe_repo()],
             t(NOW - 2 * DAY),
         ));
-        let cache = load_or_refresh(&mut h.app, Freshness::AutoUpdate).expect("cache");
+        let cache = load_or_refresh(&h.app, &mut h.ui, Freshness::AutoUpdate).expect("cache");
         assert_eq!(cache.updated_at, t(NOW));
         assert_eq!(
             slugs(&cache),

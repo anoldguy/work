@@ -20,13 +20,13 @@ use crate::ui::Ui;
 /// # Errors
 ///
 /// Cache failures, or a broken pipe.
-pub fn run(app: &mut App, args: &ListArgs) -> Result<ExitCode, Error> {
+pub fn run(app: &App, ui: &mut Ui, args: &ListArgs) -> Result<ExitCode, Error> {
     let ListArgs {
         query,
         filter: substring,
         complete: _,
     } = args;
-    let cache = load_or_refresh(app, Freshness::AutoUpdate)?;
+    let cache = load_or_refresh(app, ui, Freshness::AutoUpdate)?;
     let lines: Vec<String> = match query {
         None => sorted_slugs(&cache.repos),
         Some(needle) if *substring => filter(&cache.repos, needle)
@@ -35,7 +35,7 @@ pub fn run(app: &mut App, args: &ListArgs) -> Result<ExitCode, Error> {
             .collect(),
         Some(raw) => {
             let q = Query::parse(raw)?;
-            let history = listed_history(app, &cache);
+            let history = listed_history(app, ui, &cache);
             let now = app.now;
             search(&cache.repos, &q, |s| history.frecency.score(s, now))
                 .into_iter()
@@ -44,7 +44,7 @@ pub fn run(app: &mut App, args: &ListArgs) -> Result<ExitCode, Error> {
         }
     };
     for line in &lines {
-        app.ui.stdout_line(line)?;
+        ui.stdout_line(line)?;
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -56,7 +56,7 @@ fn sorted_slugs(repos: &[Repo]) -> Vec<String> {
     slugs.into_iter().map(ToString::to_string).collect()
 }
 
-/// `list --complete` (stage 1): loads the config and the cache without any
+/// `list --complete`: loads the config and the cache without any
 /// network, and prints de-duplicated `name` and `org/name` entries. Prints
 /// nothing and exits 0 on any failure (missing or broken config or cache,
 /// broken pipe), because a shell runs it on every Tab press.

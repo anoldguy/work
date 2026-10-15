@@ -9,6 +9,7 @@ use crate::config::{ConfigDoc, ConfigError};
 use crate::domain::{Domain, Org};
 use crate::error::Error;
 use crate::text::plural;
+use crate::ui::Ui;
 use crate::ui::{Interaction, UiError};
 
 /// Shown by the progress display while the orgs are fetched.
@@ -33,16 +34,14 @@ enum Choice {
 ///
 /// `UiError::NotInteractive` without a TTY, unknown domain, gh, or
 /// config write failures.
-pub fn run(app: &mut App, args: &FavoriteArgs) -> Result<ExitCode, Error> {
-    if !app.ui.interact().is_interactive() {
+pub fn run(app: &App, ui: &mut Ui, args: &FavoriteArgs) -> Result<ExitCode, Error> {
+    if !ui.interact().is_interactive() {
         return Err(UiError::NotInteractive { what: "favorite" }.into());
     }
     let FavoriteArgs { domain } = args;
-    let Some(domain) = select_domain(app, domain.as_ref())? else {
+    let Some(domain) = select_domain(app, ui, domain.as_ref())? else {
         return Ok(ExitCode::SUCCESS);
     };
-    // Borrowed from `app.config` while `app.ui` is used mutably: the fields
-    // are disjoint.
     let cfg = app
         .config
         .domains()
@@ -52,17 +51,15 @@ pub fn run(app: &mut App, args: &FavoriteArgs) -> Result<ExitCode, Error> {
         })?;
 
     let gh = &*app.gh;
-    let mut orgs = app
-        .ui
-        .with_progress(PROGRESS_TITLE, |_| gh.member_orgs(&domain))?;
+    let mut orgs = ui.with_progress(PROGRESS_TITLE, |_| gh.member_orgs(&domain))?;
     orgs.extend_from_slice(&cfg.extra_orgs);
 
-    match choose_favorites(app.ui.interact(), &domain, &orgs, &cfg.favorite_orgs)? {
+    match choose_favorites(ui.interact(), &domain, &orgs, &cfg.favorite_orgs)? {
         Choice::NoOrgs => {
-            app.ui.warn(&format!("no organizations found for {domain}"));
+            ui.warn(&format!("no organizations found for {domain}"));
         }
         Choice::Cancelled => {
-            app.ui.stderr_line("favorites unchanged")?;
+            ui.stderr_line("favorites unchanged")?;
         }
         Choice::Selected(favorites) => {
             let mut doc = ConfigDoc::open(&app.locations.config_file)?;
@@ -75,7 +72,7 @@ pub fn run(app: &mut App, args: &FavoriteArgs) -> Result<ExitCode, Error> {
                 let noun = plural(count, "organization", "organizations");
                 format!("Saved {count} favorite {noun} for {domain}")
             };
-            app.ui.stdout_line(&line)?;
+            ui.stdout_line(&line)?;
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -83,7 +80,11 @@ pub fn run(app: &mut App, args: &FavoriteArgs) -> Result<ExitCode, Error> {
 
 /// The domain named, the only configured one, or the user's pick. `None`
 /// when the picker was cancelled.
-fn select_domain(app: &mut App, requested: Option<&Domain>) -> Result<Option<Domain>, Error> {
+fn select_domain(
+    app: &App,
+    ui: &mut Ui,
+    requested: Option<&Domain>,
+) -> Result<Option<Domain>, Error> {
     if let Some(domain) = requested {
         return if app.config.domains().contains_key(domain) {
             Ok(Some(domain.clone()))
@@ -107,7 +108,7 @@ fn select_domain(app: &mut App, requested: Option<&Domain>) -> Result<Option<Dom
             Err(ConfigError::UnknownDomain { domain }.into())
         }
         (Some(only), None) => Ok(Some(only.clone())),
-        _ => pick_domain(&app.config, &mut app.ui, "favorite", "Domain"),
+        _ => pick_domain(&app.config, ui, "favorite", "Domain"),
     }
 }
 
@@ -174,7 +175,7 @@ mod tests {
         let script = ScriptedInteraction::new(true, answers);
         let log = script.log();
         let out = SharedBuf::new();
-        let ui = Ui::for_test(
+        let mut ui = Ui::for_test(
             Box::new(out.clone()),
             Box::new(SharedBuf::new()),
             Box::new(script),
@@ -185,9 +186,9 @@ mod tests {
             gh: Box::new(gh),
         };
         let now = StoredTime::from_unix_seconds(1_700_000_000).expect("time");
-        let mut app = App::with_parts(env, locations, config, ui, adapters, now);
-        let result = run(&mut app, &FavoriteArgs { domain: None });
-        app.ui.flush().expect("flush");
+        let app = App::with_parts(env, locations, config, adapters, now);
+        let result = run(&app, &mut ui, &FavoriteArgs { domain: None });
+        ui.flush().expect("flush");
         let text = std::fs::read_to_string(&app.locations.config_file).expect("config");
         (result, text, log.calls(), out.contents())
     }
