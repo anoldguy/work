@@ -52,12 +52,10 @@ printf 'fake gh: unsupported: %s\n' "$*" >&2
 exit 1
 "#;
 
-/// Records its pid, then its physical cwd and argv, in `<root>/<own name>.pid`
-/// and `.log`. Each write is one append that exits if the directory is gone.
+/// Appends its physical cwd and argv to `<root>/<own name>.log`, exiting
+/// quietly if the directory is gone.
 const LOGGER: &str = r#"#!/bin/sh
-log="${0%/*}/../${0##*/}"
-printf '%s\n' "$$" >> "$log.pid" || exit 0
-printf '%s\t%s\n' "$(pwd -P)" "$*" >> "$log.log" || exit 0
+printf '%s\t%s\n' "$(pwd -P)" "$*" >> "${0%/*}/../${0##*/}.log" || exit 0
 "#;
 
 const OPENER: &str = if cfg!(target_os = "macos") {
@@ -229,17 +227,28 @@ impl TestEnv {
 
     /// Writes `frecency.json` with `(slug, access_count)` entries accessed now.
     pub fn seed_frecency(&self, entries: &[(&str, u32)]) {
+        self.seed_history(entries, &[]);
+    }
+
+    /// Writes `frecency.json` with repo entries `(slug, access_count)` and
+    /// query picks `(query, slug, access_count)`, all accessed now.
+    pub fn seed_history(&self, repos: &[(&str, u32)], picks: &[(&str, &str, u32)]) {
         let now = jiff::Timestamp::now().to_string();
-        let frecency: serde_json::Map<_, _> = entries
+        let entry = |count: u32| json!({ "access_count": count, "last_access": now });
+        let frecency: serde_json::Map<_, _> = repos
             .iter()
-            .map(|(slug, count)| {
-                (
-                    (*slug).to_owned(),
-                    json!({ "access_count": count, "last_access": now }),
-                )
-            })
+            .map(|(slug, count)| ((*slug).to_owned(), entry(*count)))
             .collect();
-        let file = json!({ "version": 1, "frecency": frecency, "query_frecency": {} });
+        let mut queries = serde_json::Map::new();
+        for (query, slug, count) in picks {
+            queries
+                .entry(*query)
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .expect("object")
+                .insert((*slug).to_owned(), entry(*count));
+        }
+        let file = json!({ "version": 1, "frecency": frecency, "query_frecency": queries });
         write(&self.frecency_path(), &file.to_string());
     }
 
@@ -258,7 +267,7 @@ impl TestEnv {
         self.git(&remote.bare, &["init", "--bare", "--initial-branch=main"]);
         self.git(&remote.seed, &["init", "--initial-branch=main"]);
         self.git(&remote.seed, &["remote", "add", "origin", &remote.url]);
-        remote.commit("README.md", "seed\n");
+        remote.commit("README.md", &format!("seed {slug}\n"));
         remote
     }
 
@@ -285,14 +294,6 @@ impl TestEnv {
         let name = if name == "opener" { OPENER } else { name };
         fs::read_to_string(self.root().join(format!("{name}.log")))
             .map(|text| text.lines().map(str::to_owned).collect())
-            .unwrap_or_default()
-    }
-
-    /// The pids the editor or opener script recorded.
-    pub fn pids(&self, name: &str) -> Vec<u32> {
-        let name = if name == "opener" { OPENER } else { name };
-        fs::read_to_string(self.root().join(format!("{name}.pid")))
-            .map(|text| text.lines().filter_map(|l| l.parse().ok()).collect())
             .unwrap_or_default()
     }
 
@@ -383,17 +384,8 @@ pub fn wait_for<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
             return found;
         }
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        thread::yield_now();
+        thread::sleep(Duration::from_millis(10));
     }
-}
-
-/// Whether process `pid` is still running.
-pub fn is_running(pid: u32) -> bool {
-    Command::new("/bin/sh")
-        .args(["-c", &format!("kill -0 {pid} 2>/dev/null")])
-        .status()
-        .expect("run kill")
-        .success()
 }
 
 /// Every directory under `root`, sorted.

@@ -1,4 +1,4 @@
-//! `work update`: failures are contained and the cache is never lost.
+//! Refreshing the cache: failures are contained and the cache is never lost.
 
 use std::fs;
 
@@ -104,4 +104,21 @@ fn favorites_narrow_the_listing_unless_all_orgs_and_excludes_always_apply() {
             "github.com/me/dots"
         ]
     );
+}
+
+#[test]
+fn a_failed_refresh_of_a_stale_cache_warns_and_uses_it() {
+    let env = TestEnv::new();
+    env.config_domains(&["github.com"]);
+    env.seed_cache(&["github.com/acme/app"], true);
+    let before = fs::read(env.cache_path()).expect("cache");
+    env.gh_api_fails("github.com", "user", "gh: HTTP 401: Bad credentials");
+    env.remote("github.com/acme/app");
+
+    let out = env.command().args(["clone", "app"]).output().expect("run");
+    let stderr = text(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(env.work_dir().join("acme/app/.git").is_dir());
+    assert!(stderr.contains("cache"), "{stderr}");
+    assert_eq!(fs::read(env.cache_path()).expect("cache"), before);
 }
