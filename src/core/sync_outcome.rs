@@ -49,7 +49,6 @@ pub enum FetchedReason {
 }
 
 impl fmt::Display for FetchedReason {
-    /// `dirty worktree`, `diverged`, `detached HEAD`, or `no upstream`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::DirtyWorktree => "dirty worktree",
@@ -77,8 +76,6 @@ pub enum SyncOutcome {
 }
 
 impl fmt::Display for SyncOutcome {
-    /// The report text: `pulled (1 commit)` or `pulled (N commits)`, `up to date`,
-    /// `fetched (<reason>)`, or `error: <message>`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Pulled { commits } => {

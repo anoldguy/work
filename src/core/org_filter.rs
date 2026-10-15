@@ -43,8 +43,7 @@ pub fn select_orgs(sel: &OrgSelection<'_>) -> Vec<Org> {
 }
 
 /// The global include/exclude rule for one owner: in `include` when that is
-/// non-empty, otherwise not in `exclude`. Used for collaborator repos in the
-/// personal job.
+/// non-empty, otherwise not in `exclude`.
 #[must_use]
 pub fn passes_filters(owner: &Org, include: &[Org], exclude: &[Org]) -> bool {
     if include.is_empty() {

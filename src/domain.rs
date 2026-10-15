@@ -1,9 +1,4 @@
 //! Validated value types shared by every layer (pure).
-//!
-//! Each type here can only be built through a fallible constructor, so holding
-//! one is proof that it is valid. Serde goes through the same constructors
-//! (`#[serde(try_from = "String", into = "String")]`), so a cache or config
-//! file cannot smuggle in an invalid value either.
 
 pub mod name;
 pub mod query;

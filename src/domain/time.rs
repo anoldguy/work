@@ -12,12 +12,10 @@ use super::NameError;
 /// Nanoseconds in one second, as the `i128` span arithmetic uses.
 const NANOS_PER_SEC: i128 = 1_000_000_000;
 
-/// A UTC instant, stored in the cache as an RFC 3339 string.
+/// A UTC instant, serialised as an RFC 3339 string.
 ///
-/// The process reads the clock once, at `App` construction, and passes that
-/// value down; nothing else calls [`StoredTime::now`]. Serde goes through
-/// [`Display`](fmt::Display)/[`FromStr`], which pins the wire format
-/// independently of jiff's own serde support.
+/// Serde goes through [`Display`](fmt::Display)/[`FromStr`], so the wire
+/// format does not depend on jiff's own serde support.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StoredTime(jiff::Timestamp);
 
@@ -28,8 +26,7 @@ impl StoredTime {
         Self(jiff::Timestamp::now())
     }
 
-    /// Builds a time from whole seconds since the Unix epoch (for tests and
-    /// fixtures).
+    /// Builds a time from whole seconds since the Unix epoch.
     ///
     /// # Errors
     ///
@@ -58,9 +55,8 @@ impl StoredTime {
 }
 
 impl fmt::Display for StoredTime {
-    /// RFC 3339 in UTC, the cache's wire format.
+    /// RFC 3339 in UTC with a `Z` suffix.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // jiff's `Timestamp` displays as RFC 3339 in UTC with a `Z` suffix.
         fmt::Display::fmt(&self.0, f)
     }
 }

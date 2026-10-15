@@ -171,11 +171,10 @@ impl fmt::Display for CloneUrl {
     }
 }
 
-/// A repository's web page, opened by `browse`.
+/// A repository's web page.
 ///
-/// Invariant: `https://` with a non-empty host. That the host equals the
-/// repo's domain is checked where the API response is converted into a
-/// `Repo` (`gh::repo_line`), because only that code knows the domain.
+/// Invariant: `https://` with a non-empty host and no user info. The host is
+/// not checked against any domain.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct HtmlUrl(String);

@@ -10,9 +10,8 @@ use crate::text;
 /// A normalised query string: trimmed and lowercased.
 ///
 /// Invariant: non-empty, no control characters, already normalised, so
-/// normalising again is a no-op. That makes it safe to show in a one-line
-/// error with `{}`. Serialised as the string; it is the outer key of the
-/// `query_frecency` map in `frecency.json`.
+/// normalising again is a no-op and it is safe to show in a one-line message
+/// with `{}`. Serialised as the string.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct QueryKey(String);
