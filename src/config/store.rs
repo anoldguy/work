@@ -32,7 +32,7 @@ pub fn load(locations: &Locations) -> Result<Config, ConfigError> {
             check_domain_keys(&doc, path)?;
             toml_edit::de::from_document(doc).map_err(|err| ConfigError::Parse {
                 path: path.clone(),
-                detail: one_line(err.message(), err.span(), &text),
+                detail: with_location(err.message(), err.span(), &text),
             })?
         }
     };
@@ -55,13 +55,13 @@ fn parse_document(text: &str, path: &Path) -> Result<DocumentMut, ConfigError> {
     text.parse::<DocumentMut>()
         .map_err(|err| ConfigError::Parse {
             path: path.to_path_buf(),
-            detail: one_line(err.message(), err.span(), text),
+            detail: with_location(err.message(), err.span(), text),
         })
 }
 
 /// A TOML error reduced to one line: the message, then the 1-based line and
 /// column of `span` in `text` when known.
-fn one_line(message: &str, span: Option<Range<usize>>, text: &str) -> String {
+fn with_location(message: &str, span: Option<Range<usize>>, text: &str) -> String {
     let message = crate::text::one_line(message);
     let Some(start) = span.map(|s| s.start.min(text.len())) else {
         return message;

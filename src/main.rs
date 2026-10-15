@@ -14,6 +14,10 @@ use std::io::{self, Write};
 use std::panic;
 use std::process::ExitCode;
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the final error line is written after the Ui is dropped"
+)]
 fn main() -> ExitCode {
     panic::set_hook(Box::new(|info| {
         let payload = info.payload();
@@ -22,7 +26,7 @@ fn main() -> ExitCode {
             .copied()
             .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
             .unwrap_or("unknown panic");
-        let message = work::text::sanitize(message);
+        let message = work::text::one_line(message);
         let _ = writeln!(
             io::stderr().lock(),
             "work: internal error: {message} (please report this)"

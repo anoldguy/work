@@ -15,7 +15,7 @@ use std::time::Duration;
 use indicatif::ProgressDrawTarget;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
-use crate::text::{plural, sanitize};
+use crate::text::{one_line, plural};
 
 /// What a progress display counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,7 +205,7 @@ impl Tasks {
         let shared = Shared {
             multi,
             header,
-            title: sanitize(title),
+            title: one_line(title),
             color,
             state: Mutex::new(State::default()),
             #[cfg(test)]
@@ -263,7 +263,7 @@ impl Tasks {
         let shared = &self.shared;
         #[cfg(test)]
         let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
-        let label = sanitize(label);
+        let label = one_line(label);
         let frames: Vec<String> = SPINNER.iter().map(|f| shared.paint(CYAN, f)).collect();
         let frames: Vec<&str> = frames.iter().map(String::as_str).collect();
         let style = ProgressStyle::with_template("  {spinner} {wide_msg}")
@@ -364,7 +364,7 @@ pub struct Task {
 impl Task {
     /// Replaces the text shown after the task's label (e.g. `280 repos`).
     pub fn detail(&self, text: &str) {
-        let text = sanitize(text);
+        let text = one_line(text);
         self.bar.set_message(format!("{}  {text}", self.label));
         #[cfg(test)]
         self.shared.record(UiEvent::TaskProgress {
@@ -401,7 +401,7 @@ impl Task {
 
     fn finish_failed(&mut self, reason: &str) {
         self.finished = true;
-        let reason = sanitize(reason);
+        let reason = one_line(reason);
         let glyph = self.shared.paint(RED, "✗");
         self.bar.set_style(
             ProgressStyle::with_template("  {wide_msg}").unwrap_or_else(|_| plain_style()),

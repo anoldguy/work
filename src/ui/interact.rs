@@ -1,15 +1,15 @@
 //! [`TtyInteraction`]: pickers and prompts on the real terminal, and
 //! `Ui::interact`.
 
-use std::fmt::Write as _;
-use std::io::{self, IsTerminal, Write};
+use std::fmt::{self, Write as _};
+use std::io::Write;
+use std::sync::Arc;
 use std::time::Duration;
 
-use crate::env::EnvSnapshot;
 use crate::text::clip;
 use crate::ui::picker::{PickerKey, PickerState, PickerStep};
 use crate::ui::prompt::{Confirm, LineInput, Step};
-use crate::ui::terminal::Term;
+use crate::ui::terminal::{Backend, Term};
 use crate::ui::{Interaction, Screen, TerminalGuard, Ui, UiError};
 
 /// How long one `read_key` waits before the loop re-reads the terminal size
@@ -27,29 +27,25 @@ const SHOW_CURSOR: &str = "\x1b[?25h";
 ///
 /// A picker over no items could only be escaped, so `pick_one` and
 /// `pick_many` with empty `items` return `Ok(None)` (cancelled) at once.
-#[derive(Debug)]
 pub struct TtyInteraction {
-    err: io::Stderr,
+    err: Box<dyn Write + Send>,
     interactive: bool,
+    backend: Arc<dyn Backend>,
 }
 
 impl TtyInteraction {
-    /// Checks whether stdin and stderr are terminals.
-    #[must_use]
-    pub fn new() -> Self {
-        let err = io::stderr();
-        let interactive = io::stdin().is_terminal() && err.is_terminal();
-        Self { err, interactive }
-    }
-
-    /// Like [`TtyInteraction::new`], but a `TERM=dumb` terminal, which cannot
-    /// take raw-mode redraws, counts as not interactive (as `Ui::new` treats
-    /// it as `Plain`).
-    #[must_use]
-    pub fn for_env(env: &EnvSnapshot) -> Self {
-        let mut tty = Self::new();
-        tty.interactive &= can_redraw(env.term.as_deref());
-        tty
+    /// Draws on `err` through `backend`; `interactive` says whether there is
+    /// a terminal to draw on.
+    pub(crate) fn new(
+        err: Box<dyn Write + Send>,
+        interactive: bool,
+        backend: Arc<dyn Backend>,
+    ) -> Self {
+        Self {
+            err,
+            interactive,
+            backend,
+        }
     }
 
     /// [`UiError::NotInteractive`] unless there is a terminal.
@@ -64,13 +60,15 @@ impl TtyInteraction {
     /// Takes over the terminal for one picker or prompt.
     fn guard(&mut self, what: &'static str) -> Result<TerminalGuard<'_>, UiError> {
         self.require_terminal(what)?;
-        TerminalGuard::acquire(&mut self.err, Screen::Inline)
+        TerminalGuard::acquire(&mut *self.err, Screen::Inline, Arc::clone(&self.backend))
     }
 }
 
-impl Default for TtyInteraction {
-    fn default() -> Self {
-        Self::new()
+impl fmt::Debug for TtyInteraction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TtyInteraction")
+            .field("interactive", &self.interactive)
+            .finish_non_exhaustive()
     }
 }
 
@@ -138,11 +136,6 @@ impl Ui {
         self.flush_for_stderr();
         &mut *self.interact
     }
-}
-
-/// Whether a terminal of type `term` can redraw in place.
-fn can_redraw(term: Option<&str>) -> bool {
-    term != Some("dumb")
 }
 
 /// Waits up to [`KEY_WAIT`] for a key the picker understands; `None` on a
@@ -286,15 +279,15 @@ fn frame_text(prev: usize, lines: &[String], suffix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
-    use std::io;
+    use std::sync::Arc;
 
     use crossterm::event::KeyCode;
 
-    use super::{TtyInteraction, can_redraw, frame_text, run_confirm, run_input, run_picker};
+    use super::{TtyInteraction, frame_text, run_confirm, run_input, run_picker};
     use crate::env::EnvSnapshot;
     use crate::testing::{Answer, ScriptedInteraction, SharedBuf};
     use crate::ui::picker::{PickerState, PickerStep};
-    use crate::ui::terminal::fake::FakeTerm;
+    use crate::ui::terminal::fake::{FakeBackend, FakeTerm};
     use crate::ui::{Interaction, Ui, UiError};
 
     /// A 40×10 terminal that times out once (to exercise the wait loop) and
@@ -365,23 +358,26 @@ mod tests {
             term: Some("dumb".to_owned()),
             ..EnvSnapshot::default()
         };
-        let mut tty = TtyInteraction::for_env(&env);
+        let mut ui = Ui::new(&env);
+        let tty = ui.interact();
         assert!(!tty.is_interactive());
         assert_matches!(
             tty.pick_one("Pick", ITEMS),
             Err(UiError::NotInteractive { .. })
         );
-        assert!(!can_redraw(Some("dumb")));
-        assert!(can_redraw(Some("xterm-256color")));
-        assert!(can_redraw(None));
+    }
+
+    fn tty(interactive: bool) -> TtyInteraction {
+        TtyInteraction::new(
+            Box::new(SharedBuf::new()),
+            interactive,
+            Arc::new(FakeBackend::default()),
+        )
     }
 
     #[test]
     fn an_empty_item_list_is_cancelled_at_once() {
-        let mut tty = TtyInteraction {
-            err: io::stderr(),
-            interactive: true,
-        };
+        let mut tty = tty(true);
         assert_matches!(tty.pick_one("Pick", &[]), Ok(None));
         assert_matches!(tty.pick_many("Pick", &[], &[]), Ok(None));
     }
@@ -439,10 +435,7 @@ mod tests {
 
     #[test]
     fn without_a_terminal_every_method_is_not_interactive() {
-        let mut tty = TtyInteraction {
-            err: io::stderr(),
-            interactive: false,
-        };
+        let mut tty = tty(false);
         assert!(!tty.is_interactive());
         assert_matches!(
             tty.pick_one("Pick", ITEMS),

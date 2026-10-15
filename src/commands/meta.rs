@@ -1,4 +1,4 @@
-//! `version` and `activate` (stage 1: no config needed).
+//! `version` and `activate` (no config needed).
 
 use std::process::ExitCode;
 
