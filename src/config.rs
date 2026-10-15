@@ -1,9 +1,4 @@
 //! Configuration: XDG locations, the typed model, and the TOML file.
-//!
-//! Reads parse the file once into a `toml_edit::DocumentMut` and deserialise
-//! it into [`ConfigFile`] with `toml_edit::de::from_document`; edits go
-//! through [`ConfigDoc`], a `DocumentMut` that keeps the user's comments and
-//! layout.
 
 pub mod locations;
 pub mod model;

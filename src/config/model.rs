@@ -8,12 +8,11 @@ use serde::Deserialize;
 use crate::config::{ConfigError, ExpandedPath, Locations};
 use crate::domain::{Domain, Org};
 
-/// The domain used when none is configured, so `work cd foo` works before
-/// `work setup` has run.
+/// The domain used when none is configured.
 pub const IMPLICIT_DOMAIN: &str = "github.com";
 
-/// `config.toml` exactly as written; every key optional and unknown keys are
-/// rejected (a misspelt key must not be silently ignored). Validated into a [`Config`] by [`Config::from_file`].
+/// `config.toml` as written. Unknown keys are rejected so a misspelt key is
+/// not silently ignored.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigFile {
@@ -50,7 +49,7 @@ pub struct DomainConfig {
     /// Repos on the default domain omit the domain from their path.
     #[serde(default)]
     pub is_default: bool,
-    /// When non-empty, only these orgs are fetched (unless `--all-orgs`).
+    /// When non-empty, only these orgs are fetched.
     #[serde(default)]
     pub favorite_orgs: Vec<Org>,
     /// Orgs fetched in addition to the user's memberships.
@@ -60,12 +59,9 @@ pub struct DomainConfig {
 
 /// The validated configuration.
 ///
-/// Invariants: paths are absolute; at most one domain is the default, and
-/// `default` agrees with `domains` (the `is_default` one, or
-/// [`IMPLICIT_DOMAIN`] when no domains are configured). `domains` holds only
-/// what the file configures; the implicit `github.com` appears through
-/// [`Config::effective_domains`] and [`Config::default_domain`], never in
-/// `domains`.
+/// Invariants: paths are absolute; at most one domain is the default.
+/// `domains` holds only what the file configures; the implicit domain appears
+/// only through [`Config::effective_domains`] and [`Config::default_domain`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     work_dir: ExpandedPath,
@@ -165,7 +161,6 @@ impl Config {
 
     /// The default domain: the one marked `is_default`, or
     /// [`IMPLICIT_DOMAIN`] when no domains are configured, else `None`.
-    /// Resolved once by [`Config::from_file`].
     #[must_use]
     pub const fn default_domain(&self) -> Option<&Domain> {
         self.default.as_ref()
