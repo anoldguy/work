@@ -6,12 +6,11 @@
 //! that draw take `&mut self`, so the borrow checker keeps a picker, a
 //! progress display and a stdout write from interleaving.
 //!
-//! `impl Ui` is split across files: `ui/progress.rs` (`with_progress`),
-//! `ui/terminal.rs` (`terminal`) and `ui/interact.rs` (`interact`).
+//! `impl Ui` is split across files: `ui/terminal.rs` (`terminal`) and
+//! `ui/interact.rs` (`interact`).
 
 pub mod interact;
 pub mod picker;
-pub mod progress;
 pub mod prompt;
 pub mod splash;
 pub mod terminal;
@@ -22,7 +21,10 @@ pub use terminal::{Screen, TerminalGuard};
 use std::fmt;
 use std::io::{self, BufWriter, IsTerminal, Write};
 
+use indicatif::{MultiProgress, ProgressDrawTarget};
+
 use crate::env::EnvSnapshot;
+use crate::progress::Tasks;
 
 /// How stderr is used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +41,8 @@ pub struct Ui {
     color: bool,
     out: BufWriter<Box<dyn Write + Send>>,
     err: Box<dyn Write + Send>,
-    deferred: Vec<String>,
+    /// Live progress: stderr in `Tty` mode, hidden in `Plain` mode.
+    progress: MultiProgress,
     interact: Box<dyn Interaction>,
 }
 
@@ -55,7 +58,11 @@ impl Ui {
             color: tty && !env.no_color,
             out: BufWriter::new(Box::new(io::stdout())),
             err: Box::new(io::stderr()),
-            deferred: Vec::new(),
+            progress: MultiProgress::with_draw_target(if tty {
+                ProgressDrawTarget::stderr()
+            } else {
+                ProgressDrawTarget::hidden()
+            }),
             interact: Box::new(TtyInteraction::for_env(env)),
         }
     }
@@ -72,8 +79,9 @@ impl Ui {
         Self::for_test_mode(Mode::Plain, out, err, interact)
     }
 
-    /// Like [`Ui::for_test`] with an explicit `mode`, so the `Tty` redraw
-    /// path can be exercised over in-memory writers. Never colourised.
+    /// Like [`Ui::for_test`] with an explicit `mode`, so the `Tty` path can
+    /// be exercised over in-memory writers. Never colourised; live progress
+    /// is hidden unless a test sets a draw target.
     #[cfg(test)]
     #[must_use]
     pub fn for_test_mode(
@@ -87,7 +95,7 @@ impl Ui {
             color: false,
             out: BufWriter::new(out),
             err,
-            deferred: Vec::new(),
+            progress: MultiProgress::with_draw_target(ProgressDrawTarget::hidden()),
             interact,
         }
     }
@@ -130,8 +138,8 @@ impl Ui {
 
     /// Prints a one-line warning to stderr at once, after flushing pending
     /// stdout. Never fails; a broken stderr loses the warning. (During
-    /// `with_progress` the `&mut Ui` borrow is held, so warnings from workers
-    /// arrive as events and are flushed through `deferred`.)
+    /// `with_progress` the `&mut Ui` borrow is held, so workers queue
+    /// warnings on [`Tasks`] and they are printed when the display ends.)
     pub fn warn(&mut self, message: &str) {
         debug_assert!(
             !message.contains('\n'),
@@ -157,12 +165,64 @@ impl Ui {
     }
 }
 
+impl Ui {
+    /// Runs `f` with live progress on stderr (`Tty` mode; hidden in `Plain`
+    /// mode). `title` is shown until [`Tasks::set_total`]. When `f` returns,
+    /// the display is cleared, the summary line (e.g. `✓ 12 sources ·
+    /// 1,204 repos · 1 failed`) is printed in `Tty` mode, and then the
+    /// deferred warnings are printed in both modes.
+    ///
+    /// # Panics
+    ///
+    /// Resumes a panic from `f` after printing the deferred warnings; the
+    /// last progress frame may be left on screen.
+    pub fn with_progress<R>(&mut self, title: &str, f: impl FnOnce(&Tasks) -> R) -> R {
+        // Anything already printed must land above the display.
+        self.flush_for_stderr();
+        let tasks = Tasks::new(self.progress.clone(), title, self.color);
+        let ending = Ending {
+            ui: self,
+            tasks: &tasks,
+        };
+        let result = f(ending.tasks);
+        drop(ending);
+        result
+    }
+
+    /// Sets where live progress draws (tests).
+    #[cfg(test)]
+    pub(crate) fn set_progress_target(&mut self, target: ProgressDrawTarget) {
+        self.progress.set_draw_target(target);
+    }
+}
+
+/// Ends a `with_progress` call on return or unwind: clears the display,
+/// prints the summary (`Tty`, not while panicking) and the warnings.
+struct Ending<'a> {
+    ui: &'a mut Ui,
+    tasks: &'a Tasks,
+}
+
+impl Drop for Ending<'_> {
+    fn drop(&mut self) {
+        let (summary, warnings) = self.tasks.end();
+        if self.ui.mode == Mode::Tty
+            && !std::thread::panicking()
+            && let Some(summary) = summary
+        {
+            let _ = writeln!(self.ui.err, "{summary}").and_then(|()| self.ui.err.flush());
+        }
+        for message in &warnings {
+            self.ui.warn(message);
+        }
+    }
+}
+
 impl fmt::Debug for Ui {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Ui")
             .field("mode", &self.mode)
             .field("color", &self.color)
-            .field("deferred", &self.deferred.len())
             .finish_non_exhaustive()
     }
 }
