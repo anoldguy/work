@@ -38,7 +38,7 @@ Make sure the binary is on your `PATH` before moving on to shell integration; `w
 ## Prerequisites
 
 - [GitHub CLI (`gh`)](https://cli.github.com/) (authentication -- implementing OAuth device flow just to avoid typing `gh auth login` seemed like the wrong kind of yak shaving)
-- Git 2.31 or newer (presumably you have this if you're here; the token reaches git through environment variables, which older versions don't understand)
+- Git 2.12 or newer (for `status --porcelain=v2` and `protocol.<name>.allow`)
 - Linux or macOS. Windows is not supported, and nobody is pretending otherwise
 
 ### Shell Integration

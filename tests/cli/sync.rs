@@ -180,15 +180,12 @@ fn fetched_main(path: &Path) -> String {
     git(path, &["rev-parse", "origin/main"])
 }
 
-/// The `GIT_CONFIG_KEY_n` list of the one `git fetch` run in `path`.
-fn fetch_keys(log: &str, path: &Path) -> String {
+/// The argv of the one `git fetch` run in `path`.
+fn fetch_args<'a>(log: &'a str, path: &Path) -> &'a str {
     let marker = format!("-C {} fetch", path.display());
     let lines: Vec<&str> = log.lines().filter(|l| l.contains(&marker)).collect();
     assert_eq!(lines.len(), 1, "{marker}\n{log}");
     lines[0]
-        .split_once(" |")
-        .map(|(_, keys)| keys.to_owned())
-        .expect("separator")
 }
 
 #[test]
@@ -281,7 +278,7 @@ fn sync_neither_writes_the_cache_nor_records_frecency() {
 }
 
 #[test]
-fn sync_scopes_each_token_to_the_repos_cached_domain() {
+fn sync_fetches_each_repo_with_gh_as_the_credential_helper_for_its_cached_domain() {
     let env = TestEnv::new();
     env.config()
         .domain(DomainCfg::new("github.com").default_domain())
@@ -297,67 +294,25 @@ fn sync_scopes_each_token_to_the_repos_cached_domain() {
     let bar_path = env.clone_into_work_dir(&bar, "ghe.example.com/acme/bar");
     // `origin` points at neither domain: the cache, not the remote, decides.
     git(&bar_path, &["remote", "set-url", "origin", &foo.url()]);
-    let log = env.record_git_config_keys();
+    let log = env.record_git_args();
     sync(&env).success().stdout(
         "acme/foo: up to date\n\
          ghe.example.com/acme/bar: up to date\n",
     );
     let log = fs::read_to_string(log).expect("git log");
-    let foo_keys = fetch_keys(&log, &foo_path);
-    let bar_keys = fetch_keys(&log, &bar_path);
-    assert!(
-        foo_keys.contains("http.https://github.com/.extraHeader"),
-        "{foo_keys}"
-    );
-    assert!(!foo_keys.contains("ghe.example.com"), "{foo_keys}");
-    assert!(
-        bar_keys.contains("http.https://ghe.example.com/.extraHeader"),
-        "{bar_keys}"
-    );
-    assert!(!bar_keys.contains("github.com/"), "{bar_keys}");
+    for (path, host, other) in [
+        (&foo_path, "github.com", "ghe.example.com"),
+        (&bar_path, "ghe.example.com", "https://github.com"),
+    ] {
+        let args = fetch_args(&log, path);
+        let helper = format!(
+            "-c credential.helper= -c credential.https://{host}.helper=!gh auth git-credential"
+        );
+        assert!(args.contains(&helper), "{args}");
+        assert!(!args.contains(other), "{args}");
+        assert!(!args.contains("extraHeader"), "{args}");
+    }
     assert!(!log.contains("test-token"), "{log}");
-}
-
-#[test]
-fn sync_resolves_gh_tokens_per_cached_domain_and_fetches_the_rest_unauthenticated() {
-    let env = TestEnv::new().token(None);
-    env.gh.set_token("github.com", "gho_gh_token");
-    env.config()
-        .domain(DomainCfg::new("github.com").default_domain())
-        .domain(DomainCfg::new("ghe.example.com"))
-        .write();
-    let foo = env.origin("acme", "foo");
-    let bar = env.origin("acme", "bar");
-    env.seed_cache(&[
-        RepoSeed::new(SLUG).origin(&foo),
-        RepoSeed::new("ghe.example.com/acme/bar").origin(&bar),
-    ]);
-    let foo_path = env.clone_into_work_dir(&foo, SLUG);
-    let bar_path = env.clone_into_work_dir(&bar, "ghe.example.com/acme/bar");
-    let log = env.record_git_config_keys();
-    sync(&env).success();
-    let log = fs::read_to_string(log).expect("git log");
-    assert!(
-        fetch_keys(&log, &foo_path).contains("http.https://github.com/.extraHeader"),
-        "{log}"
-    );
-    assert!(
-        !fetch_keys(&log, &bar_path).contains("extraHeader"),
-        "{log}"
-    );
-}
-
-#[test]
-fn sync_with_an_invalid_env_token_fails_on_one_line_before_fetching() {
-    let env = TestEnv::new().token(Some("bad token"));
-    let (origin, path) = cloned(&env);
-    let before = fetched_main(&path);
-    origin.commit_file("a.txt", "a\n", "one");
-    sync(&env).code(1).stdout("").stderr(
-        "work: GITHUB_TOKEN is set but invalid \
-         (it must not contain whitespace or control characters)\n",
-    );
-    assert_eq!(fetched_main(&path), before);
 }
 
 #[test]
