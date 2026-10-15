@@ -35,9 +35,9 @@ pub enum Freshness {
 /// Returns an owned cache, held by the command separately from `app` so both
 /// can be borrowed mutably. Fetching runs under `app.ui.with_progress`.
 ///
-/// The fetch runs without holding the cache lock; the merge and save then
-/// run inside [`store::update`], so the merge starts from the newest copy on
-/// disk and frecency recorded by another `work` process meanwhile is kept.
+/// The merge starts from the copy read before the fetch and is written with
+/// [`store::replace`]; a concurrent refresh's copy is simply overwritten
+/// (both hold a complete listing). Frecency is never read or written here.
 /// A corrupt file is renamed to `cache.json.corrupt` only once a refresh has
 /// succeeded, immediately before the new cache is written, so a failed
 /// refresh never touches the disk. An invalid `GITHUB_TOKEN` fails a needed
@@ -101,11 +101,9 @@ fn refresh(
 
     let now = app.now;
     let filters = app.config.filters();
-    store::update(app.config.cache_dir(), |latest| {
-        // The newest copy wins; if it vanished or broke meanwhile, fall back
-        // to what was read before the fetch so nothing is dropped.
-        merge(latest.or(previous), outcomes, &domains, filters, now)
-    })
+    let cache = merge(previous, outcomes, &domains, filters, now);
+    store::replace(app.config.cache_dir(), &cache)?;
+    Ok(cache)
 }
 
 /// `3 days ago`, `5 hours ago`, `12 minutes ago`, or `a future date`.
@@ -618,7 +616,7 @@ mod tests {
         assert_eq!(hosts, [dom("ghe.example.com"), dom("github.com")]);
     }
 
-    // ---- Multiple domains, frecency, concurrency ---------------------------
+    // ---- Multiple domains -------------------------------------------------
 
     const TWO_DOMAINS: &str =
         "[domains.\"github.com\"]\nis_default = true\n\n[domains.\"ghe.example.com\"]\n";
@@ -662,92 +660,6 @@ mod tests {
             1,
             "{err}"
         );
-        assert_matches!(
-            store::load(h.app.config.cache_dir()),
-            LoadOutcome::Loaded(saved) if saved == cache
-        );
-    }
-
-    #[test]
-    fn refresh_keeps_frecency_for_live_repos_and_drops_it_for_gone_ones() {
-        let (_, boxed) = shared(healthy_api());
-        let mut h = Setup::new(boxed).build();
-        let mut seeded = Cache::new(
-            vec![repo("acme", "api"), repo("acme", "old")],
-            t(NOW - 2 * DAY),
-        );
-        seeded
-            .frecency
-            .record(&repo("acme", "api").slug, t(NOW - DAY));
-        seeded
-            .frecency
-            .record(&repo("acme", "old").slug, t(NOW - DAY));
-        h.seed(&seeded);
-        let cache = load_or_refresh(&mut h.app, Freshness::AutoUpdate).expect("cache");
-        assert_eq!(
-            cache
-                .frecency
-                .get(&repo("acme", "api").slug)
-                .map(|d| d.access_count),
-            Some(1)
-        );
-        assert_eq!(cache.frecency.get(&repo("acme", "old").slug), None);
-    }
-
-    /// Saves an access through [`store::update`] while the fetch is running,
-    /// as `work cd` finishing in another shell would.
-    #[derive(Debug)]
-    struct WriterDuringFetch {
-        inner: FakeGitHub,
-        dir: PathBuf,
-    }
-
-    impl GitHubApi for WriterDuringFetch {
-        fn viewer(&self, d: &Domain, t: &SecretToken) -> Result<Org, ApiError> {
-            self.inner.viewer(d, t)
-        }
-        fn member_orgs(&self, d: &Domain, t: &SecretToken) -> Result<Vec<Org>, ApiError> {
-            self.inner.member_orgs(d, t)
-        }
-        fn user_repos(
-            &self,
-            d: &Domain,
-            tok: &SecretToken,
-            on_page: &mut dyn FnMut(Page),
-        ) -> Result<Listing, ApiError> {
-            store::update(&self.dir, |latest| {
-                let mut latest = latest.expect("seeded");
-                latest.frecency.record(&repo("acme", "api").slug, t(NOW));
-                latest
-            })
-            .expect("concurrent save");
-            self.inner.user_repos(d, tok, on_page)
-        }
-        fn org_repos(
-            &self,
-            d: &Domain,
-            tok: &SecretToken,
-            org: &Org,
-            on_page: &mut dyn FnMut(Page),
-        ) -> Result<Listing, ApiError> {
-            self.inner.org_repos(d, tok, org, on_page)
-        }
-    }
-
-    #[test]
-    fn an_access_saved_during_the_fetch_survives_the_refresh() {
-        // Build once to learn the cache dir, then swap in the writer.
-        let mut h = Setup::new(Box::new(NullGitHub)).build();
-        let dir = h.app.config.cache_dir().to_path_buf();
-        h.app.api = Box::new(WriterDuringFetch {
-            inner: healthy_api(),
-            dir,
-        });
-        h.seed(&Cache::new(vec![repo("acme", "api")], t(NOW - 2 * DAY)));
-        let cache =
-            load_or_refresh(&mut h.app, Freshness::Force { all_orgs: false }).expect("cache");
-        let api = repo("acme", "api").slug;
-        assert_eq!(cache.frecency.get(&api).map(|d| d.access_count), Some(1));
         assert_matches!(
             store::load(h.app.config.cache_dir()),
             LoadOutcome::Loaded(saved) if saved == cache

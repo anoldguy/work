@@ -35,15 +35,16 @@ fn stderr(out: &Output) -> String {
     String::from_utf8(out.stderr.clone()).expect("utf-8 stderr")
 }
 
-/// The cache file as JSON.
-fn cache_json(env: &TestEnv) -> Value {
-    serde_json::from_str(&fs::read_to_string(env.cache_path()).expect("read cache"))
-        .expect("parse cache")
+/// `frecency.json` as JSON (`null` when there is none).
+fn frecency_json(env: &TestEnv) -> Value {
+    fs::read_to_string(env.frecency_path()).map_or(Value::Null, |text| {
+        serde_json::from_str(&text).expect("parse frecency")
+    })
 }
 
 /// The recorded repo frecency count for `slug` (0 when absent).
 fn access_count(env: &TestEnv, slug: &str) -> u64 {
-    cache_json(env)["frecency"][slug]["access_count"]
+    frecency_json(env)["frecency"][slug]["access_count"]
         .as_u64()
         .unwrap_or(0)
 }
@@ -254,7 +255,7 @@ fn ambiguity_without_a_tty_is_a_list_error() {
         );
     }
     assert_eq!(env.opener.calls(), Vec::<Vec<String>>::new());
-    assert_eq!(cache_json(&env)["frecency"], serde_json::json!({}));
+    assert_eq!(frecency_json(&env), Value::Null);
 }
 
 #[test]
@@ -301,7 +302,7 @@ fn dominant_query_history_auto_resolves_without_a_tty() {
         [vec!["https://github.com/acme/foobaz".to_owned()]]
     );
     assert_eq!(
-        cache_json(&env)["query_frecency"]["foob"]["github.com/acme/foobaz"]["access_count"],
+        frecency_json(&env)["query_frecency"]["foob"]["github.com/acme/foobaz"]["access_count"],
         4
     );
 }
