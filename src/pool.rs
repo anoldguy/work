@@ -1,8 +1,4 @@
 //! A bounded worker pool on scoped threads.
-//!
-//! No I/O of its own; used by `cache::fetch` and `sync`. There is no
-//! `Arc<Mutex<_>>`: workers pull indices from an atomic cursor over the
-//! borrowed slice.
 
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -14,12 +10,9 @@ const MAX_WORKERS: usize = 256;
 /// Applies `f` to every item with at most `jobs` items in flight, and returns
 /// the results in input order.
 ///
-/// Runs inside `std::thread::scope`, so `f` and `items` may borrow from the
-/// caller. Uses `min(jobs, items.len(), 256)` threads; if the OS refuses a
-/// thread, the pool carries on with the workers it got (or runs on the
-/// calling thread when it got none).
-///
-/// After a worker panics, the other workers stop taking new items.
+/// `f` and `items` may borrow from the caller. If the OS refuses a thread,
+/// the pool carries on with the workers it got, or runs on the calling thread
+/// when it got none. After a worker panics, the others stop taking new items.
 ///
 /// # Panics
 ///

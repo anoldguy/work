@@ -11,9 +11,7 @@ use crate::ui::{Screen, Ui, UiError};
 const FRAME: Duration = Duration::from_micros(16_667);
 /// The exit prompt toggles this often.
 const BLINK: Duration = Duration::from_millis(500);
-/// The exit prompt text.
 const PROMPT: &str = "press any key to exit";
-/// The exit prompt colour.
 const GREY: Rgb = Rgb {
     r: 160,
     g: 160,

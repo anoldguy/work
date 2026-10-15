@@ -14,17 +14,15 @@ use crate::proc::{self, Interactive};
 /// `PATH` cannot hide it.
 const SH: &str = "/bin/sh";
 
-/// The URL and directory opener for this platform.
 #[cfg(target_os = "macos")]
 const OPENER: &str = "open";
-/// The URL and directory opener for this platform.
 #[cfg(not(target_os = "macos"))]
 const OPENER: &str = "xdg-open";
 
 /// The editor command: `$WORK_EDITOR`, then `$EDITOR`, then `vi`.
 ///
-/// Used verbatim as a shell command fragment (it may carry arguments, like
-/// `code -w`), the same way git treats `$EDITOR`.
+/// Used verbatim as a shell command fragment, so it may carry arguments like
+/// `code -w`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditorCmd(String);
 
@@ -41,8 +39,7 @@ impl EditorCmd {
         Self(chosen.unwrap_or("vi").to_owned())
     }
 
-    /// Builds `sh -c '<editor> "$@"' sh <path>`, so the path is an argument
-    /// and never interpolated into the shell text.
+    /// The path is passed as `$1`, never interpolated into the shell text.
     fn command(&self, path: &Path) -> Command {
         let mut cmd = proc::command(SH);
         cmd.arg("-c")
@@ -86,8 +83,7 @@ pub fn spawn_editor(
     }
 }
 
-/// Opens `url` in the default browser, detached. The child is never waited
-/// on (it is reaped when `work` exits, which is fine for a short-lived CLI).
+/// Opens `url` in the default browser, detached.
 ///
 /// # Errors
 ///
@@ -105,7 +101,6 @@ pub fn open_dir(path: &Path) -> Result<(), PlatformError> {
     spawn_detached(opener_command(dash_safe(path).into_os_string()))
 }
 
-/// `OPENER <arg>`.
 fn opener_command(arg: OsString) -> Command {
     let mut cmd = proc::command(OPENER);
     cmd.arg(arg);
@@ -121,7 +116,6 @@ fn dash_safe(path: &Path) -> PathBuf {
     }
 }
 
-/// Starts `cmd` with all stdio closed and does not wait for it.
 fn spawn_detached(mut cmd: Command) -> Result<(), PlatformError> {
     cmd.stdout(Stdio::null())
         .stderr(Stdio::null())

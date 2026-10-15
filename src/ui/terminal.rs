@@ -16,18 +16,15 @@ use crate::ui::{Mode, Ui, UiError};
 /// Where a guarded session draws.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
-    /// Below the cursor in the normal screen (pickers, prompts).
+    /// Below the cursor in the normal screen.
     Inline,
-    /// The alternate screen, leaving scrollback untouched (`about`).
+    /// The alternate screen, leaving scrollback untouched.
     Alternate,
 }
 
-/// The process-wide terminal calls a guard makes, behind a seam so tests
-/// can drive the guard without a real terminal.
+/// The process-wide terminal calls a guard makes.
 pub(crate) trait Backend: Send + Sync {
-    /// Enters raw mode.
     fn enable_raw(&self) -> io::Result<()>;
-    /// Leaves raw mode.
     fn disable_raw(&self) -> io::Result<()>;
     /// Waits up to `timeout` for any input event.
     fn poll(&self, timeout: Duration) -> io::Result<Option<Event>>;
@@ -37,7 +34,6 @@ pub(crate) trait Backend: Send + Sync {
     fn panic_writer(&self) -> Box<dyn Write>;
 }
 
-/// The real terminal, through crossterm. The panic hook writes to `err`.
 pub(crate) struct Crossterm {
     err: io::Stderr,
 }
@@ -84,15 +80,12 @@ struct Active {
 static ACTIVE: Mutex<Option<Active>> = Mutex::new(None);
 
 /// Installs (once per process) the panic hook that restores the active
-/// guard session, if any, and then chains
-/// to the previous hook (`main`'s), so its one-line message is readable.
+/// guard session, if any, and then chains to the previous hook, so its
+/// message is readable.
 ///
-/// The hook is process-wide: a panic on any thread restores the terminal,
-/// even from under a guard owned by another thread (that guard's `Drop`
-/// then restores again, harmlessly). Lib tests that hold a guard or
-/// panic on purpose serialise on `fake::HOOK_TEST_LOCK`; tests elsewhere
-/// that panic can still race them under `cargo test`, which nextest's
-/// process-per-test model rules out.
+/// A panic on any thread restores the terminal, even from under a guard
+/// owned by another thread; that guard's `Drop` then restores again,
+/// harmlessly.
 pub(super) fn install_panic_hook() {
     static HOOK: Once = Once::new();
     HOOK.call_once(|| {
@@ -126,10 +119,8 @@ fn restore(mut out: &mut dyn Write, screen: Screen, backend: &dyn Backend) {
 /// RAII over a raw-mode session on stderr: raw mode, hidden cursor, and
 /// optionally the alternate screen.
 ///
-/// Restores the terminal on `Drop`, and on panic through the process panic
-/// hook installed by [`TerminalGuard::acquire`], which restores whichever
-/// guard is alive. Only one guard may be alive at a time. Writes go to the borrowed stderr
-/// writer through the `Write` impl.
+/// Restores the terminal on `Drop`, and on panic through a process-wide
+/// panic hook. Only one guard may be alive at a time.
 pub struct TerminalGuard<'a> {
     out: &'a mut (dyn Write + Send),
     screen: Screen,
@@ -138,8 +129,7 @@ pub struct TerminalGuard<'a> {
 
 impl<'a> TerminalGuard<'a> {
     /// Enters raw mode through `backend`, on `out` (and the alternate screen
-    /// if asked), and hides the cursor. `out` is flushed first; the caller
-    /// (the `Ui`) flushes its buffered stdout before calling.
+    /// if asked), and hides the cursor. `out` is flushed first.
     ///
     /// # Errors
     ///
@@ -218,9 +208,7 @@ impl<'a> TerminalGuard<'a> {
     }
 }
 
-/// The terminal as the interaction and splash loops see it: a writer that
-/// can wait for a key and report its size. [`TerminalGuard`] is the real
-/// one; tests drive the loops through `fake::FakeTerm`.
+/// A writer that can wait for a key and report its size.
 pub(crate) trait Term: Write {
     /// Waits up to `timeout` for a key press. `Ok(None)` on timeout.
     ///

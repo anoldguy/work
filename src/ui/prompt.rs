@@ -1,8 +1,5 @@
-//! Line prompts (`input`, `confirm`) for `TtyInteraction`.
-//!
-//! Private to `ui`; nothing outside `ui::interact` depends on this module.
-//! Like the picker, each prompt is a pure reducer over decoded
-//! [`PickerKey`]s plus a one-line render.
+//! Line prompts: pure reducers over decoded [`PickerKey`]s plus a one-line
+//! render.
 
 use crate::ui::picker::PickerKey;
 

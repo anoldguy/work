@@ -1,4 +1,4 @@
-//! Small filesystem helpers shared by the stores.
+//! Small filesystem helpers.
 
 use std::ffi::OsString;
 use std::fs;
@@ -9,11 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Writes `bytes` to `path` atomically.
 ///
 /// A symlink at `path` is resolved first, so the write goes through to its
-/// target instead of replacing the link. Parent directories are created. The
-/// data goes to an exclusive temporary file (`<name>.tmp-<pid>-<n>`) beside
-/// the target, is fsynced, renamed into place, and the directory is fsynced.
-/// An existing file's permissions are kept. On failure the temporary file is
-/// removed. Concurrent writers: the last rename wins.
+/// target instead of replacing the link. Parent directories are created and an
+/// existing file's permissions are kept. Concurrent writers: the last rename
+/// wins.
 ///
 /// # Errors
 ///
@@ -54,8 +52,8 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         let _ = fs::remove_file(&tmp);
         return Err(e);
     }
-    // Make the rename durable. Some platforms cannot open or sync a
-    // directory; the data is already in place, so that is not an error.
+    // Some platforms cannot open or sync a directory; the data is already in
+    // place, so that is not an error.
     if let Ok(d) = fs::File::open(dir) {
         let _ = d.sync_all();
     }
