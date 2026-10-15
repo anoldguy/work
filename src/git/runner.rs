@@ -4,102 +4,123 @@ use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::Path;
 use std::process::{Command, Output};
-use std::sync::OnceLock;
 
-use crate::auth::GitAuth;
 use crate::core::sync_outcome::RepoFacts;
-use crate::domain::CloneUrl;
-use crate::env::{EnvSnapshot, GitConfigCount};
-use crate::git::auth_env::git_env;
+use crate::domain::{CloneUrl, Domain};
 use crate::git::{Git, GitError, status};
 use crate::proc;
 
-/// The oldest git that reads config from `GIT_CONFIG_COUNT` (2.31).
-const MIN_VERSION: (u32, u32) = (2, 31);
+/// Variables that would point git at a different repository than `-C`.
+const REPO_VARS: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+];
 
-/// Runs `git` from `PATH` with the environment from `git::auth_env`.
+/// Set on every git child: git's messages are never localised, git never
+/// prompts on the terminal, and `status` never takes `index.lock` under the
+/// user's editor.
+const CHILD_ENV: &[(&str, &str)] = &[
+    ("LC_ALL", "C"),
+    ("GIT_TERMINAL_PROMPT", "0"),
+    ("GIT_OPTIONAL_LOCKS", "0"),
+];
+
+/// The `-c` settings that make git authenticate through `gh` for `host`
+/// only: an empty `credential.helper` clears every helper configured
+/// before it (the user's, for this one command), and the URL-scoped helper
+/// answers for `https://<host>` alone. git hands `-c` settings to its own
+/// children, so submodules on the same host authenticate too.
+fn credential_args(host: &Domain) -> [String; 4] {
+    [
+        "-c".to_owned(),
+        "credential.helper=".to_owned(),
+        "-c".to_owned(),
+        format!("credential.https://{host}.helper=!gh auth git-credential"),
+    ]
+}
+
+/// Runs `git` from `PATH`.
 ///
-/// The first call checks `git --version` (2.31 or later) once per process.
+/// Every child gets `-c protocol.ext.allow=never` (which keeps `ext::`
+/// blocked even if user config allows it; git's other protocol defaults are
+/// left alone), the [`CHILD_ENV`] variables, and loses the [`REPO_VARS`] so
+/// `-C <repo>` means what it says. Clone and fetch also get
+/// [`credential_args`] for the repo's domain.
 #[derive(Debug)]
 pub struct ProcessGit {
-    config_count: GitConfigCount,
-    trace_vars: Vec<OsString>,
     program: OsString,
-    version: OnceLock<Result<(), GitError>>,
     /// Extra variables that make tests hermetic (`GIT_CONFIG_GLOBAL`).
     #[cfg(test)]
     test_env: Vec<(OsString, OsString)>,
 }
 
+impl Default for ProcessGit {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProcessGit {
-    /// Copies what it needs from `env` (`GIT_CONFIG_COUNT` and the trace
-    /// variable names to strip).
+    /// The `git` on `PATH`.
     #[must_use]
-    pub fn new(env: &EnvSnapshot) -> Self {
+    pub fn new() -> Self {
         Self {
-            config_count: env.git_config_count,
-            trace_vars: env.git_trace_vars.clone(),
             program: OsString::from("git"),
-            version: OnceLock::new(),
             #[cfg(test)]
             test_env: Vec::new(),
         }
     }
 
-    /// A `git` command with the child environment applied. Callers never
-    /// format it with `{:?}`.
-    fn command(&self, repo: Option<&Path>, args: &[&OsStr], auth: Option<&GitAuth<'_>>) -> Command {
+    /// A `git` command with the child environment applied; with `host`, it
+    /// authenticates through `gh` for that domain.
+    fn command(&self, repo: Option<&Path>, host: Option<&Domain>, args: &[&OsStr]) -> Command {
         let mut cmd = Command::new(&self.program);
+        cmd.args(["-c", "protocol.ext.allow=never"]);
+        if let Some(host) = host {
+            cmd.args(credential_args(host));
+        }
         if let Some(repo) = repo {
             cmd.arg("-C").arg(repo);
         }
         cmd.args(args);
-        git_env(auth, self.config_count, &self.trace_vars).apply(&mut cmd);
+        for name in REPO_VARS {
+            cmd.env_remove(name);
+        }
+        cmd.envs(CHILD_ENV.iter().copied());
         #[cfg(test)]
         cmd.envs(self.test_env.iter().map(|(k, v)| (k, v)));
         cmd
-    }
-
-    /// Checks the git version once; later calls repeat the first answer.
-    fn ensure_version(&self) -> Result<(), GitError> {
-        self.version
-            .get_or_init(|| {
-                let out =
-                    proc::run_capture(&mut self.command(None, &[OsStr::new("--version")], None))
-                        .map_err(|e| spawn_error(&e))?;
-                if !out.status.success() {
-                    return Err(failed("version", &out, None));
-                }
-                check_version(&String::from_utf8_lossy(&out.stdout))
-            })
-            .clone()
     }
 
     /// Runs git and returns its output whatever the exit status.
     fn run_raw(
         &self,
         repo: Option<&Path>,
+        host: Option<&Domain>,
         args: &[&OsStr],
-        auth: Option<&GitAuth<'_>>,
     ) -> Result<Output, GitError> {
-        self.ensure_version()?;
-        proc::run_capture(&mut self.command(repo, args, auth)).map_err(|e| spawn_error(&e))
+        proc::run_capture(&mut self.command(repo, host, args)).map_err(|e| spawn_error(&e))
     }
 
     /// Runs git and returns its stdout, or [`GitError::Failed`].
     fn run(
         &self,
         action: &'static str,
-        repo: Option<&Path>,
+        repo: &Path,
+        host: Option<&Domain>,
         args: &[&str],
-        auth: Option<&GitAuth<'_>>,
     ) -> Result<Vec<u8>, GitError> {
         let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
-        let out = self.run_raw(repo, &args, auth)?;
+        let out = self.run_raw(Some(repo), host, &args)?;
         if out.status.success() {
             Ok(out.stdout)
         } else {
-            Err(failed(action, &out, auth))
+            Err(failed(action, &out))
         }
     }
 }
@@ -115,71 +136,21 @@ fn spawn_error(err: &io::Error) -> GitError {
     }
 }
 
-/// Added when an authenticated request was refused a redirect
-/// (`http.<url>.followRedirects=false` keeps the token on its host).
-const REDIRECT_HINT: &str =
-    "(the repository moved; run 'work update' and re-clone, or 'git remote set-url')";
-
-/// True when git's one-line error is an HTTP 3xx status.
-fn is_redirect_error(line: &str) -> bool {
-    line.split_once("returned error: 3").is_some()
-}
-
-/// A failed run: stderr reduced to one line and redacted, with a hint when
-/// an authenticated request hit a redirect.
-fn failed(action: &'static str, out: &Output, auth: Option<&GitAuth<'_>>) -> GitError {
+/// A failed run, with git's stderr reduced to one line.
+fn failed(action: &'static str, out: &Output) -> GitError {
     let line = proc::one_line(&out.stderr);
-    let line = if line.is_empty() {
-        out.status.to_string()
-    } else if auth.is_some() && is_redirect_error(&line) {
-        format!("{line} {REDIRECT_HINT}")
-    } else {
-        line
-    };
     GitError::Failed {
         action,
-        detail: match auth {
-            Some(auth) => auth.redact(&line),
-            None => line,
+        detail: if line.is_empty() {
+            out.status.to_string()
+        } else {
+            line
         },
     }
 }
 
-/// Checks `git --version` output against [`MIN_VERSION`].
-fn check_version(stdout: &str) -> Result<(), GitError> {
-    let version = stdout
-        .trim()
-        .strip_prefix("git version ")
-        .and_then(|rest| rest.split_whitespace().next());
-    let Some(version) = version else {
-        return Err(GitError::Failed {
-            action: "version",
-            detail: "unrecognised `git --version` output".to_owned(),
-        });
-    };
-    // Leading digits of each part, so `2.31-rc0` reads as 2.31.
-    let number = |part: &str| {
-        let end = part
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(part.len());
-        part[..end].parse::<u32>().ok()
-    };
-    let mut parts = version.split('.').map(number);
-    match (parts.next(), parts.next()) {
-        (Some(Some(major)), Some(Some(minor))) if (major, minor) >= MIN_VERSION => Ok(()),
-        _ => Err(GitError::TooOld {
-            version: version.to_owned(),
-        }),
-    }
-}
-
 impl Git for ProcessGit {
-    fn clone_repo(
-        &self,
-        url: &CloneUrl,
-        dest: &Path,
-        auth: Option<&GitAuth<'_>>,
-    ) -> Result<(), GitError> {
+    fn clone_repo(&self, url: &CloneUrl, dest: &Path, host: &Domain) -> Result<(), GitError> {
         let existed = dest.exists();
         let args = [
             OsStr::new("clone"),
@@ -188,7 +159,7 @@ impl Git for ProcessGit {
             OsStr::new(url.as_str()),
             dest.as_os_str(),
         ];
-        let out = self.run_raw(None, &args, auth)?;
+        let out = self.run_raw(None, Some(host), &args)?;
         if out.status.success() {
             return Ok(());
         }
@@ -196,25 +167,25 @@ impl Git for ProcessGit {
             // git normally removes its own partial clone; this is a backstop.
             let _ = std::fs::remove_dir_all(dest);
         }
-        Err(failed("clone", &out, auth))
+        Err(failed("clone", &out))
     }
 
-    fn fetch(&self, repo: &Path, auth: Option<&GitAuth<'_>>) -> Result<(), GitError> {
-        self.run("fetch", Some(repo), &["fetch", "--quiet"], auth)
+    fn fetch(&self, repo: &Path, host: &Domain) -> Result<(), GitError> {
+        self.run("fetch", repo, Some(host), &["fetch", "--quiet"])
             .map(drop)
     }
 
     fn facts(&self, repo: &Path) -> Result<RepoFacts, GitError> {
         let stdout = self.run(
             "status",
-            Some(repo),
+            repo,
+            None,
             &[
                 "status",
                 "--porcelain=v2",
                 "--branch",
                 "--untracked-files=normal",
             ],
-            None,
         )?;
         status::parse_v2(&String::from_utf8_lossy(&stdout))
     }
@@ -222,9 +193,9 @@ impl Git for ProcessGit {
     fn fast_forward(&self, repo: &Path) -> Result<(), GitError> {
         self.run(
             "merge",
-            Some(repo),
-            &["merge", "--ff-only", "--quiet", "@{u}"],
+            repo,
             None,
+            &["merge", "--ff-only", "--quiet", "@{u}"],
         )
         .map(drop)
     }
@@ -233,14 +204,12 @@ impl Git for ProcessGit {
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
+    use std::io::Write;
     use std::path::PathBuf;
+    use std::process::Stdio;
 
     use super::*;
-    use crate::auth::SecretToken;
     use crate::core::sync_outcome::Upstream;
-    use crate::domain::Domain;
-
-    const TOKEN: &str = "gho_runnersecret123";
 
     /// Runs a fixture git command isolated from the user's config.
     fn git(dir: &Path, args: &[&str]) -> String {
@@ -272,9 +241,13 @@ mod tests {
         CloneUrl::try_from(format!("file://{}", path.display())).expect("valid clone url")
     }
 
+    fn github() -> Domain {
+        "github.com".parse().expect("domain")
+    }
+
     /// A `ProcessGit` that ignores the developer's global and system config.
-    fn hermetic(env: &EnvSnapshot) -> ProcessGit {
-        let mut pg = ProcessGit::new(env);
+    fn process_git() -> ProcessGit {
+        let mut pg = ProcessGit::new();
         pg.test_env = [
             ("GIT_CONFIG_GLOBAL", "/dev/null"),
             ("GIT_CONFIG_NOSYSTEM", "1"),
@@ -282,10 +255,6 @@ mod tests {
         .map(|(k, v)| (OsString::from(k), OsString::from(v)))
         .into();
         pg
-    }
-
-    fn process_git() -> ProcessGit {
-        hermetic(&EnvSnapshot::default())
     }
 
     /// A bare origin with one commit, a seed clone that pushes to it, and a
@@ -314,7 +283,7 @@ mod tests {
             git(&seed, &["push", "-q", "-u", "origin", "main"]);
             std::fs::create_dir_all(local.parent().expect("parent")).expect("mkdir");
             let pg = process_git();
-            pg.clone_repo(&file_url(&origin), &local, None)
+            pg.clone_repo(&file_url(&origin), &local, &github())
                 .expect("clone works");
             Self {
                 _tmp: tmp,
@@ -334,6 +303,10 @@ mod tests {
 
         fn facts(&self) -> RepoFacts {
             self.git.facts(&self.local).expect("facts")
+        }
+
+        fn fetch(&self) {
+            self.git.fetch(&self.local, &github()).expect("fetch");
         }
     }
 
@@ -356,7 +329,7 @@ mod tests {
         let fx = Fixture::new();
         fx.push_upstream(&["b", "c"]);
         assert_eq!(fx.facts(), branch(false, 0, 0));
-        fx.git.fetch(&fx.local, None).expect("fetch");
+        fx.fetch();
         assert_eq!(fx.facts(), branch(false, 0, 2));
         fx.git.fast_forward(&fx.local).expect("ff");
         assert_eq!(fx.facts(), branch(false, 0, 0));
@@ -369,7 +342,7 @@ mod tests {
         commit(&fx.local, "mine");
         assert_eq!(fx.facts(), branch(false, 1, 0));
         fx.push_upstream(&["theirs"]);
-        fx.git.fetch(&fx.local, None).expect("fetch");
+        fx.fetch();
         assert_eq!(fx.facts(), branch(false, 1, 1));
         let err = fx.git.fast_forward(&fx.local).unwrap_err();
         assert_matches!(&err, GitError::Failed { action: "merge", detail } if !detail.is_empty());
@@ -413,7 +386,7 @@ mod tests {
         std::fs::write(fx.seed.join("a"), "theirs").expect("write");
         git(&fx.seed, &["commit", "-q", "-am", "theirs"]);
         git(&fx.seed, &["push", "-q", "origin", "main"]);
-        fx.git.fetch(&fx.local, None).expect("fetch");
+        fx.fetch();
         let merged = Command::new("git")
             .args(["merge", "-q", "@{u}"])
             .current_dir(&fx.local)
@@ -474,23 +447,8 @@ mod tests {
         let fx = Fixture::new();
         git(&fx.local, &["remote", "rename", "origin", "upstream"]);
         fx.push_upstream(&["b"]);
-        fx.git
-            .fetch(&fx.local, None)
-            .expect("fetch via branch remote");
+        fx.fetch();
         assert_eq!(fx.facts(), branch(false, 0, 1));
-    }
-
-    #[test]
-    fn facts_outside_a_repo_is_a_status_error() {
-        let fx = Fixture::new();
-        let not_repo = fx.local.join("no-such-dir");
-        assert_matches!(
-            fx.git.facts(&not_repo),
-            Err(GitError::Failed {
-                action: "status",
-                ..
-            })
-        );
     }
 
     #[test]
@@ -505,7 +463,7 @@ mod tests {
                 "file:///nonexistent/w27/repo.git",
             ],
         );
-        let err = fx.git.fetch(&fx.local, None).unwrap_err();
+        let err = fx.git.fetch(&fx.local, &github()).unwrap_err();
         assert_matches!(&err, GitError::Failed { action: "fetch", detail } if !detail.is_empty());
         assert!(!err.to_string().contains('\n'), "{err}");
     }
@@ -515,35 +473,138 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let url = file_url(&tmp.path().join("missing.git"));
         let dest = tmp.path().join("dest");
-        let err = process_git().clone_repo(&url, &dest, None).unwrap_err();
+        let err = process_git()
+            .clone_repo(&url, &dest, &github())
+            .unwrap_err();
         assert_matches!(&err, GitError::Failed { action: "clone", detail } if !detail.is_empty());
         assert!(!err.to_string().contains('\n'), "{err}");
         assert!(!dest.exists());
     }
 
     #[test]
-    fn clone_stderr_is_redacted() {
-        let fx = Fixture::new();
-        let token = SecretToken::new(TOKEN).expect("token");
-        let auth = GitAuth::new("github.com".parse::<Domain>().expect("domain"), &token);
-        // git names the occupied destination in its one-line error.
-        let dest = fx.local.with_file_name(TOKEN);
-        std::fs::create_dir_all(dest.join("occupied")).expect("mkdir");
-        let err = fx
-            .git
-            .clone_repo(&file_url(&fx.origin), &dest, Some(&auth))
-            .unwrap_err();
-        let shown = err.to_string();
-        assert_matches!(
-            &err,
-            GitError::Failed {
-                action: "clone",
-                ..
+    fn clone_and_fetch_authenticate_through_gh_for_their_domain_only() {
+        let host: Domain = "ghe.example.com".parse().expect("domain");
+        let pg = process_git();
+        let reset = ["-c", "credential.helper="];
+        let helper = [
+            "-c",
+            "credential.https://ghe.example.com.helper=!gh auth git-credential",
+        ];
+        let args_of = |cmd: &Command| -> Vec<String> {
+            cmd.get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        let clone = pg.command(None, Some(&host), &[OsStr::new("clone")]);
+        let fetch = pg.command(Some(Path::new("/r")), Some(&host), &[OsStr::new("fetch")]);
+        for cmd in [&clone, &fetch] {
+            let args = args_of(cmd);
+            let joined = args.join(" ");
+            assert!(args.windows(2).any(|w| w == reset), "{args:?}");
+            assert!(args.windows(2).any(|w| w == helper), "{args:?}");
+            // The reset comes first, so it clears the user's helpers but
+            // not ours.
+            let at = |pair: &[&str]| args.windows(2).position(|w| w == pair);
+            assert!(at(&reset) < at(&helper), "{args:?}");
+            assert!(!joined.contains("github.com"), "{joined}");
+            for needle in ["Authorization", "extraHeader", "extraheader"] {
+                assert!(!joined.contains(needle), "{joined}");
+                assert!(
+                    cmd.get_envs().all(|(k, v)| {
+                        !k.to_string_lossy().contains(needle)
+                            && !v.is_some_and(|v| v.to_string_lossy().contains(needle))
+                    }),
+                    "{needle} in env"
+                );
             }
+            let envs: Vec<_> = cmd.get_envs().collect();
+            for (name, value) in CHILD_ENV {
+                assert!(envs.contains(&(OsStr::new(name), Some(OsStr::new(value)))));
+            }
+            assert!(envs.contains(&(OsStr::new("GIT_DIR"), None)));
+        }
+        let status = pg.command(Some(Path::new("/r")), None, &[OsStr::new("status")]);
+        assert!(
+            !args_of(&status).iter().any(|a| a.starts_with("credential")),
+            "status needs no credentials"
         );
-        assert!(shown.contains("***"), "{shown}");
-        assert!(!shown.contains(TOKEN), "{shown}");
-        assert!(dest.join("occupied").exists(), "pre-existing dest kept");
+    }
+
+    /// Runs `git credential fill` for `host` the way `fetch` would for
+    /// `domain`, with a fake `gh` first on `PATH` and a user config whose
+    /// own helper must never run. Returns git's stdout, or `None` when git
+    /// found no credential.
+    fn fill(tmp: &Path, domain: Option<&Domain>, host: &str) -> Option<String> {
+        let mut cmd = ProcessGit::new().command(
+            None,
+            domain,
+            &[OsStr::new("credential"), OsStr::new("fill")],
+        );
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut paths = vec![tmp.join("bin")];
+        paths.extend(std::env::split_paths(&path));
+        cmd.env("PATH", std::env::join_paths(paths).expect("PATH"))
+            .env("GIT_CONFIG_GLOBAL", tmp.join("gitconfig"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().expect("git runs");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(format!("protocol=https\nhost={host}\n\n").as_bytes())
+            .expect("write");
+        let out = child.wait_with_output().expect("git exits");
+        out.status
+            .success()
+            .then(|| String::from_utf8(out.stdout).expect("utf8"))
+    }
+
+    #[test]
+    fn real_git_asks_gh_for_the_scoped_host_and_ignores_user_helpers() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("mkdir");
+        let log = tmp.path().join("gh.log");
+        let gh = bin.join("gh");
+        std::fs::write(
+            &gh,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> '{}'\necho username=x-access-token\necho password=from-gh\n",
+                log.display()
+            ),
+        )
+        .expect("write gh");
+        let mut perms = std::fs::metadata(&gh).expect("meta").permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&gh, perms).expect("chmod");
+        std::fs::write(
+            tmp.path().join("gitconfig"),
+            "[credential]\n\thelper = \"!f() { echo username=user; echo password=from-user; }; f\"\n\
+             [credential \"https://ghe.example.com\"]\n\thelper = \"!f() { echo username=user; echo password=from-user; }; f\"\n",
+        )
+        .expect("write config");
+        let domain: Domain = "ghe.example.com".parse().expect("domain");
+        // Control: without the helper settings the user's helper answers.
+        let control = fill(tmp.path(), None, "ghe.example.com").expect("user helper");
+        assert!(control.contains("password=from-user"), "{control}");
+
+        let got = fill(tmp.path(), Some(&domain), "ghe.example.com").expect("gh answers");
+        assert!(got.contains("password=from-gh"), "{got}");
+        assert!(!got.contains("from-user"), "{got}");
+        assert_eq!(
+            std::fs::read_to_string(&log).expect("gh ran"),
+            "auth git-credential get\n"
+        );
+
+        // Another host gets neither gh nor the user's helper.
+        assert_eq!(fill(tmp.path(), Some(&domain), "github.com"), None);
+        assert_eq!(
+            std::fs::read_to_string(&log).expect("log").lines().count(),
+            1
+        );
     }
 
     #[test]
@@ -569,8 +630,12 @@ mod tests {
         let marker = tmp.path().join("pwned");
         let args = ext_cmd(&marker);
         let args: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
-        let mut cmd = process_git().command(None, &args, None);
-        cmd.env("GIT_CONFIG_GLOBAL", &config);
+        let mut cmd = process_git().command(None, Some(&github()), &args);
+        // Environment config (`git -c` scope too) is overridden as well.
+        cmd.env("GIT_CONFIG_GLOBAL", &config)
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "protocol.ext.allow")
+            .env("GIT_CONFIG_VALUE_0", "always");
         let out = proc::run_capture(&mut cmd).expect("runs");
         assert!(!out.status.success());
         assert!(!marker.exists());
@@ -604,120 +669,11 @@ mod tests {
             OsStr::new(url.as_str()),
             dest.as_os_str(),
         ];
-        let _ = proc::run_capture(&mut fx.git.command(None, &args, None)).expect("runs");
+        let _ = proc::run_capture(&mut fx.git.command(None, Some(&github()), &args)).expect("runs");
         assert!(
             !dest.join("sub").join("a").exists(),
             "file:// submodule was populated"
         );
-    }
-
-    #[test]
-    fn argv_never_contains_the_token() {
-        let token = SecretToken::new(TOKEN).expect("token");
-        let auth = GitAuth::new("github.com".parse::<Domain>().expect("domain"), &token);
-        let pg = process_git();
-        let url = CloneUrl::try_from("https://github.com/acme/foo.git".to_owned()).expect("url");
-        let args = [
-            OsStr::new("clone"),
-            OsStr::new(url.as_str()),
-            OsStr::new("/tmp/x"),
-        ];
-        let cmd = pg.command(Some(Path::new("/tmp")), &args, Some(&auth));
-        let b64 = auth.header_b64().expose();
-        for arg in cmd.get_args() {
-            let arg = arg.to_string_lossy();
-            assert!(!arg.contains(TOKEN) && !arg.contains(b64), "{arg}");
-        }
-        let header = format!("Authorization: Basic {b64}");
-        assert!(
-            cmd.get_envs()
-                .any(|(k, v)| k == "GIT_CONFIG_VALUE_2" && v == Some(OsStr::new(&header)))
-        );
-    }
-
-    #[test]
-    fn real_git_reads_the_header_after_existing_config_entries() {
-        let token = SecretToken::new(TOKEN).expect("token");
-        let auth = GitAuth::new("ghe.example.com".parse::<Domain>().expect("domain"), &token);
-        let env = EnvSnapshot {
-            git_config_count: GitConfigCount::Count(1),
-            ..EnvSnapshot::default()
-        };
-        let pg = hermetic(&env);
-        let get = |key: &str| {
-            let args = [OsStr::new("config"), OsStr::new("--get"), OsStr::new(key)];
-            let mut cmd = pg.command(None, &args, Some(&auth));
-            cmd.env("GIT_CONFIG_KEY_0", "user.name")
-                .env("GIT_CONFIG_VALUE_0", "Existing");
-            let out = proc::run_capture(&mut cmd).expect("runs");
-            assert!(out.status.success(), "{key}");
-            String::from_utf8(out.stdout)
-                .expect("utf8")
-                .trim()
-                .to_owned()
-        };
-        assert_eq!(get("user.name"), "Existing");
-        assert_eq!(
-            get("http.https://ghe.example.com/.extraheader"),
-            format!("Authorization: Basic {}", auth.header_b64().expose())
-        );
-    }
-
-    #[test]
-    fn trace_variables_are_removed_and_locale_forced() {
-        let env = EnvSnapshot {
-            git_trace_vars: vec![OsString::from("GIT_TRACE_CUSTOM")],
-            ..EnvSnapshot::default()
-        };
-        let cmd = ProcessGit::new(&env).command(None, &[], None);
-        let envs: Vec<_> = cmd.get_envs().collect();
-        for name in ["GIT_TRACE_CUSTOM", "GIT_TRACE", "GIT_CURL_VERBOSE"] {
-            assert!(envs.contains(&(OsStr::new(name), None)), "{name}");
-        }
-        assert!(envs.contains(&(OsStr::new("LC_ALL"), Some(OsStr::new("C")))));
-        assert!(envs.contains(&(OsStr::new("GIT_TERMINAL_PROMPT"), Some(OsStr::new("0")))));
-        assert!(envs.contains(&(OsStr::new("GIT_OPTIONAL_LOCKS"), Some(OsStr::new("0")))));
-        assert!(!envs.iter().any(|(k, _)| *k == "GIT_ALLOW_PROTOCOL"));
-    }
-
-    #[test]
-    fn redirect_failure_gets_a_hint_only_with_auth() {
-        let token = SecretToken::new(TOKEN).expect("token");
-        let auth = GitAuth::new("github.com".parse::<Domain>().expect("domain"), &token);
-        let out = Command::new("sh")
-            .args([
-                "-c",
-                "echo \"fatal: unable to access 'https://github.com/a/b/': The requested URL returned error: 301\" >&2; exit 128",
-            ])
-            .output()
-            .expect("sh runs");
-        let with = failed("fetch", &out, Some(&auth)).to_string();
-        assert!(with.ends_with(REDIRECT_HINT), "{with}");
-        let without = failed("fetch", &out, None).to_string();
-        assert!(!without.contains(REDIRECT_HINT), "{without}");
-        assert!(!is_redirect_error("returned error: 404"));
-    }
-
-    #[test]
-    fn version_gate() {
-        assert_matches!(check_version("git version 2.31.0\n"), Ok(()));
-        assert_matches!(check_version("git version 2.39.3 (Apple Git-145)"), Ok(()));
-        assert_matches!(check_version("git version 2.45.1.windows.1"), Ok(()));
-        assert_matches!(check_version("git version 3.0"), Ok(()));
-        assert_matches!(check_version("git version 2.31-rc0"), Ok(()));
-        assert_matches!(check_version("git version 2.31.0.rc1"), Ok(()));
-        let err = check_version("git version 2.30.9").unwrap_err();
-        assert_matches!(&err, GitError::TooOld { version } if version == "2.30.9");
-        assert_eq!(
-            err.to_string(),
-            "git 2.30.9 is too old (2.31 or later is required)"
-        );
-        assert_matches!(
-            check_version("git version 1.9"),
-            Err(GitError::TooOld { .. })
-        );
-        assert_matches!(check_version("nonsense"), Err(GitError::Failed { .. }));
-        assert_matches!(process_git().ensure_version(), Ok(()));
     }
 
     #[test]

@@ -189,9 +189,17 @@ fn plain_cd_hint_defaults_to_bash() {
 fn clone_clones_and_prints_the_path_then_is_idempotent() {
     let (env, origin) = env_with_foo();
     let path = env.repo_path(SLUG);
+    let log = env.record_git_args();
     let out = run(&env, &["clone", "foo"]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     assert_eq!(stdout(&out), format!("{}\n", path_str(&path)));
+    let log = fs::read_to_string(log).expect("git log");
+    assert!(
+        log.lines().any(|args| args.contains(
+            "-c credential.helper= -c credential.https://github.com.helper=!gh auth git-credential"
+        ) && args.contains(" clone ")),
+        "{log}"
+    );
     assert_eq!(
         crate::support::git(&path, &["rev-parse", "HEAD"]),
         origin.head()

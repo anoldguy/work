@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
-use crate::auth::GitAuth;
 use crate::core::sync_outcome::{RepoFacts, Upstream};
 use crate::domain::{CloneUrl, Domain};
 use crate::git::{Git, GitError};
@@ -29,8 +28,8 @@ pub struct GitCall {
     pub op: GitOp,
     /// The repo (for `Clone`, the destination).
     pub path: PathBuf,
-    /// The host of the `GitAuth` passed, if any.
-    pub auth_host: Option<Domain>,
+    /// The domain git authenticates for (`clone_repo` and `fetch` only).
+    pub host: Option<Domain>,
 }
 
 /// How one repo behaves.
@@ -123,7 +122,7 @@ impl FakeGit {
         &self,
         op: GitOp,
         path: &Path,
-        auth: Option<&GitAuth<'_>>,
+        host: Option<&Domain>,
     ) -> (InFlight<'_>, Result<Option<&RepoScript>, GitError>) {
         {
             let mut counts = self
@@ -139,7 +138,7 @@ impl FakeGit {
             .push(GitCall {
                 op,
                 path: path.to_path_buf(),
-                auth_host: auth.map(|a| a.host().clone()),
+                host: host.cloned(),
             });
         let script = self.repos.get(path);
         let result = match script.and_then(|s| s.fail.as_ref()) {
@@ -151,13 +150,8 @@ impl FakeGit {
 }
 
 impl Git for FakeGit {
-    fn clone_repo(
-        &self,
-        url: &CloneUrl,
-        dest: &Path,
-        auth: Option<&GitAuth<'_>>,
-    ) -> Result<(), GitError> {
-        let (_guard, result) = self.begin(GitOp::Clone, dest, auth);
+    fn clone_repo(&self, url: &CloneUrl, dest: &Path, host: &Domain) -> Result<(), GitError> {
+        let (_guard, result) = self.begin(GitOp::Clone, dest, Some(host));
         self.cloned
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -169,8 +163,8 @@ impl Git for FakeGit {
         })
     }
 
-    fn fetch(&self, repo: &Path, auth: Option<&GitAuth<'_>>) -> Result<(), GitError> {
-        let (_guard, result) = self.begin(GitOp::Fetch, repo, auth);
+    fn fetch(&self, repo: &Path, host: &Domain) -> Result<(), GitError> {
+        let (_guard, result) = self.begin(GitOp::Fetch, repo, Some(host));
         result.map(drop)
     }
 
@@ -190,7 +184,10 @@ mod tests {
     use std::assert_matches;
 
     use super::*;
-    use crate::auth::SecretToken;
+
+    fn github() -> Domain {
+        "github.com".parse().expect("domain")
+    }
 
     fn failing(op: GitOp) -> RepoScript {
         RepoScript {
@@ -209,7 +206,7 @@ mod tests {
     fn scripted_and_unscripted_answers() {
         let scripted = Path::new("/w/acme/foo");
         let git = FakeGit::new().with_repo(scripted, failing(GitOp::Fetch));
-        assert_matches!(git.fetch(scripted, None), Err(GitError::Failed { .. }));
+        assert_matches!(git.fetch(scripted, &github()), Err(GitError::Failed { .. }));
         assert_eq!(
             git.facts(scripted).expect("facts"),
             RepoFacts::Detached { dirty: true }
@@ -220,13 +217,10 @@ mod tests {
     }
 
     #[test]
-    fn records_calls_with_auth_host_and_in_flight() {
-        let token = SecretToken::new("gho_fake").expect("token");
-        let host: Domain = "github.com".parse().expect("domain");
-        let auth = GitAuth::new(host.clone(), &token);
+    fn records_calls_with_host_and_in_flight() {
         let git = FakeGit::new();
         let repo = Path::new("/w/a");
-        git.fetch(repo, Some(&auth)).expect("fetch");
+        git.fetch(repo, &github()).expect("fetch");
         git.facts(repo).expect("facts");
         assert_eq!(
             git.calls(),
@@ -234,12 +228,12 @@ mod tests {
                 GitCall {
                     op: GitOp::Fetch,
                     path: repo.to_path_buf(),
-                    auth_host: Some(host),
+                    host: Some(github()),
                 },
                 GitCall {
                     op: GitOp::Facts,
                     path: repo.to_path_buf(),
-                    auth_host: None,
+                    host: None,
                 },
             ]
         );
@@ -253,10 +247,10 @@ mod tests {
         let ok = tmp.path().join("ok");
         let bad = tmp.path().join("bad");
         let git = FakeGit::new().with_repo(&bad, failing(GitOp::Clone));
-        git.clone_repo(&url, &ok, None).expect("clone");
+        git.clone_repo(&url, &ok, &github()).expect("clone");
         assert!(ok.join(".git").is_dir());
         assert_matches!(
-            git.clone_repo(&url, &bad, None),
+            git.clone_repo(&url, &bad, &github()),
             Err(GitError::Failed { .. })
         );
         assert!(!bad.exists());
