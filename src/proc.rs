@@ -40,7 +40,7 @@ pub fn run_inherit(cmd: &mut Command) -> io::Result<ExitStatus> {
 
 /// Reduces a child's stderr to one line: lossy UTF-8, the last non-empty
 /// line (git puts the real error last), with `fatal: `/`error: ` prefixes
-/// and control characters removed. Redact the result before showing it.
+/// and control characters removed.
 #[must_use]
 pub fn one_line(stderr: &[u8]) -> String {
     let text = strip_escapes(&String::from_utf8_lossy(stderr));

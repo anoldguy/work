@@ -18,7 +18,6 @@
 //! `progress`, never `ui`; only `ui` writes to the terminal.
 
 pub mod app;
-pub mod auth;
 pub mod cache;
 pub mod cli;
 pub mod commands;

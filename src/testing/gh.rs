@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use crate::auth::SecretToken;
 use crate::domain::{Domain, Org, Repo};
 use crate::gh::{Gh, GhError};
 
@@ -40,10 +39,9 @@ pub struct ApiCall {
 
 /// A `Gh` scripted per host, recording every call.
 ///
-/// Auth: `auth_token` answers from the token script (unscripted hosts have no
-/// token), and `auth_status` succeeds exactly when the host has a token. A
-/// token or viewer registered "after login" appears once `login` has been
-/// called for that host.
+/// Auth: `auth_status` succeeds exactly when the host has a scripted token
+/// (one scripted as an error fails). A token or viewer registered "after
+/// login" appears once `login` has been called for that host.
 ///
 /// API: an unscripted viewer fails as gh does when not logged in; unscripted
 /// orgs and listings are empty. A scripted failure returns
@@ -107,21 +105,21 @@ impl FakeGh {
         Self::default()
     }
 
-    /// `auth_token(host)` returns `token`.
+    /// `auth_status(host)` succeeds.
     #[must_use]
     pub fn with_token(self, host: Domain, token: &str) -> Self {
         lock(&self.tokens).insert(host, Ok(token.to_owned()));
         self
     }
 
-    /// `auth_token(host)` fails with `err`.
+    /// `auth_status(host)` fails with `err`.
     #[must_use]
     pub fn with_error(self, host: Domain, err: GhError) -> Self {
         lock(&self.tokens).insert(host, Err(err));
         self
     }
 
-    /// `auth_token(host)` returns `token` only after `login(host)`.
+    /// `auth_status(host)` succeeds only after `login(host)`.
     #[must_use]
     pub fn with_token_after_login(mut self, host: Domain, token: &str) -> Self {
         self.after_login.insert(host, token.to_owned());
@@ -236,15 +234,6 @@ impl FakeGh {
 }
 
 impl Gh for FakeGh {
-    fn auth_token(&self, host: &Domain) -> Result<Option<SecretToken>, GhError> {
-        self.record("token", host);
-        match lock(&self.tokens).get(host) {
-            Some(Ok(token)) => Ok(SecretToken::new(token)),
-            Some(Err(err)) => Err(err.clone()),
-            None => Ok(None),
-        }
-    }
-
     fn viewer(&self, host: &Domain) -> Result<Org, GhError> {
         let _guard = InFlight::enter(&self.in_flight);
         self.begin(host, Endpoint::Viewer)?;
@@ -318,10 +307,6 @@ impl Gh for FakeGh {
 
 /// Lets a test keep a handle on the `FakeGh` it boxes into an `App`.
 impl Gh for std::sync::Arc<FakeGh> {
-    fn auth_token(&self, host: &Domain) -> Result<Option<SecretToken>, GhError> {
-        (**self).auth_token(host)
-    }
-
     fn viewer(&self, host: &Domain) -> Result<Org, GhError> {
         (**self).viewer(host)
     }

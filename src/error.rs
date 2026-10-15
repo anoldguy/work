@@ -11,7 +11,6 @@ use std::process::ExitCode;
 
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 
-use crate::auth::AuthError;
 use crate::cache::CacheError;
 use crate::commands::resolve::ResolveError;
 use crate::config::ConfigError;
@@ -33,12 +32,9 @@ pub enum Error {
     /// Configuration.
     #[error(transparent)]
     Config(#[from] ConfigError),
-    /// The repository cache. (`CacheError::Auth` folds into [`Error::Auth`].)
+    /// The repository cache.
     #[error(transparent)]
-    Cache(CacheError),
-    /// Tokens.
-    #[error(transparent)]
-    Auth(#[from] AuthError),
+    Cache(#[from] CacheError),
     /// The gh CLI.
     #[error(transparent)]
     Gh(#[from] GhError),
@@ -73,17 +69,6 @@ pub enum Error {
         /// The I/O error.
         source: io::Error,
     },
-}
-
-impl From<CacheError> for Error {
-    /// An auth failure surfaced by the cache becomes [`Error::Auth`], as it
-    /// does from the clone path; everything else is [`Error::Cache`].
-    fn from(err: CacheError) -> Self {
-        match err {
-            CacheError::Auth(auth) => Self::Auth(auth),
-            other => Self::Cache(other),
-        }
-    }
 }
 
 impl Error {
@@ -247,26 +232,10 @@ mod tests {
     use std::path::PathBuf;
     use std::process::ExitCode;
 
-    use std::assert_matches;
-
     use super::Error;
-    use crate::auth::AuthError;
-    use crate::cache::CacheError;
     use crate::shell::ShellError;
     use crate::sync::SyncError;
     use crate::ui::UiError;
-
-    #[test]
-    fn a_cache_auth_error_folds_into_error_auth() {
-        assert_matches!(
-            Error::from(CacheError::Auth(AuthError::InvalidEnvToken)),
-            Error::Auth(AuthError::InvalidEnvToken)
-        );
-        assert_matches!(
-            Error::from(CacheError::Missing),
-            Error::Cache(CacheError::Missing)
-        );
-    }
 
     #[test]
     fn list_errors_keep_items_out_of_the_summary() {
