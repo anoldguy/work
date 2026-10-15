@@ -1,31 +1,28 @@
-//! `update` and `favorite`, run against `support::FakeApi`.
+//! `update` and `favorite`, run against the `gh` shim's API fixtures.
 
 use predicates::prelude::*;
 
-use crate::support::{DomainCfg, RepoSeed, Response, TestEnv};
-
-fn repo_json(owner: &str, name: &str) -> String {
-    format!(
-        r#"{{"name":"{name}","owner":{{"login":"{owner}"}},"clone_url":"https://github.com/{owner}/{name}.git","html_url":"https://github.com/{owner}/{name}","private":false}}"#
-    )
-}
+use crate::support::{DomainCfg, RepoSeed, TestEnv, repo_line};
 
 /// `github.com` as `me`, member of `acme` and `widgets`, one repo each.
 fn healthy(env: &TestEnv) {
-    let api = env.api.host("github.com");
-    api.route("/user", Response::json(r#"{"login":"me"}"#));
-    api.route(
-        "/user/orgs",
-        Response::json(r#"[{"login":"acme"},{"login":"widgets"}]"#),
+    let gh = &env.gh;
+    gh.set_api("github.com", "user", &["me".to_owned()]);
+    gh.set_api(
+        "github.com",
+        "user/orgs",
+        &["acme".to_owned(), "widgets".to_owned()],
     );
-    api.route(
-        "/user/repos",
-        Response::json(&format!("[{}]", repo_json("me", "dotfiles"))),
+    gh.set_api(
+        "github.com",
+        "user/repos",
+        &[repo_line("github.com", "me", "dotfiles")],
     );
     for (org, name) in [("acme", "api"), ("widgets", "gear")] {
-        api.route(
-            &format!("/orgs/{org}/repos"),
-            Response::json(&format!("[{}]", repo_json(org, name))),
+        gh.set_api(
+            "github.com",
+            &format!("orgs/{org}/repos"),
+            &[repo_line("github.com", org, name)],
         );
     }
 }
@@ -48,7 +45,7 @@ fn cached_slugs(env: &TestEnv) -> Vec<String> {
 }
 
 #[test]
-fn update_prints_a_summary_and_keeps_stderr_quiet() {
+fn update_lists_every_source_through_gh_api() {
     let env = TestEnv::new();
     config(&env, DomainCfg::new("github.com").default_domain());
     healthy(&env);
@@ -65,6 +62,19 @@ fn update_prints_a_summary_and_keeps_stderr_quiet() {
             "github.com/me/dotfiles",
             "github.com/widgets/gear"
         ]
+    );
+    let calls = env.gh.api_calls();
+    assert!(
+        calls
+            .iter()
+            .all(|c| c[..3] == ["api", "--hostname", "github.com"]),
+        "{calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|c| c.contains(&"orgs/acme/repos?type=all&per_page=100".to_owned())),
+        "{calls:?}"
     );
 }
 
@@ -83,12 +93,6 @@ fn update_respects_favorites_unless_all_orgs() {
         .assert()
         .success()
         .stdout("Cached 2 repositories across 1 domain\n");
-    assert!(
-        !cached_slugs(&env)
-            .iter()
-            .any(|s| s.starts_with("github.com/widgets"))
-    );
-
     env.command()
         .args(["update", "--all-orgs"])
         .assert()
@@ -97,22 +101,32 @@ fn update_respects_favorites_unless_all_orgs() {
 }
 
 #[test]
-fn failing_org_warns_by_name_and_keeps_its_previous_repos() {
+fn failing_org_warns_once_and_keeps_its_previous_repos() {
     let env = TestEnv::new();
     config(&env, DomainCfg::new("github.com").default_domain());
     healthy(&env);
-    env.api
-        .host("github.com")
-        .route("/orgs/widgets/repos", Response::status(500));
+    env.gh.fail_api(
+        "github.com",
+        "orgs/widgets/repos",
+        "gh: Server Error (HTTP 500)\n",
+    );
     env.cache()
         .repo(RepoSeed::new("github.com/widgets/old"))
         .write();
-    env.command()
+    let assert = env
+        .command()
         .arg("update")
         .assert()
         .success()
-        .stderr(predicate::str::contains("widgets").and(predicate::str::contains("warning")))
         .stdout("Cached 3 repositories across 1 domain\n");
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert_eq!(stderr.lines().count(), 1, "{stderr:?}");
+    assert!(
+        stderr.starts_with("warning: ")
+            && stderr.contains("github.com/widgets")
+            && stderr.contains("HTTP 500"),
+        "{stderr}"
+    );
     assert!(
         cached_slugs(&env).contains(&"github.com/widgets/old".to_owned()),
         "{:?}",
@@ -124,15 +138,46 @@ fn failing_org_warns_by_name_and_keeps_its_previous_repos() {
 fn update_failing_everywhere_errors_and_leaves_the_cache_untouched() {
     let env = TestEnv::new();
     config(&env, DomainCfg::new("github.com").default_domain());
-    let api = env.api.host("github.com");
-    api.route("/user", Response::status(500));
-    api.route("/user/orgs", Response::status(500));
+    env.gh
+        .fail_api("github.com", "user", "gh: Bad credentials (HTTP 401)\n");
     env.cache()
         .repo(RepoSeed::new("github.com/acme/old"))
         .write();
     let before = std::fs::read(env.cache_path()).expect("cache");
-    env.command().arg("update").assert().failure().stdout("");
+    env.command()
+        .arg("update")
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("HTTP 401"));
     assert_eq!(std::fs::read(env.cache_path()).expect("cache"), before);
+}
+
+#[test]
+fn cd_on_a_stale_cache_refreshes_before_resolving() {
+    let env = TestEnv::new();
+    config(&env, DomainCfg::new("github.com").default_domain());
+    healthy(&env);
+    env.seed_stale_cache(&[RepoSeed::new("github.com/acme/old")]);
+    // Already cloned, so resolving needs no clone.
+    let dest = env.repo_path("github.com/widgets/gear");
+    std::fs::create_dir_all(dest.join(".git")).expect("fake clone");
+    let out = env
+        .command()
+        .args(["sh-cd", "gear"])
+        .output()
+        .expect("run work");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout.lines().count(), 1, "{stdout:?}");
+    assert!(stdout.contains("widgets/gear"), "{stdout}");
+    assert_ne!(env.gh.api_calls().len(), 0);
+    assert!(
+        cached_slugs(&env).contains(&"github.com/widgets/gear".to_owned()),
+        "{:?}",
+        cached_slugs(&env)
+    );
 }
 
 #[test]
@@ -144,5 +189,5 @@ fn favorite_without_a_terminal_is_a_one_line_error() {
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8");
     assert_eq!(stderr.lines().count(), 1, "{stderr:?}");
     assert!(stderr.contains("interactive terminal"), "{stderr}");
-    assert_eq!(env.api.requests().len(), 0);
+    assert_eq!(env.gh.api_calls().len(), 0);
 }

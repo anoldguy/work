@@ -20,8 +20,13 @@ use std::thread;
 /// Shell template for every shim. Uses only builtins, so it works with a
 /// `PATH` that holds nothing else. State lives next to the symlink:
 /// `<name>.calls/NNNNNN` (argv, NUL-terminated), `<name>.exit`,
-/// `<name>.stdout`, `gh.token.<host>` and the `<name>.fifo` that receives one
-/// byte per recorded call.
+/// `<name>.stdout`, `gh.token.<host>`, `gh.api/<host>/<path>.jsonl|.err` and
+/// the `<name>.fifo` that receives one byte per recorded call.
+///
+/// `gh api --hostname <host> [--paginate] <path>[?query] ...` prints
+/// `gh.api/<host>/<path>.jsonl`, or exits 1 with `<path>.err` on stderr, or
+/// (neither present) exits 1 with a 404 message. `gh auth status --hostname
+/// <host>` succeeds exactly when `gh.token.<host>` exists.
 const TEMPLATE: &str = r#"#!/bin/sh
 if [ -n "$WORK_SHIM_PROBE" ]; then exit 0; fi
 dir=${0%/*}
@@ -43,6 +48,30 @@ if [ "$name" = gh ] && [ "$1" = auth ] && [ "$2" = token ] && [ "$3" = --hostnam
     exit 0
   fi
   printf 'no oauth token found for %s\n' "$4" >&2
+  exit 1
+fi
+if [ "$name" = gh ] && [ "$1" = api ] && [ "$2" = --hostname ]; then
+  host=$3
+  shift 3
+  if [ "$1" = --paginate ]; then shift; fi
+  fix="$dir/gh.api/$host/${1%%\?*}"
+  if [ -f "$fix.err" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do printf '%s\n' "$line"; done < "$fix.err" >&2
+    exit 1
+  fi
+  if [ -f "$fix.jsonl" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do printf '%s\n' "$line"; done < "$fix.jsonl"
+    exit 0
+  fi
+  printf 'gh: Not Found (HTTP 404)\n' >&2
+  exit 1
+fi
+if [ "$name" = gh ] && [ "$1" = auth ] && [ "$2" = status ] && [ "$3" = --hostname ]; then
+  if [ -f "$dir/gh.token.$4" ]; then
+    printf '%s\n  Logged in to %s\n' "$4" "$4"
+    exit 0
+  fi
+  printf 'You are not logged into %s. To log in, run: gh auth login --hostname %s\n' "$4" "$4" >&2
   exit 1
 fi
 if [ -f "$dir/$name.stdout" ]; then
@@ -168,6 +197,43 @@ impl Shim {
         self
     }
 
+    /// For the `gh` shim: `gh api --hostname <host> ... <path>` prints these
+    /// lines (one JSON object, or one `--jq` scalar, per line). `path` is
+    /// the API path without its query, e.g. `orgs/acme/repos`.
+    pub fn set_api(&self, host: &str, path: &str, lines: &[String]) -> &Self {
+        let file = self
+            .dir
+            .join("gh.api")
+            .join(host)
+            .join(format!("{path}.jsonl"));
+        fs::create_dir_all(file.parent().expect("parent")).expect("create api fixture dir");
+        let mut text = lines.join("\n");
+        text.push('\n');
+        fs::write(file, text).expect("write api fixture");
+        self
+    }
+
+    /// For the `gh` shim: `gh api` on `path` exits 1 with `stderr`.
+    pub fn fail_api(&self, host: &str, path: &str, stderr: &str) -> &Self {
+        let file = self
+            .dir
+            .join("gh.api")
+            .join(host)
+            .join(format!("{path}.err"));
+        fs::create_dir_all(file.parent().expect("parent")).expect("create api fixture dir");
+        fs::write(file, stderr).expect("write api fixture");
+        self
+    }
+
+    /// The recorded `gh api` invocations (for the `gh` shim).
+    #[must_use]
+    pub fn api_calls(&self) -> Vec<Vec<String>> {
+        self.calls()
+            .into_iter()
+            .filter(|args| args.first().is_some_and(|a| a == "api"))
+            .collect()
+    }
+
     /// Every recorded invocation, oldest first, each as its argv without the
     /// program name.
     #[must_use]
@@ -265,6 +331,41 @@ mod tests {
         assert_eq!(out.status.code(), Some(1));
         assert_eq!(out.stdout.len(), 0);
         assert_eq!(gh.calls().len(), 2);
+    }
+
+    #[test]
+    fn gh_api_prints_the_fixture_or_fails_with_its_stderr() {
+        let (_dir, gh) = fresh("gh");
+        gh.set_api(
+            "github.com",
+            "orgs/acme/repos",
+            &[r#"{"name":"a\\b"}"#.to_owned()],
+        );
+        gh.fail_api("github.com", "user", "gh: Bad credentials (HTTP 401)\n");
+        let args = [
+            "api",
+            "--hostname",
+            "github.com",
+            "--paginate",
+            "orgs/acme/repos?type=all&per_page=100",
+            "--jq",
+            ".[]",
+        ];
+        let out = run(&gh, &args);
+        assert!(out.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "{\"name\":\"a\\\\b\"}\n"
+        );
+        let out = run(&gh, &["api", "--hostname", "github.com", "user"]);
+        assert_eq!(out.status.code(), Some(1));
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            "gh: Bad credentials (HTTP 401)\n"
+        );
+        let out = run(&gh, &["api", "--hostname", "other.test", "user"]);
+        assert_eq!(out.status.code(), Some(1));
+        assert_eq!(gh.api_calls().len(), 3);
     }
 
     #[test]

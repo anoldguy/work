@@ -31,7 +31,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Output, Stdio};
 
-use crate::support::{DomainCfg, RepoSeed, Response, TestEnv};
+use crate::support::{DomainCfg, RepoSeed, TestEnv, repo_line};
 
 /// The fake token every env carries; it must never leak.
 const SENTINEL: &str = "ghp_SENTINEL0123456789abcdefghijklmnopqrst";
@@ -150,37 +150,30 @@ fn case(fixture: Fixture, args: &[&'static str], want: Want) -> Case {
     }
 }
 
-fn repo_json(owner: &str, name: &str) -> String {
-    format!(
-        r#"{{"name":"{name}","owner":{{"login":"{owner}"}},"clone_url":"https://github.com/{owner}/{name}.git","html_url":"https://github.com/{owner}/{name}","private":false}}"#
-    )
-}
-
 fn healthy_api(env: &TestEnv) {
-    let api = env.api.host("github.com");
-    api.route("/user", Response::json(r#"{"login":"me"}"#));
-    api.route("/user/orgs", Response::json(r#"[{"login":"acme"}]"#));
-    api.route(
-        "/user/repos",
-        Response::json(&format!("[{}]", repo_json("me", "dotfiles"))),
+    let gh = &env.gh;
+    gh.set_api("github.com", "user", &["me".to_owned()]);
+    gh.set_api("github.com", "user/orgs", &["acme".to_owned()]);
+    gh.set_api(
+        "github.com",
+        "user/repos",
+        &[repo_line("github.com", "me", "dotfiles")],
     );
-    api.route(
-        "/orgs/acme/repos",
-        Response::json(&format!(
-            "[{},{}]",
-            repo_json("acme", "foo"),
-            repo_json("acme", "bar")
-        )),
+    gh.set_api(
+        "github.com",
+        "orgs/acme/repos",
+        &[
+            repo_line("github.com", "acme", "foo"),
+            repo_line("github.com", "acme", "bar"),
+        ],
     );
 }
 
-/// Every route answers 500 with a body that echoes the token, so an error
-/// message that quotes the response body would leak it.
+/// Every `gh api` call fails the way gh reports a server error.
 fn failing_api(env: &TestEnv) {
-    let api = env.api.host("github.com");
-    let body = format!(r#"{{"message":"boom {SENTINEL}"}}"#);
-    for path in ["/user", "/user/orgs", "/user/repos", "/orgs/acme/repos"] {
-        api.route(path, Response::json(&body).with_status(500));
+    for path in ["user", "user/orgs", "user/repos", "orgs/acme/repos"] {
+        env.gh
+            .fail_api("github.com", path, "gh: Server Error (HTTP 500)\n");
     }
 }
 
@@ -934,26 +927,6 @@ fn every_visible_subcommand_help_is_snapshotted() {
 fn hidden_flags_stay_out_of_help() {
     assert!(!help(&["list"]).contains("--complete"));
     assert!(!help(&["about"]).contains("--style"));
-}
-
-#[test]
-fn the_sentinel_really_reaches_the_api_from_both_token_sources() {
-    for fixture in [Fixture::Ready, Fixture::GhToken] {
-        let env = build(fixture);
-        let out = env.command().arg("update").output().expect("run work");
-        check_shape(&env, &out, Want::Ok, "update");
-        let requests = env.api.host("github.com").requests();
-        assert!(!requests.is_empty(), "{fixture:?}: no API calls");
-        for request in requests {
-            assert!(
-                request
-                    .authorization()
-                    .is_some_and(|auth| auth.contains(SENTINEL)),
-                "{fixture:?}: {request:?} did not carry the token"
-            );
-        }
-        check_no_leak(&env, &out, "update");
-    }
 }
 
 #[test]

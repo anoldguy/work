@@ -2,7 +2,7 @@
 source: tests/cli/invariants.rs
 expression: help(args)
 ---
-Show token status for every domain
+Show the gh login status for every domain
 
 Usage: work auth status
 

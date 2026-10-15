@@ -6,12 +6,10 @@
 
 pub mod gh;
 pub mod git;
-pub mod github;
 pub mod interact;
 
-pub use gh::{FakeGh, GhCall};
+pub use gh::{ApiCall, Endpoint, FakeGh, GhCall};
 pub use git::{FakeGit, GitCall, GitOp, RepoScript};
-pub use github::{ApiCall, Endpoint, FakeGitHub, NullGitHub};
 pub use interact::{Answer, PromptLog, ScriptedInteraction};
 
 use std::io::{self, ErrorKind, Write};
