@@ -5,7 +5,7 @@
 //! command line, and dispatches in two stages:
 //!
 //! 1. Commands that never build an [`app::App`] (so a broken config cannot
-//!    block them): `version`, `commands`, `activate`, `about`, plus (with
+//!    block them): `version`, `activate`, `sh-editor`, `about`, plus (with
 //!    `config::Locations`) `completions`, `config path`, `config --edit`, `auth login|logout` and
 //!    `list --complete`.
 //! 2. Everything else, with an [`app::App`].
@@ -145,7 +145,7 @@ enum AppCommand {
 fn stage1(command: Command, env: &env::EnvSnapshot, ui: &mut ui::Ui) -> Result<Stage, Error> {
     let next = match command {
         Command::Version => return meta::version(ui).map(Stage::Done),
-        Command::Commands(_) => return meta::commands(ui).map(Stage::Done),
+        Command::ShEditor => return nav::sh_editor(env, ui).map(Stage::Done),
         Command::Activate(args) => return meta::activate(env, ui, &args).map(Stage::Done),
         Command::About(args) => return about::run(ui, &args).map(Stage::Done),
         Command::Completions(args) => {

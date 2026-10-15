@@ -59,15 +59,15 @@ pub enum Command {
     Version,
     /// Show the animated about screen
     About(AboutArgs),
-    /// `cd` script for the shell wrapper
+    /// Target directory of `cd`, for the shell wrapper
     #[command(name = "sh-cd", hide = true)]
     ShCd(CdArgs),
-    /// `on` script for the shell wrapper
+    /// Target directory of `on`, for the shell wrapper
     #[command(name = "sh-on", hide = true)]
     ShOn(ResolveArgs),
-    /// Lists for the shell wrapper
-    #[command(hide = true)]
-    Commands(CommandsArgs),
+    /// Editor on the current directory, for the shell wrapper's `on`
+    #[command(name = "sh-editor", hide = true)]
+    ShEditor,
 }
 
 /// `<query> [--pick]`, shared by every command that resolves one repo.
@@ -211,14 +211,6 @@ pub struct ActivateArgs {
     pub shell: Option<Shell>,
 }
 
-/// `commands --sh`.
-#[derive(Debug, Clone, PartialEq, Eq, Args)]
-pub struct CommandsArgs {
-    /// Print the shell-integrated command names, one per line
-    #[arg(long, required = true)]
-    pub sh: bool,
-}
-
 /// `about [--style name]`.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct AboutArgs {
@@ -262,14 +254,6 @@ mod tests {
         }
         let cli = Cli::try_parse_from(["work", "list", "--complete"]).expect("parses");
         assert_matches!(cli.command, Some(Command::List(ref args)) if args.complete);
-    }
-
-    #[test]
-    fn commands_requires_sh() {
-        let err = Cli::try_parse_from(["work", "commands"]).expect_err("missing --sh");
-        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
-        let cli = Cli::try_parse_from(["work", "commands", "--sh"]).expect("parses");
-        assert_matches!(cli.command, Some(Command::Commands(ref args)) if args.sh);
     }
 
     #[test]
