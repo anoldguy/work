@@ -1,6 +1,6 @@
 //! A broken config blocks only the commands that need it.
 
-use crate::support::{TestEnv, text};
+use crate::support::{TestEnv, line, text};
 
 #[test]
 fn invalid_config_fails_cd_in_one_line_but_not_config_free_commands() {
@@ -28,6 +28,22 @@ fn invalid_config_fails_cd_in_one_line_but_not_config_free_commands() {
         .expect("run");
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert!(text(&out.stdout).contains("sh-cd"));
+
+    let out = env
+        .command()
+        .args(["completions", "bash"])
+        .output()
+        .expect("run");
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(text(&out.stdout).contains("browse"));
+
+    let out = env
+        .command()
+        .args(["config", "path"])
+        .output()
+        .expect("run");
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout), line(&env.config_path()));
 
     let out = env.command().arg("sh-editor").output().expect("run");
     assert!(out.status.success(), "{}", text(&out.stderr));

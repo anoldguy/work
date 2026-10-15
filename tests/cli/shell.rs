@@ -7,7 +7,7 @@ use std::process::{Command, Output, Stdio};
 use crate::support::{TestEnv, line, repo_line, text};
 
 /// An env whose `work_dir` holds a space, `'` and `\`, with `acme/foo`
-/// cached and on its remote. Returns the repo's future path.
+/// cached and on its remote. Returns the work dir.
 fn setup() -> (TestEnv, PathBuf) {
     let env = TestEnv::new();
     let work_dir = env.home().join(r"it's a \ dir");
@@ -17,7 +17,7 @@ fn setup() -> (TestEnv, PathBuf) {
     ));
     env.remote("github.com/acme/foo");
     env.seed_cache(&["github.com/acme/foo"], false);
-    (env, work_dir.join("acme/foo"))
+    (env, work_dir)
 }
 
 /// The shell's path on the host `PATH`. A missing shell skips the test,
@@ -69,7 +69,7 @@ fn wrapper_navigates(shell: &str) {
     let Some(program) = find_shell(shell) else {
         return;
     };
-    let (env, repo) = setup();
+    let (env, work_dir) = setup();
     let status = if shell == "fish" { "$status" } else { "$?" };
     let home = env.home().canonicalize().expect("canonical home");
 
@@ -77,12 +77,16 @@ fn wrapper_navigates(shell: &str) {
         &env,
         shell,
         &program,
-        &format!("work cd zzzz; echo rc={status}; pwd -P; work cd foo; pwd -P"),
+        &format!("work cd zzzz; echo rc={status}; pwd -P; work cd foo; pwd -P; work cd; pwd -P"),
     );
-    let repo = repo.canonicalize().expect("cd cloned the repo");
+    let repo = work_dir
+        .join("acme/foo")
+        .canonicalize()
+        .expect("cd cloned the repo");
+    let work_dir = work_dir.canonicalize().expect("work dir exists");
     assert_eq!(
         text(&out.stdout),
-        format!("rc=1\n{}{}", line(&home), line(&repo)),
+        format!("rc=1\n{}{}{}", line(&home), line(&repo), line(&work_dir)),
         "{shell}: {}",
         text(&out.stderr)
     );
@@ -146,4 +150,17 @@ fn sh_cd_on_a_stale_cache_prints_only_the_path() {
     assert_eq!(text(&out.stdout), line(&env.work_dir().join("acme/foo")));
     assert!(stderr.contains("broken"), "{stderr}");
     assert!(stderr.contains("github.com/acme"), "{stderr}");
+}
+
+#[test]
+fn sh_on_prints_only_the_absolute_path() {
+    let env = TestEnv::new();
+    env.config_domains(&["github.com"]);
+    env.seed_cache(&["github.com/acme/foo"], false);
+    env.remote("github.com/acme/foo");
+
+    let out = env.command().args(["sh-on", "foo"]).output().expect("run");
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout), line(&env.work_dir().join("acme/foo")));
+    assert_eq!(env.calls("editor"), Vec::<String>::new());
 }
