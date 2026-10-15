@@ -6,11 +6,12 @@
 # every local step has passed.
 set -euo pipefail
 
+# cargo-zigbuild targets; the `.2.17` suffix pins the minimum glibc.
 TARGETS=(
-    "x86_64-unknown-linux-gnu  x86_64-linux-gnu.2.17"
-    "aarch64-unknown-linux-gnu aarch64-linux-gnu.2.17"
-    "x86_64-apple-darwin       x86_64-macos.10.12-none"
-    "aarch64-apple-darwin      aarch64-macos.11.0-none"
+    x86_64-unknown-linux-gnu.2.17
+    aarch64-unknown-linux-gnu.2.17
+    x86_64-apple-darwin
+    aarch64-apple-darwin
 )
 BRANCH=main
 OUT=dist
@@ -64,20 +65,13 @@ WORK_REQUIRE_SHELLS=1 make check
 make supply-chain
 
 step "Build"
-rustup target add "${TARGETS[@]%% *}" >/dev/null 2>&1 \
-    || die "could not add the Rust targets (rustup target add ${TARGETS[*]%% *})"
-linkers=$(mktemp -d)
-trap 'restore; rm -rf "$linkers"' EXIT
+triples=("${TARGETS[@]%%.*}")
+rustup target add "${triples[@]}" >/dev/null 2>&1 \
+    || die "could not add the Rust targets (rustup target add ${triples[*]})"
 rm -rf "$OUT" && mkdir -p "$OUT"
-for entry in "${TARGETS[@]}"; do
-    read -r target zig_target <<<"$entry"
-    # cargo-zigbuild drops any OS version from rustc's link line, so the
-    # versioned zig target goes through a linker wrapper instead.
-    linker=$linkers/cc-$target
-    printf '#!/bin/sh\nexec cargo-zigbuild zig cc -- -g -fno-sanitize=all -target %s "$@"\n' "$zig_target" >"$linker"
-    chmod +x "$linker"
-    env_name=CARGO_TARGET_$(tr 'a-z-' 'A-Z_' <<<"$target")_LINKER
-    env "$env_name=$linker" cargo build --quiet --locked --profile dist --target "$target"
+for zig_target in "${TARGETS[@]}"; do
+    target=${zig_target%%.*}
+    cargo zigbuild --quiet --locked --profile dist --target "$zig_target"
 
     name=work-$target
     mkdir -p "$OUT/$name"
@@ -99,7 +93,7 @@ step "Tag and push $tag"
 if [[ $current != "$version" ]]; then
     git commit --quiet -m "Release $tag" -- Cargo.toml Cargo.lock
 fi
-trap 'rm -rf "$linkers"' EXIT
+trap - EXIT
 git tag -a "$tag" -m "work $tag"
 if ! git push --quiet --atomic origin "HEAD:refs/heads/$BRANCH" "refs/tags/$tag"; then
     git tag -d "$tag" >/dev/null

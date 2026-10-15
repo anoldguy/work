@@ -25,7 +25,7 @@ The easy way is the shell installer from the latest release:
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/anoldguy/work/releases/latest/download/work-installer.sh | sh
 ```
 
-Prebuilt binaries exist for Linux (glibc 2.17+) and macOS (10.12+ on Intel, 11+ on Apple silicon), on x86_64 and aarch64. The installer puts `work` in `~/.local/bin`; set `WORK_INSTALL_DIR` to change that, or `WORK_VERSION` to pick a release. Prefer to build it yourself:
+Prebuilt binaries exist for Linux (glibc 2.17+) and macOS (15+), on x86_64 and aarch64. The installer puts `work` in `~/.local/bin`; set `WORK_INSTALL_DIR` to change that, or `WORK_VERSION` to pick a release. Prefer to build it yourself:
 
 ```bash
 cargo install --git https://github.com/anoldguy/work
