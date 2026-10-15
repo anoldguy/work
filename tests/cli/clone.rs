@@ -10,6 +10,7 @@ fn clone_places_repos_by_domain_and_authenticates_through_gh() {
     env.seed_cache(&["github.com/acme/app", "ghe.example.com/corp/tool"], false);
     let app = env.remote("github.com/acme/app");
     let tool = env.remote("ghe.example.com/corp/tool");
+    assert_ne!(app.head(), tool.head());
 
     for (query, path, remote, host) in [
         ("app", env.work_dir().join("acme/app"), &app, "github.com"),
@@ -31,6 +32,7 @@ fn clone_places_repos_by_domain_and_authenticates_through_gh() {
             .find(|call| call.contains(" clone ") && call.contains(query))
             .expect("git clone ran");
         assert!(clone.contains("-c credential.helper= "), "{clone}");
+        assert!(clone.contains("-c protocol.ext.allow=never "), "{clone}");
         assert!(clone.contains(&helper), "{clone}");
     }
 }
