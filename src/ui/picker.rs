@@ -7,8 +7,8 @@ use crate::text::clip;
 /// How far `PageUp`/`PageDown` move the cursor.
 const PAGE: usize = 10;
 
-/// A picker key after decoding (PLAN §10 Q17). Letters are never navigation;
-/// they extend the filter.
+/// A picker key after decoding. Letters are never navigation; they extend
+/// the filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerKey {
     /// A printable character for the filter.
@@ -29,7 +29,7 @@ pub enum PickerKey {
     Enter,
     /// Cancel.
     Esc,
-    /// Abort the command (exit 130).
+    /// Abort the command.
     CtrlC,
 }
 
@@ -81,8 +81,8 @@ pub enum PickerStep {
 ///
 /// Typing narrows to items containing the filter (case-insensitive), keeping
 /// rank order. When the filter changes the cursor stays on its item if that
-/// item still matches, and is clamped otherwise. Multi-select
-/// selections are by item index, so they survive filter changes.
+/// item still matches, and is clamped otherwise. Multi-select selections are
+/// by item index, so they survive filter changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickerState<'a> {
     items: &'a [&'a str],
@@ -93,10 +93,9 @@ pub struct PickerState<'a> {
 }
 
 impl<'a> PickerState<'a> {
-    /// A picker over `items` (borrowed from the `Interaction` call);
-    /// `selected` (same length) makes it multi-select. A `selected` of the
-    /// wrong length is a caller bug: it asserts in debug builds and is padded
-    /// with `false` or truncated in release builds.
+    /// A picker over `items`; `selected` (same length) makes it
+    /// multi-select. A `selected` of the wrong length asserts in debug builds
+    /// and is padded with `false` or truncated in release builds.
     #[must_use]
     pub fn new(items: &'a [&'a str], selected: Option<Vec<bool>>) -> Self {
         if let Some(s) = &selected {
@@ -158,9 +157,8 @@ impl<'a> PickerState<'a> {
     }
 
     /// The frame for a `w`×`h` area: the filter line, then the visible window
-    /// of items with the cursor marked. Every line is at most `w` display columns
-    /// and there are at most `h` lines. The caller draws its prompt text
-    /// above the frame.
+    /// of items with the cursor marked. Every line is at most `w` display
+    /// columns and there are at most `h` lines.
     #[must_use]
     pub fn lines(&self, w: u16, h: u16) -> Vec<String> {
         let (w, h) = (usize::from(w), usize::from(h));

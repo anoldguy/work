@@ -1,4 +1,4 @@
-//! The `fire` style: a demoscene heat-map fire below the logo (stateful).
+//! The `fire` style: a demoscene heat-map fire below the logo.
 //!
 //! The fire is simulated on a grid with twice the screen's vertical
 //! resolution and drawn with half blocks (`▀`: top half in the foreground,

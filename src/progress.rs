@@ -1,7 +1,5 @@
 //! Progress for long-running work: workers report through [`Tasks`] and
-//! [`Task`], which drive `indicatif` bars on the `MultiProgress` that
-//! `ui::Ui` owns. Workers never write to the terminal; `ui::Ui::with_progress`
-//! prints the summary line and the deferred warnings once the display ends.
+//! [`Task`], which drive `indicatif` bars.
 
 use std::mem;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -14,10 +12,9 @@ use crate::text::{one_line, plural};
 /// What a progress display counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Noun {
-    /// Repo listings (`update`): each domain's personal listing plus one
-    /// per selected org.
+    /// Repo listings.
     Sources,
-    /// Repositories (`sync`).
+    /// Repositories.
     Repositories,
 }
 
@@ -36,9 +33,9 @@ impl Noun {
 /// The action a live display describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
-    /// `update` and the automatic refresh.
+    /// Updating repo listings.
     Updating,
-    /// `sync`.
+    /// Syncing repositories.
     Syncing,
 }
 
@@ -56,9 +53,9 @@ impl Verb {
 /// A fixed in-flight step of a task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
-    /// `git fetch` (sync), shown as `fetching…`.
+    /// `git fetch`.
     Fetching,
-    /// `git merge --ff-only` (sync), shown as `fast-forwarding`.
+    /// `git merge --ff-only`.
     FastForwarding,
 }
 
@@ -88,7 +85,6 @@ pub struct Header {
     pub domains: Option<u32>,
 }
 
-/// ANSI styles, used only when colour is on.
 const BOLD: &str = "\x1b[1m";
 const GREEN: &str = "\x1b[32m";
 const RED: &str = "\x1b[31m";
@@ -98,10 +94,8 @@ const RESET: &str = "\x1b[0m";
 /// Braille spinner frames; the last entry is indicatif's "finished" frame.
 const SPINNER: [&str; 11] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", " "];
 
-/// How often a running task's spinner advances.
 const TICK: Duration = Duration::from_millis(80);
 
-/// Counters and deferred output shared by [`Tasks`] and every [`Task`].
 #[derive(Debug, Default)]
 struct State {
     header: Option<Header>,
@@ -170,9 +164,8 @@ impl Shared {
     }
 }
 
-/// What workers get from `ui::Ui::with_progress`: they start tasks and
-/// queue warnings, and never write to the terminal themselves. `Sync`, so
-/// scoped workers share `&Tasks`.
+/// Lets workers start tasks and queue warnings without writing to the
+/// terminal. `Sync`, so scoped workers share `&Tasks`.
 #[derive(Debug)]
 pub struct Tasks {
     shared: Arc<Shared>,
@@ -180,7 +173,6 @@ pub struct Tasks {
 
 impl Tasks {
     /// Tasks drawn on `multi`, showing `title` until [`Tasks::set_total`].
-    /// `color` is false under `NO_COLOR` or in plain mode.
     pub(crate) fn new(multi: MultiProgress, title: &str, color: bool) -> Self {
         let header = multi.add(ProgressBar::new(0).with_style(plain_style()));
         let shared = Shared {
@@ -289,7 +281,6 @@ impl Tasks {
     }
 }
 
-/// A bare `{wide_msg}` style.
 fn plain_style() -> ProgressStyle {
     ProgressStyle::with_template("{wide_msg}").unwrap_or_else(|_| ProgressStyle::default_bar())
 }

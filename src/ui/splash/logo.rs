@@ -1,4 +1,4 @@
-//! The logo and footer text from `specs/about-easter-egg.md` (pure).
+//! The logo and footer text.
 
 /// The six logo rows.
 pub const LOGO: [&str; 6] = [
@@ -10,7 +10,6 @@ pub const LOGO: [&str; 6] = [
     "  ╚══╝╚══╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝",
 ];
 
-/// The number of footer lines.
 const FOOTER_LINES: usize = 3;
 
 /// The logo's width in columns: its widest row, in chars (every logo glyph
