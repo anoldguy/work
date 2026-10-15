@@ -1,10 +1,4 @@
 //! One module per command group.
-//!
-//! Every command returns `Result<ExitCode, Error>`, so commands such as
-//! `auth status` and `sync` can print their results and still exit 1.
-//! Commands that need no config take only the environment and the `Ui`;
-//! the others take `(&App, &mut Ui, &Args)`. Arguments are borrowed:
-//! `lib::run` owns the parsed `Cli` and lends each command its part.
 
 pub mod about;
 pub mod auth;

@@ -1,8 +1,4 @@
 //! Command-line definitions (clap derive).
-//!
-//! Every resolving command flattens [`ResolveArgs`] (`<query> [--pick]`);
-//! `--pick` is not global. `sh-cd`/`sh-on` and `commands` are hidden: they
-//! exist for the shell wrapper. With no subcommand, help goes to stdout.
 
 use std::num::NonZeroUsize;
 
@@ -98,8 +94,8 @@ pub struct SyncArgs {
     pub jobs: NonZeroUsize,
 }
 
-/// `--jobs`: a whole number of at least 1, with a plain-English complaint
-/// (clap's own is "number would be zero for non-zero type").
+/// Clap's own complaint for a zero `NonZeroUsize` is "number would be zero
+/// for non-zero type".
 fn parse_jobs(raw: &str) -> Result<NonZeroUsize, String> {
     let n: usize = raw
         .parse()

@@ -1,4 +1,4 @@
-//! `auth login|logout|status`, all delegated to `gh` with stdio inherited.
+//! `auth login|logout|status`, delegated to `gh` with stdio inherited.
 
 use std::process::ExitCode;
 
@@ -9,8 +9,7 @@ use crate::gh::{Gh, GhError};
 use crate::proc::Interactive;
 use crate::ui::Ui;
 
-/// `auth login`: `gh auth login --hostname <domain>` with stdio inherited.
-/// Needs no config.
+/// Runs `gh auth login --hostname <domain>`.
 ///
 /// # Errors
 ///
@@ -20,8 +19,7 @@ pub fn login(gh: &dyn Gh, ui: &mut Ui, domain: &Domain) -> Result<ExitCode, Erro
     Ok(ExitCode::SUCCESS)
 }
 
-/// `auth logout`: `gh auth logout --hostname <domain>` with stdio inherited.
-/// Needs no config.
+/// Runs `gh auth logout --hostname <domain>`.
 ///
 /// # Errors
 ///
@@ -31,9 +29,8 @@ pub fn logout(gh: &dyn Gh, ui: &mut Ui, domain: &Domain) -> Result<ExitCode, Err
     Ok(ExitCode::SUCCESS)
 }
 
-/// `auth status`: runs `gh auth status --hostname <d>` for every effective
-/// domain, letting gh print its own report, and returns exit code 1,
-/// without an error line, if any domain is not logged in.
+/// Runs `gh auth status` for every effective domain, letting gh print its
+/// own report; exits 1, without an error line, if any is not logged in.
 ///
 /// # Errors
 ///

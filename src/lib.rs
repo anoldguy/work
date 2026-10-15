@@ -1,15 +1,4 @@
 //! `work`: navigate and sync your GitHub repositories.
-//!
-//! The crate is a library with a thin binary. [`run`] is the entry point:
-//! it captures the environment, creates the single [`ui::Ui`], parses the
-//! command line, and dispatches with one `match`. Only the commands that
-//! need a config build an [`app::App`]; `Locations` is computed at most
-//! once, only for commands that need it, so `work version` works without
-//! `HOME`.
-//!
-//! Layering: `core` and `domain` are pure; adapters (`git`, `gh`,
-//! `proc`, `platform`, stores) do the I/O; services report progress through
-//! `progress`, never `ui`; only `ui` writes to the terminal.
 
 pub mod app;
 pub mod cache;
@@ -52,10 +41,7 @@ use config::Locations;
 
 /// Runs `work` with `args` (including the program name).
 ///
-/// `--help` and `--version` are printed here and return success. The caller
-/// (`main`) prints an `Err` as `work: <summary>` plus `  - <item>` lines
-/// from [`Error::list_items`] (unless [`Error::is_silent`]) and exits with
-/// [`Error::exit_code`].
+/// `--help` and `--version` are printed here and return success.
 ///
 /// # Errors
 ///
@@ -85,8 +71,8 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> Result<ExitCode, Error> 
     dispatch(command, env, &mut ui)
 }
 
-/// Runs `command` and flushes stdout. Only the arms that need a config
-/// build an [`App`], so a broken config cannot block the others.
+/// Only the arms that need a config load one, so a broken config cannot
+/// block the others.
 fn dispatch(command: Command, env: env::EnvSnapshot, ui: &mut ui::Ui) -> Result<ExitCode, Error> {
     let code = match command {
         Command::Version => meta::version(ui),
@@ -139,17 +125,15 @@ fn dispatch(command: Command, env: env::EnvSnapshot, ui: &mut ui::Ui) -> Result<
     Ok(code)
 }
 
-/// Prints already-rendered multi-line text (help, version) to stdout.
 fn print_block(ui: &mut ui::Ui, text: &str) -> Result<(), Error> {
     ui.stdout_line(text.trim_end_matches('\n'))?;
     ui.flush()?;
     Ok(())
 }
 
-/// `work` followed by the subcommands `args` reached, for the
-/// `(see '<path> --help')` hint. Stops at the first word that is not a
-/// subcommand, so untrusted words never appear in the hint. Hidden
-/// `sh-<cmd>` wrapper subcommands are shown as `<cmd>`.
+/// `work` followed by the subcommands `args` reached. Stops at the first
+/// word that is not a subcommand, so untrusted words never appear in the
+/// hint.
 pub(crate) fn help_path<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> String {
     let mut path = String::from("work");
     let mut command = Cli::command();

@@ -16,12 +16,10 @@ use crate::text::plural;
 use crate::ui::Ui;
 use crate::ui::UiError;
 
-/// The domain set up when none is named.
 const DEFAULT_DOMAIN: &str = "github.com";
 
-/// Prompts for `work_dir`, checks gh's login (offering `gh auth login` and
-/// checking again on failure), adds the domain (as default if first), and offers an
-/// initial update.
+/// Prompts for `work_dir`, checks gh's login, adds the domain (as default if
+/// first), and offers an initial update.
 ///
 /// Running it again for a configured domain changes nothing but what the
 /// prompts change. Existing comments in the config file are preserved.
@@ -71,8 +69,8 @@ pub fn run(app: App, ui: &mut Ui, args: &SetupArgs) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Prompts until the answer is a valid `work_dir` (the config loader's own
-/// rules), so what `setup` writes always loads. Empty takes `default_dir`.
+/// Prompts until the answer is a valid `work_dir`, so what `setup` writes
+/// always loads.
 fn ask_work_dir(app: &App, ui: &mut Ui, default_dir: &str) -> Result<String, Error> {
     loop {
         let Some(typed) = ui.interact().input("Work directory", default_dir)? else {
@@ -87,10 +85,8 @@ fn ask_work_dir(app: &App, ui: &mut Ui, default_dir: &str) -> Result<String, Err
     }
 }
 
-/// Checks that gh is logged in to `domain` (`gh api user`), offering
-/// `gh auth login` when the check fails and checking again afterwards.
 /// `Ok(false)` when the domain should still be saved but gh could not reach
-/// it (declined, still failing).
+/// it.
 fn ensure_login(app: &App, ui: &mut Ui, domain: &Domain) -> Result<bool, Error> {
     let mut check = check_login(app, ui, domain)?;
     if let Err(err) = &check {
@@ -112,8 +108,8 @@ fn ensure_login(app: &App, ui: &mut Ui, domain: &Domain) -> Result<bool, Error> 
     }
 }
 
-/// Asks gh for the viewer under a spinner. The inner `Err` is gh's own
-/// one-line reason; a missing or unstartable `gh` is the outer error.
+/// The inner `Err` is gh's own one-line reason; a missing or unstartable
+/// `gh` is the outer error.
 fn check_login(app: &App, ui: &mut Ui, domain: &Domain) -> Result<Result<Org, GhError>, Error> {
     let gh = &*app.gh;
     let result = ui.with_progress("Checking gh login", |_| gh.viewer(domain));
@@ -123,9 +119,8 @@ fn check_login(app: &App, ui: &mut Ui, domain: &Domain) -> Result<Result<Org, Gh
     }
 }
 
-/// `dir` as the user would type it: `~/...` under `home`. A path that is not
-/// UTF-8 has no faithful text form, so `~/code` is offered instead of lossy
-/// text.
+/// A path that is not UTF-8 has no faithful text form, so `~/code` is
+/// offered instead of lossy text.
 fn display_dir(dir: &Path, home: &Path) -> String {
     let shown = match dir.strip_prefix(home) {
         Ok(rest) if rest.as_os_str().is_empty() => Some("~".to_owned()),
