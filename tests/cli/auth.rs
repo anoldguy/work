@@ -1,7 +1,5 @@
 //! `auth login|logout|status`.
 
-use predicates::prelude::*;
-
 use crate::support::{DomainCfg, TestEnv};
 
 #[test]
@@ -48,61 +46,42 @@ fn missing_gh_is_a_one_line_error() {
 }
 
 #[test]
-fn status_reports_the_env_token_source() {
+fn status_runs_gh_for_each_domain_and_exits_1_when_one_is_logged_out() {
     let env = TestEnv::new();
-    env.command()
-        .args(["auth", "status"])
-        .assert()
-        .success()
-        .stdout("github.com: token found (GITHUB_TOKEN)\n")
-        .stderr("");
-    assert_eq!(env.gh.calls().len(), 0);
-}
-
-#[test]
-fn status_reports_an_invalid_env_token_and_exits_1_without_an_error_line() {
-    let env = TestEnv::new().token(Some("bad token"));
-    env.command()
-        .args(["auth", "status"])
-        .assert()
-        .code(1)
-        .stdout(predicate::str::contains("GITHUB_TOKEN is set but invalid"))
-        .stderr("");
-}
-
-#[test]
-fn status_lists_each_domain_and_exits_1_when_one_lacks_a_token() {
-    let env = TestEnv::new().token(None);
     env.config()
         .domain(DomainCfg::new("github.com").default_domain())
         .domain(DomainCfg::new("ghe.example.com"))
         .write();
     env.gh.set_token("github.com", "gho_x");
-    env.command()
-        .args(["auth", "status"])
-        .assert()
-        .code(1)
-        .stdout(
-            "ghe.example.com: no token (run 'gh auth login --hostname ghe.example.com')\n\
-             github.com: token found (gh)\n",
-        )
-        .stderr("");
+    let assert = env.command().args(["auth", "status"]).assert().code(1);
+    let out = assert.get_output();
+    // gh's own report reaches the terminal; work adds no error line.
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Logged in to github.com"));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not logged into ghe.example.com"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("work: "), "{stderr}");
+    let mut hosts: Vec<String> = env
+        .gh
+        .calls()
+        .into_iter()
+        .map(|c| {
+            assert_eq!(c[..3], ["auth", "status", "--hostname"]);
+            c[3].clone()
+        })
+        .collect();
+    hosts.sort();
+    assert_eq!(hosts, ["ghe.example.com", "github.com"]);
+
+    env.gh.set_token("ghe.example.com", "gho_y");
+    env.command().args(["auth", "status"]).assert().success();
 }
 
 #[test]
-fn status_with_all_tokens_from_gh_exits_0() {
-    let env = TestEnv::new().token(None);
-    env.gh.set_token("github.com", "gho_x");
-    env.command()
-        .args(["auth", "status"])
-        .assert()
-        .success()
-        .stdout("github.com: token found (gh)\n");
-}
-
-#[test]
-fn status_without_gh_or_env_token_is_a_one_line_error() {
-    let env = TestEnv::new().token(None);
+fn status_without_gh_is_a_one_line_error() {
+    let env = TestEnv::new();
     std::fs::remove_file(env.shim_dir().join("gh")).expect("remove gh");
     let assert = env
         .command()

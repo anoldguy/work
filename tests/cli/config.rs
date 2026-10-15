@@ -16,14 +16,9 @@ fn summary_lists_the_effective_configuration() {
         .domain(
             DomainCfg::new("github.com")
                 .default_domain()
-                .favorites(&["my-team", "my-company"])
-                .no_api_url(),
+                .favorites(&["my-team", "my-company"]),
         )
-        .domain(
-            DomainCfg::new("ghe.example.com")
-                .extras(&["guests"])
-                .no_api_url(),
-        )
+        .domain(DomainCfg::new("ghe.example.com").extras(&["guests"]))
         .exclude_orgs(&["archived-org"])
         .write();
     let out = stdout_of(&env, &["config"]);
@@ -108,7 +103,7 @@ fn default_moves_the_flag_and_keeps_comments() {
 fn default_rejects_an_unknown_domain_with_a_hint() {
     let env = TestEnv::new();
     env.config()
-        .domain(DomainCfg::new("github.com").default_domain().no_api_url())
+        .domain(DomainCfg::new("github.com").default_domain())
         .write();
     let assert = env
         .command()
@@ -128,7 +123,7 @@ fn default_rejects_an_unknown_domain_with_a_hint() {
 fn default_without_a_domain_needs_a_terminal() {
     let env = TestEnv::new();
     env.config()
-        .domain(DomainCfg::new("github.com").default_domain().no_api_url())
+        .domain(DomainCfg::new("github.com").default_domain())
         .write();
     env.command()
         .args(["config", "default"])

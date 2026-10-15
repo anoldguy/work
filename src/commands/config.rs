@@ -13,7 +13,6 @@ use crate::config::{Config, ConfigDoc, ConfigError, Locations};
 use crate::domain::{Domain, Org};
 use crate::env::EnvSnapshot;
 use crate::error::Error;
-use crate::github::api_base;
 use crate::platform::{self, EditorCmd};
 use crate::ui::{Ui, UiError};
 
@@ -90,17 +89,12 @@ pub fn show(app: &mut App) -> Result<ExitCode, Error> {
         lines.push("domains:".to_owned());
         for (domain, cfg) in config.domains() {
             let marker = if cfg.is_default { " (default)" } else { "" };
-            let api = match &cfg.api_url {
-                Some(url) => url.to_string(),
-                None => format!("{} (default)", api_base(domain, None)),
-            };
             lines.push(format!("  {domain}{marker}"));
             lines.push(format!(
                 "    favorite_orgs: {}",
                 org_list(&cfg.favorite_orgs)
             ));
             lines.push(format!("    extra_orgs:    {}", org_list(&cfg.extra_orgs)));
-            lines.push(format!("    api_url:       {api}"));
         }
     }
     for line in &lines {

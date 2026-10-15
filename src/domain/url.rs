@@ -1,5 +1,5 @@
-//! [`CloneUrl`], [`HtmlUrl`] and [`ApiUrl`]: URLs that are safe to hand to
-//! git, a browser, or the HTTP client (pure).
+//! [`CloneUrl`] and [`HtmlUrl`]: URLs that are safe to hand to git or a
+//! browser (pure).
 
 use std::fmt;
 
@@ -12,12 +12,9 @@ struct Origin<'a> {
     scheme: &'a str,
     /// Host as written (IPv6 keeps its brackets), without user info or port.
     host: &'a str,
-    port: Option<&'a str>,
     has_user_info: bool,
     /// User info before the `@`, empty when absent.
     user: &'a str,
-    /// Everything after the authority (path, query, fragment).
-    rest: &'a str,
 }
 
 /// Splits `scheme://authority...`; `None` when there is no `://` or the
@@ -32,7 +29,7 @@ fn split_origin(url: &str) -> Option<Origin<'_>> {
         return None;
     }
     let end = after.find(['/', '\\', '?', '#']).unwrap_or(after.len());
-    let (authority, rest) = after.split_at(end);
+    let authority = &after[..end];
     let (user, hostport) = authority.rsplit_once('@').unwrap_or(("", authority));
     let has_user_info = authority.contains('@');
     let (host, port) = if hostport.starts_with('[') {
@@ -54,10 +51,8 @@ fn split_origin(url: &str) -> Option<Origin<'_>> {
     Some(Origin {
         scheme,
         host,
-        port: port.filter(|p| !p.is_empty()),
         has_user_info,
         user,
-        rest,
     })
 }
 
@@ -81,23 +76,6 @@ fn host_brackets_ok(host: &str) -> bool {
                         .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
             })
         },
-    )
-}
-
-fn effective_port<'a>(o: &Origin<'a>) -> Option<&'a str> {
-    o.port.or(if o.scheme.eq_ignore_ascii_case("https") {
-        Some("443")
-    } else if o.scheme.eq_ignore_ascii_case("http") {
-        Some("80")
-    } else {
-        None
-    })
-}
-
-fn is_loopback(host: &str) -> bool {
-    matches!(
-        host.to_ascii_lowercase().as_str(),
-        "127.0.0.1" | "[::1]" | "localhost"
     )
 }
 
@@ -197,7 +175,7 @@ impl fmt::Display for CloneUrl {
 ///
 /// Invariant: `https://` with a non-empty host. That the host equals the
 /// repo's domain is checked where the API response is converted into a
-/// `Repo` (`github::dto`), because only that code knows the domain.
+/// `Repo` (`gh::repo_line`), because only that code knows the domain.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct HtmlUrl(String);
@@ -257,112 +235,13 @@ impl fmt::Display for HtmlUrl {
     }
 }
 
-/// A REST API base URL, e.g. `https://api.github.com` or
-/// `https://ghe.corp.example/api/v3`.
-///
-/// Invariant: `https://`, or `http://` only for loopback hosts (`127.0.0.1`,
-/// `::1`, `localhost`; used by tests). No query, fragment, or user info; no
-/// trailing slash.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct ApiUrl(String);
-
-impl ApiUrl {
-    /// The URL as a string slice, without a trailing slash (tests).
-    #[cfg(test)]
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// True when `url` has the same scheme, host and port as this base. The
-    /// pagination guard: a `next` link failing this is never followed.
-    #[must_use]
-    pub fn same_origin(&self, url: &str) -> bool {
-        let (Some(base), Some(other)) = (split_origin(&self.0), split_origin(url)) else {
-            return false;
-        };
-        if other.has_user_info || has_unsafe_chars(url) {
-            return false;
-        }
-        base.scheme.eq_ignore_ascii_case(other.scheme)
-            && base.host.eq_ignore_ascii_case(other.host)
-            && effective_port(&base) == effective_port(&other)
-    }
-}
-
-/// Why `s` is not an allowed API base URL, if it is not one.
-fn api_url_problem(s: &str) -> Option<&'static str> {
-    if has_unsafe_chars(s) {
-        return Some("whitespace and control characters are not allowed");
-    }
-    let Some(o) = split_origin(s) else {
-        return Some("must be an http(s) URL");
-    };
-    if o.has_user_info {
-        return Some("user info is not allowed");
-    }
-    if o.rest.contains(['?', '#']) {
-        return Some("query and fragment are not allowed");
-    }
-    if o.host.is_empty() {
-        return Some("missing host");
-    }
-    if !host_brackets_ok(o.host) {
-        return Some("malformed host");
-    }
-    if o.scheme == "https" {
-        None
-    } else if o.scheme == "http" {
-        (!is_loopback(o.host)).then_some("plain http is only allowed for loopback hosts")
-    } else {
-        Some("must be an https URL")
-    }
-}
-
-impl TryFrom<String> for ApiUrl {
-    type Error = NameError;
-
-    /// Validates an API base, dropping trailing slashes.
-    ///
-    /// # Errors
-    ///
-    /// [`NameError::ApiUrl`] for plain http on a non-loopback host, other
-    /// schemes, or a query, fragment, or user info.
-    fn try_from(mut value: String) -> Result<Self, Self::Error> {
-        match api_url_problem(&value) {
-            None => {
-                // The authority never ends in '/', so this cannot eat the host.
-                value.truncate(value.trim_end_matches('/').len());
-                Ok(Self(value))
-            }
-            Some(reason) => Err(NameError::ApiUrl {
-                given: value,
-                reason,
-            }),
-        }
-    }
-}
-
-impl From<ApiUrl> for String {
-    fn from(value: ApiUrl) -> Self {
-        value.0
-    }
-}
-
-impl fmt::Display for ApiUrl {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
 
     use proptest::prelude::*;
 
-    use super::{ApiUrl, CloneUrl, HtmlUrl};
+    use super::{CloneUrl, HtmlUrl};
     use crate::domain::NameError;
 
     fn clone(s: &str) -> Result<CloneUrl, NameError> {
@@ -370,9 +249,6 @@ mod tests {
     }
     fn html(s: &str) -> Result<HtmlUrl, NameError> {
         HtmlUrl::try_from(s.to_owned())
-    }
-    fn api(s: &str) -> Result<ApiUrl, NameError> {
-        ApiUrl::try_from(s.to_owned())
     }
 
     #[test]
@@ -437,34 +313,6 @@ mod tests {
     }
 
     #[test]
-    fn api_url_allows_https_and_loopback_http_only() {
-        for ok in [
-            "https://api.github.com",
-            "https://ghe.corp.example/api/v3",
-            "http://127.0.0.1:8080",
-            "http://localhost:1234",
-            "http://[::1]:9",
-        ] {
-            assert_eq!(api(ok).unwrap().as_str(), ok);
-        }
-        for bad in [
-            "http://api.github.com",
-            "http://127.0.0.1.evil.com",
-            "http://localhost.evil.com",
-            "ftp://api.github.com",
-            "api.github.com",
-            "https://",
-            "https://u:p@api.github.com",
-            "https://api.github.com?x=1",
-            "https://api.github.com/v3#frag",
-            "https://api.github.com:port",
-            "https://api. github.com",
-        ] {
-            assert_matches!(api(bad), Err(NameError::ApiUrl { .. }), "{bad:?}");
-        }
-    }
-
-    #[test]
     fn backslash_cannot_smuggle_a_different_host() {
         for bad in [
             "https://evil.com\\@github.com/x",
@@ -472,14 +320,8 @@ mod tests {
             "https://evil.com/\\x",
         ] {
             assert_matches!(html(bad), Err(NameError::HtmlUrl { .. }), "{bad:?}");
-            assert_matches!(api(bad), Err(NameError::ApiUrl { .. }), "{bad:?}");
             assert_matches!(clone(bad), Err(NameError::CloneUrl { .. }), "{bad:?}");
         }
-        assert!(
-            !api("https://api.github.com")
-                .unwrap()
-                .same_origin("https://evil.com\\@api.github.com/x")
-        );
     }
 
     #[test]
@@ -502,7 +344,6 @@ mod tests {
             assert_matches!(clone(bad), Err(NameError::CloneUrl { .. }), "{bad:?}");
         }
         assert!(clone("ssh://git@[::1]:22/y").is_ok());
-        assert_matches!(api("https://[-x]"), Err(NameError::ApiUrl { .. }));
     }
 
     #[test]
@@ -510,43 +351,6 @@ mod tests {
         assert_matches!(clone("SSH://host/x"), Err(NameError::CloneUrl { .. }));
         assert_matches!(clone("HTTPS://host/x"), Err(NameError::CloneUrl { .. }));
         assert_matches!(html("HTTPS://host/x"), Err(NameError::HtmlUrl { .. }));
-        assert_matches!(api("HTTPS://host"), Err(NameError::ApiUrl { .. }));
-    }
-
-    #[test]
-    fn api_url_drops_every_trailing_slash() {
-        assert_eq!(api("https://h//").unwrap().as_str(), "https://h");
-        assert_eq!(api("https://h/api///").unwrap().as_str(), "https://h/api");
-    }
-
-    #[test]
-    fn api_url_drops_one_trailing_slash() {
-        assert_eq!(
-            api("https://api.github.com/").unwrap().as_str(),
-            "https://api.github.com"
-        );
-        assert_eq!(
-            api("https://h/api/v3/").unwrap().as_str(),
-            "https://h/api/v3"
-        );
-    }
-
-    #[test]
-    fn api_same_origin_compares_scheme_host_and_port() {
-        let base = api("https://api.github.com").unwrap();
-        assert!(base.same_origin("https://api.github.com/orgs?page=2"));
-        assert!(base.same_origin("https://API.github.com:443/orgs"));
-        assert!(!base.same_origin("http://api.github.com/orgs"));
-        assert!(!base.same_origin("https://api.github.com:8443/orgs"));
-        assert!(!base.same_origin("https://evil.com/orgs"));
-        assert!(!base.same_origin("https://api.github.com.evil.com/orgs"));
-        assert!(!base.same_origin("https://api.github.com@evil.com/orgs"));
-        assert!(!base.same_origin("/orgs?page=2"));
-        assert!(!base.same_origin(""));
-        let local = api("http://127.0.0.1:8080").unwrap();
-        assert!(local.same_origin("http://127.0.0.1:8080/x"));
-        assert!(!local.same_origin("http://127.0.0.1:8081/x"));
-        assert!(!local.same_origin("http://127.0.0.1/x"));
     }
 
     #[test]
@@ -557,7 +361,6 @@ mod tests {
         assert_eq!(serde_json::from_str::<CloneUrl>(&json).unwrap(), url);
         assert!(serde_json::from_str::<CloneUrl>("\"ext::evil\"").is_err());
         assert!(serde_json::from_str::<HtmlUrl>("\"http://x/\"").is_err());
-        assert!(serde_json::from_str::<ApiUrl>("\"http://x.com\"").is_err());
     }
 
     proptest! {
@@ -568,10 +371,6 @@ mod tests {
             prop_assert_eq!(String::from(c), url.clone());
             let h = html(&url).unwrap();
             prop_assert_eq!(h.to_string(), url.clone());
-            let a = api(&url).unwrap();
-            prop_assert!(a.same_origin(&url));
-            let json = serde_json::to_string(&a).unwrap();
-            prop_assert_eq!(serde_json::from_str::<ApiUrl>(&json).unwrap(), a);
         }
 
         #[test]
@@ -588,26 +387,6 @@ mod tests {
             let scp = format!("{user}@host:x");
             prop_assert!(clone(&ssh).is_err());
             prop_assert!(clone(&scp).is_err());
-        }
-
-        #[test]
-        fn api_url_with_many_trailing_slashes_normalises(path in "(/[a-z]{1,4}){0,3}/{0,5}") {
-            let a = api(&format!("https://h{path}")).unwrap();
-            prop_assert!(!a.as_str().ends_with('/'));
-            prop_assert_eq!(api(a.as_str()).unwrap(), a);
-        }
-
-        #[test]
-        fn api_url_is_idempotent_and_slashless(s in "[ -~]{0,30}") {
-            if let Ok(a) = api(&s) {
-                prop_assert!(!a.as_str().ends_with('/'));
-                prop_assert_eq!(api(a.as_str()).unwrap(), a);
-            }
-        }
-
-        #[test]
-        fn plain_http_is_rejected_for_non_loopback_hosts(host in "[a-z]{1,10}\\.[a-z]{2,5}") {
-            assert_matches!(api(&format!("http://{host}")), Err(NameError::ApiUrl { .. }));
         }
     }
 }

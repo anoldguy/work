@@ -182,7 +182,7 @@ pub enum AuthAction {
     Login(DomainArg),
     /// Log out with gh
     Logout(DomainArg),
-    /// Show token status for every domain
+    /// Show the gh login status for every domain
     Status,
 }
 
