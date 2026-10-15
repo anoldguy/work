@@ -1,30 +1,12 @@
-#!/bin/bash
-
-# Get list of shell-integrated commands
-__work_sh_commands=($(work commands --sh))
-
+# work shell integration for bash: eval "$(work activate bash)"
+#
+# `work sh-cd` and `work sh-on` print one line, the absolute path of the
+# target directory. The wrapper captures it first and acts on it second, so
+# a failed resolution returns its status and the directory does not change.
 work() {
-    if [[ $# -eq 0 ]]; then
-        command work
-        return $?
-    fi
-
-    local command="$1"
-    shift
-
-    # Check if command requires shell integration
-    for sh_cmd in "${__work_sh_commands[@]}"; do
-        if [[ "$command" == "$sh_cmd" ]]; then
-            # Capture first, eval second. Eval of an empty string succeeds, so
-            # a failed resolution would otherwise report exit 0 and let a
-            # chained command run in the wrong directory.
-            local script
-            script="$(command work "sh-$command" "$@")" || return $?
-            eval "$script"
-            return $?
-        fi
-    done
-
-    # Execute normal work command
-    command work "$command" "$@"
+    case "$1" in
+        cd) shift; local dir; dir="$(command work sh-cd "$@")" || return $?; cd "$dir" ;;
+        on) shift; local dir; dir="$(command work sh-on "$@")" || return $?; cd "$dir" && command work sh-editor ;;
+        *)  command work "$@" ;;
+    esac
 }

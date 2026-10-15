@@ -13,8 +13,8 @@
 //!    warn even when every domain fails and the command then errors. One
 //!    helper, [`assert_stderr_shape`], enforces this for every run.
 //! 2. A failure writes nothing to stdout.
-//! 3. `sh-cd`/`sh-on` print exactly one line of script on success and
-//!    nothing on failure.
+//! 3. `sh-cd`/`sh-on` print exactly one line, an absolute path, on success
+//!    and nothing on failure.
 //! 4. The `GITHUB_TOKEN` (and the token `gh` hands out) never shows up raw
 //!    or base64-encoded in stdout, stderr, any file under the test root
 //!    (cache, config, clones), or the shim call logs.
@@ -441,9 +441,13 @@ fn the_stderr_shape_rejects_every_malformed_layout() {
     );
 }
 
-/// Rule 3: `sh-*` stdout is one line of script on success, empty otherwise.
+/// Rule 3: `sh-cd`/`sh-on` stdout is one absolute path line on success,
+/// empty otherwise.
 fn check_sh_script(out: &Output, args: &[&str], ctx: &str) {
-    if !args.first().is_some_and(|cmd| cmd.starts_with("sh-")) {
+    if !args
+        .first()
+        .is_some_and(|cmd| matches!(*cmd, "sh-cd" | "sh-on"))
+    {
         return;
     }
     let stdout = text(&out.stdout);
@@ -453,8 +457,8 @@ fn check_sh_script(out: &Output, args: &[&str], ctx: &str) {
             "{ctx}: sh-* must print exactly one line: {stdout:?}"
         );
         assert!(
-            stdout.starts_with("cd '"),
-            "{ctx}: not a script: {stdout:?}"
+            Path::new(stdout.trim_end_matches('\n')).is_absolute(),
+            "{ctx}: not an absolute path: {stdout:?}"
         );
     } else {
         assert_eq!(stdout, "", "{ctx}: a failed sh-* must print nothing");
@@ -540,7 +544,7 @@ const ALL_COMMANDS: &[&[&str]] = &[
     &["about"],
     &["sh-cd"],
     &["sh-on"],
-    &["commands"],
+    &["sh-editor"],
 ];
 
 /// The visible commands whose `--help` is snapshotted.
@@ -570,7 +574,7 @@ const VISIBLE_COMMANDS: &[&[&str]] = &[
     &["about"],
 ];
 
-const HIDDEN_COMMANDS: &[&str] = &["sh-cd", "sh-on", "commands"];
+const HIDDEN_COMMANDS: &[&str] = &["sh-cd", "sh-on", "sh-editor"];
 
 /// `config path` when the config file exists.
 const CONFIG_EXISTS: Want = Want::OkWithStderr(Info::Exact("config file exists\n"));
@@ -617,7 +621,6 @@ fn missing_and_invalid_arguments_are_one_line_usage_errors() {
         case(Bare, &["sh-on"], Usage),
         // A required subcommand, flag or flag value is missing.
         case(Bare, &["auth"], Usage),
-        case(Bare, &["commands"], Usage),
         case(Bare, &["sync", "--jobs"], Usage),
         case(Bare, &["auth", "login", "--domain"], Usage),
         case(Bare, &["auth", "logout", "--domain"], Usage),
@@ -702,7 +705,6 @@ fn successful_runs_never_leak_the_token_and_sh_prints_one_line() {
                 &["about", "--style", "fire"],
                 Want::OkWithStderr(Info::AboutLogo),
             ),
-            case(fixture, &["commands", "--sh"], Ok),
             case(fixture, &["--version"], Ok),
             case(fixture, &[], Ok),
         ]);
@@ -789,6 +791,7 @@ fn an_invalid_config_is_one_line_for_every_command_that_reads_it() {
             case(fixture, &["list", "--complete"], Want::Ok),
             case(fixture, &["version"], Want::Ok),
             case(fixture, &["activate", "bash"], Want::Ok),
+            case(fixture, &["sh-editor"], Want::Ok),
         ]);
     }
     check_all(&cases);
@@ -883,25 +886,6 @@ fn a_broken_stdout_pipe_is_silent_and_exits_0() {
     let out = child.wait_with_output().expect("wait");
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(text(&out.stderr), "");
-}
-
-#[test]
-fn every_shell_integrated_command_has_an_sh_subcommand() {
-    let env = build(Fixture::Bare);
-    let out = env
-        .command()
-        .args(["commands", "--sh"])
-        .output()
-        .expect("run work");
-    assert!(out.status.success());
-    let names = text(&out.stdout);
-    assert_ne!(names, "");
-    for name in names.lines() {
-        env.command()
-            .args([format!("sh-{name}").as_str(), "--help"])
-            .assert()
-            .success();
-    }
 }
 
 fn help(args: &[&str]) -> String {

@@ -52,27 +52,13 @@ fn path_str(path: &Path) -> &str {
     path.to_str().expect("utf-8 path")
 }
 
-/// Quotes like `shell::quote`: `'` as `'\''`, `\` as `'\\'`.
-fn quoted(path: &Path) -> String {
-    let inner: String = path_str(path)
-        .chars()
-        .map(|c| match c {
-            '\'' => r"'\''".to_owned(),
-            '\\' => r"'\\'".to_owned(),
-            c => c.to_string(),
-        })
-        .collect();
-    format!("'{inner}'")
-}
-
 #[test]
-fn sh_cd_clones_and_prints_one_cd_line() {
+fn sh_cd_clones_and_prints_the_absolute_path() {
     let (env, origin) = env_with_foo();
     let path = env.repo_path(SLUG);
     let out = run(&env, &["sh-cd", "foo"]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
-    assert_eq!(stdout(&out), format!("cd {}\n", quoted(&path)));
-    assert!(path.join(".git").is_dir());
+    assert_eq!(stdout(&out), format!("{}\n", path_str(&path)));
     let head = crate::support::git(&path, &["rev-parse", "HEAD"]);
     assert_eq!(head, origin.head());
     assert_eq!(access_count(&env, SLUG), 1);
@@ -95,59 +81,22 @@ fn sh_cd_without_a_query_goes_to_the_work_dir_and_creates_it() {
     fs::remove_dir_all(env.work_dir()).expect("remove work dir");
     let out = run(&env, &["sh-cd"]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
-    assert_eq!(stdout(&out), format!("cd {}\n", quoted(&env.work_dir())));
+    assert_eq!(stdout(&out), format!("{}\n", path_str(&env.work_dir())));
     assert!(env.work_dir().is_dir());
     assert_eq!(access_count(&env, SLUG), 0);
 }
 
 #[test]
-fn sh_on_prints_cd_and_the_editor_on_one_line() {
+fn sh_on_clones_and_prints_the_path_without_running_the_editor() {
     let (env, _origin) = env_with_foo();
     let path = env.repo_path(SLUG);
     let out = run(&env, &["sh-on", "foo"]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
-    let q = quoted(&path);
-    assert_eq!(
-        stdout(&out),
-        format!("cd {q} && {} {q}\n", path_str(&env.editor.path()))
-    );
+    assert_eq!(stdout(&out), format!("{}\n", path_str(&path)));
     assert!(path.join(".git").is_dir());
-    // The script is only printed; the wrapper runs the editor.
+    // The wrapper runs the editor afterwards, through `sh-editor`.
     assert_eq!(env.editor.calls(), Vec::<Vec<String>>::new());
     assert_eq!(access_count(&env, SLUG), 1);
-}
-
-/// A work dir full of characters that need quoting.
-fn quote_heavy_env() -> (TestEnv, PathBuf, Origin) {
-    let env = TestEnv::new();
-    let work_dir = env.home().join(r#"it's a \ "$dir" `x`"#);
-    let toml_value = path_str(&work_dir)
-        .replace('\\', r"\\")
-        .replace('"', "\\\"");
-    env.write_config_raw(&format!("work_dir = \"{toml_value}\"\n"));
-    let origin = env.origin("acme", "foo");
-    env.seed_cache(&[RepoSeed::new(SLUG).origin(&origin)]);
-    (env, work_dir.join("acme/foo"), origin)
-}
-
-#[test]
-fn sh_cd_and_sh_on_quote_hostile_paths_and_sh_reads_them_back() {
-    let (env, path, _origin) = quote_heavy_env();
-    let cd = stdout(&run(&env, &["sh-cd", "foo"]));
-    assert_eq!(cd, format!("cd {}\n", quoted(&path)));
-    let on = stdout(&run(&env, &["sh-on", "foo"]));
-    assert_eq!(on.lines().count(), 1);
-    assert!(path.join(".git").is_dir());
-
-    // Evaluating the script in a real POSIX shell lands in the directory.
-    let shown = std::process::Command::new("/bin/sh")
-        .arg("-c")
-        .arg(format!("{}; pwd -P", cd.trim_end()))
-        .output()
-        .expect("run sh");
-    assert!(shown.status.success());
-    let canonical = path.canonicalize().expect("canonical");
-    assert_eq!(stdout(&shown), format!("{}\n", path_str(&canonical)));
 }
 
 #[test]
@@ -384,29 +333,5 @@ fn an_unprintable_path_fails_before_cloning_or_creating_anything() {
         );
         assert!(!work_dir.exists(), "{args:?} created {work_dir:?}");
     }
-    assert_eq!(access_count(&env, SLUG), 0);
-}
-
-#[test]
-fn sh_on_rejects_an_editor_with_control_characters_before_cloning() {
-    let (env, _origin) = env_with_foo();
-    for editor in ["editor\necho INJECTED", "editor\recho", "ed\titor"] {
-        let out = env
-            .command()
-            .args(["sh-on", "foo"])
-            .env("WORK_EDITOR", editor)
-            .output()
-            .expect("run");
-        assert_eq!(out.status.code(), Some(1), "{editor:?}");
-        assert_eq!(stdout(&out), "", "{editor:?}");
-        assert_eq!(stderr(&out).lines().count(), 1, "{}", stderr(&out));
-        assert!(
-            stderr(&out).starts_with("work: invalid editor command "),
-            "{}",
-            stderr(&out)
-        );
-        assert!(stderr(&out).contains("$WORK_EDITOR"), "{}", stderr(&out));
-    }
-    assert!(!env.repo_path(SLUG).exists());
     assert_eq!(access_count(&env, SLUG), 0);
 }

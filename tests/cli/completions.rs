@@ -121,7 +121,7 @@ fn hidden_items_are_not_completed() {
     for shell in ["bash", "zsh", "fish"] {
         let out = env.command().args(["completions", shell]).output().unwrap();
         let text = stdout(&out);
-        for hidden in ["sh-cd", "sh-on", "--style", "commands --sh"] {
+        for hidden in ["sh-cd", "sh-on", "sh-editor", "--style"] {
             assert!(!text.contains(hidden), "{shell} leaks {hidden}");
         }
         // The only mention of `--complete` is the hook's own call.
