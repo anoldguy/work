@@ -11,7 +11,8 @@ use crate::core::org_filter::{OrgSelection, passes_filters, select_orgs};
 use crate::domain::{Domain, Org, Slug};
 use crate::github::{GitHubApi, MAX_PAGES, PER_PAGE, Page};
 use crate::pool::run_bounded;
-use crate::progress::{Header, Noun, ProgressSink, TaskDetail, TaskOutcome, UiEvent, Verb};
+use crate::progress::{Noun, Tasks, Verb, group};
+use crate::text::plural;
 
 /// Org jobs in flight at once, across all domains.
 pub const FETCH_JOBS: NonZeroUsize = NonZeroUsize::new(8).expect("8 is non-zero");
@@ -98,7 +99,6 @@ enum JobKind<'p> {
 /// One unit of work for the org phase.
 #[derive(Debug)]
 struct Job<'p> {
-    id: u32,
     domain: &'p Domain,
     token: &'p SecretToken,
     kind: JobKind<'p>,
@@ -137,7 +137,7 @@ pub fn fetch_all(
     plan: &FetchPlan<'_>,
     api: &dyn GitHubApi,
     tokens: &Tokens<'_>,
-    sink: &ProgressSink,
+    tasks: &Tasks,
 ) -> Vec<DomainOutcome> {
     let ready = run_bounded(&plan.domains, FETCH_JOBS, |dp| {
         prepare_domain(plan, dp, api, tokens)
@@ -160,42 +160,37 @@ pub fn fetch_all(
     // Warn from this thread, in domain order, so the output is stable.
     for p in &prepared {
         if let Prepared::Failed { domain, cause } = p {
-            sink.warn(format!("cannot refresh {domain}: {cause}"));
+            tasks.warn(format!("cannot refresh {domain}: {cause}"));
         }
     }
 
-    let jobs: Vec<Job<'_>> = (0..)
-        .zip(
-            prepared
-                .iter()
-                .filter_map(|p| match p {
-                    Prepared::Ready { domain, ready } => Some((*domain, ready.token, &ready.orgs)),
-                    Prepared::Failed { .. } => None,
+    let jobs: Vec<Job<'_>> = prepared
+        .iter()
+        .filter_map(|p| match p {
+            Prepared::Ready { domain, ready } => Some((*domain, ready.token, &ready.orgs)),
+            Prepared::Failed { .. } => None,
+        })
+        .flat_map(|(domain, token, orgs)| {
+            std::iter::once(JobKind::Personal)
+                .chain(orgs.iter().map(JobKind::Org))
+                .map(move |kind| Job {
+                    domain,
+                    token,
+                    kind,
                 })
-                .flat_map(|(domain, token, orgs)| {
-                    std::iter::once(JobKind::Personal)
-                        .chain(orgs.iter().map(JobKind::Org))
-                        .map(move |kind| (domain, token, kind))
-                }),
-        )
-        .map(|(id, (domain, token, kind))| Job {
-            id,
-            domain,
-            token,
-            kind,
         })
         .collect();
 
     if !jobs.is_empty() {
-        sink.send(UiEvent::Header(Header {
-            verb: Verb::Updating,
-            total: to_u32(jobs.len()),
-            noun: Noun::Sources,
-            domains: Some(to_u32(plan.domains.len())),
-        }));
+        tasks.set_total(
+            Verb::Updating,
+            to_u32(jobs.len()),
+            Noun::Sources,
+            Some(to_u32(plan.domains.len())),
+        );
     }
 
-    let results = run_bounded(&jobs, FETCH_JOBS, |job| run_job(job, api, sink));
+    let results = run_bounded(&jobs, FETCH_JOBS, |job| run_job(job, api, tasks));
     drop(jobs);
 
     // Jobs were queued per ready domain as the personal job, then each org,
@@ -280,22 +275,18 @@ fn prepare_domain<'t>(
         })
 }
 
-/// Runs one job on a pool worker. It reports only through `sink`.
-fn run_job(job: &Job<'_>, api: &dyn GitHubApi, sink: &ProgressSink) -> OrgOutcome {
-    let id = job.id;
+/// Runs one job on a pool worker. It reports only through `tasks`.
+fn run_job(job: &Job<'_>, api: &dyn GitHubApi, tasks: &Tasks) -> OrgOutcome {
     let label = job.label();
-    sink.send(UiEvent::TaskStarted {
-        id,
-        label: label.clone(),
-    });
+    let task = tasks.start(&label);
     let mut on_page = |page: Page| {
-        sink.send(UiEvent::TaskProgress {
-            id,
-            detail: TaskDetail::Page {
-                page: page.number,
-                repos: page.repos_so_far,
-            },
-        });
+        let repos = page.repos_so_far;
+        task.detail(&format!(
+            "page {} · {} {}",
+            page.number,
+            group(u64::from(repos)),
+            plural(repos, "repo", "repos")
+        ));
     };
     let listing = match job.kind {
         JobKind::Personal => api.user_repos(job.domain, job.token, &mut on_page),
@@ -304,34 +295,24 @@ fn run_job(job: &Job<'_>, api: &dyn GitHubApi, sink: &ProgressSink) -> OrgOutcom
     match listing {
         Ok(listing) => {
             if listing.truncated {
-                sink.warn(format!(
+                tasks.warn(format!(
                     "{label} truncated at {} repos",
                     MAX_PAGES.saturating_mul(PER_PAGE)
                 ));
             }
             if listing.skipped > 0 {
-                sink.warn(format!(
+                tasks.warn(format!(
                     "{label}: skipped {} repos with invalid data",
                     listing.skipped
                 ));
             }
-            sink.send(UiEvent::TaskFinished {
-                id,
-                outcome: TaskOutcome::Ok {
-                    repos: Some(to_u32(listing.repos.len())),
-                },
-            });
+            task.ok(Some(to_u32(listing.repos.len())));
             OrgOutcome::Fetched(listing.repos)
         }
         Err(err) => {
             let reason = err.to_string();
-            sink.warn(format!("cannot fetch {label}: {reason}"));
-            sink.send(UiEvent::TaskFinished {
-                id,
-                outcome: TaskOutcome::Failed {
-                    reason: reason.clone(),
-                },
-            });
+            tasks.warn(format!("cannot fetch {label}: {reason}"));
+            task.fail(&reason);
             OrgOutcome::Failed(reason)
         }
     }
@@ -387,6 +368,7 @@ mod tests {
     use crate::domain::Repo;
     use crate::env::EnvSnapshot;
     use crate::github::{ApiError, Listing};
+    use crate::progress::{Header, TaskDetail, TaskOutcome, UiEvent};
     use crate::testing::{Endpoint, FakeGh, FakeGitHub};
 
     fn dom(s: &str) -> Domain {
@@ -440,7 +422,7 @@ mod tests {
     ) -> (Vec<DomainOutcome>, Vec<UiEvent>) {
         let domains: Vec<Domain> = plan.domains.iter().map(|d| d.domain.clone()).collect();
         let tokens = Tokens::resolve(gh, env, &domains);
-        let (sink, rx) = ProgressSink::channel();
+        let (sink, rx) = Tasks::channel();
         let out = fetch_all(plan, api, &tokens, &sink);
         drop(sink);
         (out, drain(&rx))
@@ -743,15 +725,20 @@ mod tests {
             .count();
         assert_eq!(headers, 1);
 
-        let mut per_task: BTreeMap<u32, Vec<&UiEvent>> = BTreeMap::new();
+        // Task ids follow start order, which the pool does not fix: group
+        // each task's events under the label it started with.
+        let mut labels: BTreeMap<u32, &str> = BTreeMap::new();
+        let mut per_task: BTreeMap<&str, Vec<&UiEvent>> = BTreeMap::new();
         for event in &events {
             let id = match event {
-                UiEvent::TaskStarted { id, .. }
-                | UiEvent::TaskProgress { id, .. }
-                | UiEvent::TaskFinished { id, .. } => *id,
+                UiEvent::TaskStarted { id, label } => {
+                    labels.insert(*id, label);
+                    *id
+                }
+                UiEvent::TaskProgress { id, .. } | UiEvent::TaskFinished { id, .. } => *id,
                 UiEvent::Header(_) | UiEvent::Warn(_) => continue,
             };
-            per_task.entry(id).or_default().push(event);
+            per_task.entry(labels[&id]).or_default().push(event);
         }
         let expected: [ExpectedTask; 3] = [
             ("github.com/@me (personal)", &[(1, 1), (2, 2), (3, 3)], 3),
@@ -759,16 +746,15 @@ mod tests {
             ("github.com/beta", &[(1, 1)], 1),
         ];
         assert_eq!(per_task.len(), 3);
-        for ((&id, task), (label, pages, total)) in per_task.iter().zip(expected) {
+        for (label, pages, total) in expected {
+            let task = &per_task[label];
             assert_eq!(task.len(), pages.len() + 2, "{task:?}");
-            assert_matches!(task[0], UiEvent::TaskStarted { label: l, .. } if l == label);
             for (event, &(page, repos)) in task[1..].iter().zip(pages) {
-                assert_eq!(
-                    **event,
-                    UiEvent::TaskProgress {
-                        id,
-                        detail: TaskDetail::Page { page, repos },
-                    }
+                let unit = if repos == 1 { "repo" } else { "repos" };
+                assert_matches!(
+                    event,
+                    UiEvent::TaskProgress { detail: TaskDetail::Text(t), .. }
+                        if *t == format!("page {page} · {repos} {unit}")
                 );
             }
             assert_matches!(

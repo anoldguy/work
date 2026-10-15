@@ -1,11 +1,12 @@
 //! Progress events from workers to the terminal owner, and the pure view
 //! that folds them into display lines.
 //!
-//! This module has no terminal dependencies. Workers only ever hold a
-//! [`ProgressSink`]; `ui::Ui::with_progress` owns the receiver, folds events
+//! This module has no terminal dependencies. Workers only ever hold
+//! [`Tasks`] and [`Task`]; `ui::Ui::with_progress` owns the receiver, folds events
 //! into a [`ProgressView`], and draws it.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 
 use crate::text::{display_width, pad_to, plural, sanitize, truncate};
@@ -99,6 +100,8 @@ pub enum TaskDetail {
     },
     /// A fixed step.
     Step(Step),
+    /// Free text, from [`Task::detail`].
+    Text(String),
 }
 
 /// How a task ended.
@@ -178,6 +181,123 @@ impl ProgressSink {
     }
 }
 
+/// What workers get from `ui::Ui::with_progress`: they start tasks and
+/// queue warnings, and never write to the terminal. Cheap to clone and
+/// `Sync`, so scoped workers can share `&Tasks`.
+#[derive(Debug)]
+pub struct Tasks {
+    sink: ProgressSink,
+    next_id: AtomicU32,
+}
+
+impl Tasks {
+    /// Tasks reporting to `sink`.
+    #[must_use]
+    pub(crate) const fn new(sink: ProgressSink) -> Self {
+        Self {
+            sink,
+            next_id: AtomicU32::new(0),
+        }
+    }
+
+    /// Connected tasks and the receiver of their events (tests).
+    #[cfg(test)]
+    #[must_use]
+    pub fn channel() -> (Self, mpsc::Receiver<UiEvent>) {
+        let (sink, rx) = ProgressSink::channel();
+        (Self::new(sink), rx)
+    }
+
+    /// Sends a raw event (tests of the display).
+    #[cfg(test)]
+    pub(crate) fn send(&self, event: UiEvent) {
+        self.sink.send(event);
+    }
+
+    /// Replaces the title with a counted header, e.g.
+    /// `Updating 12 sources across 2 domains  [7/12]`. Call once, before
+    /// any task starts.
+    pub fn set_total(&self, verb: Verb, total: u32, noun: Noun, domains: Option<u32>) {
+        self.sink.send(UiEvent::Header(Header {
+            verb,
+            total,
+            noun,
+            domains,
+        }));
+    }
+
+    /// Starts a task shown as `label` (e.g. `github.com/acme`).
+    pub fn start(&self, label: &str) -> Task {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.sink.send(UiEvent::TaskStarted {
+            id,
+            label: label.to_owned(),
+        });
+        Task {
+            id,
+            sink: self.sink.clone(),
+            finished: false,
+        }
+    }
+
+    /// Queues a one-line warning, printed after the display is cleared.
+    pub fn warn(&self, message: impl Into<String>) {
+        self.sink.warn(message);
+    }
+}
+
+/// One in-flight task. End it with [`Task::ok`] or [`Task::fail`]; a task
+/// dropped without either (an early return, or a panicking worker) ends as
+/// failed with the reason `abandoned`, so the display always completes.
+#[derive(Debug)]
+#[must_use = "end the task with `ok` or `fail`"]
+pub struct Task {
+    id: u32,
+    sink: ProgressSink,
+    finished: bool,
+}
+
+impl Task {
+    /// Replaces the text shown after the task's label (e.g. `280 repos`).
+    pub fn detail(&self, text: &str) {
+        self.sink.send(UiEvent::TaskProgress {
+            id: self.id,
+            detail: TaskDetail::Text(text.to_owned()),
+        });
+    }
+
+    /// Ends the task successfully; `repos` (when known) is summed into the
+    /// final summary line.
+    pub fn ok(mut self, repos: Option<u32>) {
+        self.finish(TaskOutcome::Ok { repos });
+    }
+
+    /// Ends the task with a failure, kept as a `✗ <label>  <reason>` line.
+    pub fn fail(mut self, reason: &str) {
+        self.finish(TaskOutcome::Failed {
+            reason: reason.to_owned(),
+        });
+    }
+
+    fn finish(&mut self, outcome: TaskOutcome) {
+        self.finished = true;
+        self.sink.send(UiEvent::TaskFinished {
+            id: self.id,
+            outcome,
+        });
+    }
+}
+
+impl Drop for Task {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.finish(TaskOutcome::Failed {
+                reason: "abandoned".to_owned(),
+            });
+        }
+    }
+}
+
 /// One in-flight task in a [`ProgressView`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InFlight {
@@ -252,7 +372,10 @@ impl ProgressView {
             }
             UiEvent::TaskProgress { id, detail } => {
                 if let Some(task) = self.in_flight.get_mut(&id) {
-                    task.detail = Some(detail);
+                    task.detail = Some(match detail {
+                        TaskDetail::Text(text) => TaskDetail::Text(sanitize(&text)),
+                        other => other,
+                    });
                 }
             }
             UiEvent::TaskFinished { id, outcome } => {
@@ -441,11 +564,13 @@ fn detail_text(detail: &TaskDetail) -> String {
             format!("page {page} · {} {unit}", group(u64::from(*repos)))
         }
         TaskDetail::Step(step) => step.label().to_owned(),
+        TaskDetail::Text(text) => text.clone(),
     }
 }
 
 /// `1204` → `1,204`.
-fn group(n: u64) -> String {
+#[must_use]
+pub(crate) fn group(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, c) in digits.chars().enumerate() {
@@ -460,9 +585,51 @@ fn group(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Header, Noun, ProgressSink, ProgressView, Step, TaskDetail, TaskOutcome, UiEvent, Verb,
-        display_width,
+        Header, Noun, ProgressSink, ProgressView, Step, TaskDetail, TaskOutcome, Tasks, UiEvent,
+        Verb, display_width, group,
     };
+
+    #[test]
+    fn a_task_dropped_without_an_outcome_ends_as_abandoned() {
+        let (tasks, rx) = Tasks::channel();
+        drop(tasks.start("github.com/acme"));
+        tasks.start("github.com/beta").ok(None);
+        let mut view = ProgressView::new("t", false);
+        let events: Vec<UiEvent> = rx.try_iter().collect();
+        let abandoned = events.iter().filter(|e| {
+            matches!(e, UiEvent::TaskFinished { outcome: TaskOutcome::Failed { reason }, .. } if reason == "abandoned")
+        });
+        assert_eq!(abandoned.count(), 1);
+        for event in events {
+            view.apply(event);
+        }
+        assert_eq!(
+            view.lines(80, 24, 0).len(),
+            3,
+            "header, count, one failure; nothing in flight"
+        );
+    }
+
+    #[test]
+    fn task_detail_text_cannot_add_terminal_rows() {
+        let (tasks, rx) = Tasks::channel();
+        let task = tasks.start("acme");
+        task.detail("page 1\n\x1b[2Jboom");
+        let mut view = ProgressView::new("t", false);
+        for event in rx.try_iter() {
+            view.apply(event);
+        }
+        let lines = view.lines(80, 24, 0);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(!lines[1].contains(['\n', '\x1b']), "{lines:?}");
+        task.ok(None);
+    }
+
+    #[test]
+    fn counts_are_grouped_by_thousands() {
+        assert_eq!(group(1_204), "1,204");
+        assert_eq!(group(999), "999");
+    }
 
     fn update_header(total: u32) -> UiEvent {
         UiEvent::Header(Header {

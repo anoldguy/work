@@ -108,8 +108,8 @@ pub fn sync(app: &mut App, args: &SyncArgs) -> Result<ExitCode, Error> {
         .collect::<Result<Vec<_>, AuthError>>()?;
     app.ui.flush()?;
     let git = &*app.git;
-    let reports = app.ui.with_progress(SYNC_TITLE, |sink| {
-        sync_all(git, &work_dir, &repos, args.jobs, sink)
+    let reports = app.ui.with_progress(SYNC_TITLE, |tasks| {
+        sync_all(git, &work_dir, &repos, args.jobs, tasks)
     });
     for report in &reports {
         app.ui
