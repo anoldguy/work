@@ -32,8 +32,8 @@ const SYNC_TITLE: &str = "Syncing repositories";
 /// Only on a broken `Target` invariant (see
 /// [`crate::commands::resolve::Target::repo`]).
 pub fn pull(app: &mut App, args: &ResolveArgs) -> Result<ExitCode, Error> {
-    let mut cache = load_or_refresh(app, Freshness::NoUpdate)?;
-    let target = resolve_target(app, &mut cache, &args.query, args.pick)?;
+    let cache = load_or_refresh(app, Freshness::NoUpdate)?;
+    let target = resolve_target(app, &cache, &args.query, args.pick)?;
     let slug = &target.repo(&cache.repos).slug;
     let name = short_name(slug, app.config.default_domain());
     if !is_cloned(&target.path) {
@@ -52,7 +52,7 @@ pub fn pull(app: &mut App, args: &ResolveArgs) -> Result<ExitCode, Error> {
     if let SyncOutcome::Error(detail) = outcome {
         return Err(SyncError::PullFailed { repo: name, detail }.into());
     }
-    record_access(app, &mut cache, &target)?;
+    record_access(app, &cache, &target);
     app.ui.stdout_line(&format!("{name}: {outcome}"))?;
     Ok(ExitCode::SUCCESS)
 }

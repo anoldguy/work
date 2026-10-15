@@ -114,7 +114,7 @@ pub struct SearchResult {
 /// Ranks `repos` against `q`.
 ///
 /// `frecency` supplies each repo's frecency score (usually
-/// `|s| cache.frecency.score(s, now)`). Returns results best first, cut at
+/// `|s| history.frecency.score(s, now)`). Returns results best first, cut at
 /// [`RESULT_LIMIT`]. Every `Exact` hit survives the cut, so `resolve` can
 /// always see the exact match: a dropped exact evicts the lowest-ranked
 /// non-exact. With more than [`RESULT_LIMIT`] exact matches, the top

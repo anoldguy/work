@@ -54,11 +54,11 @@ pub fn cd(app: &mut App, args: &CdArgs, via: Invocation) -> Result<ExitCode, Err
         app.ui.stdout_line(&script)?;
         return Ok(ExitCode::SUCCESS);
     };
-    let (mut cache, target) = resolve(app, query, args.pick)?;
+    let (cache, target) = resolve(app, query, args.pick)?;
     // Check the path can be printed before cloning anything.
     let script = shell::cd_script(&target.path)?;
     ensure_cloned(app, &cache, &target)?;
-    record_access(app, &mut cache, &target)?;
+    record_access(app, &cache, &target);
     app.ui.stdout_line(&script)?;
     Ok(ExitCode::SUCCESS)
 }
@@ -71,11 +71,11 @@ pub fn cd(app: &mut App, args: &CdArgs, via: Invocation) -> Result<ExitCode, Err
 pub fn on(app: &mut App, args: &ResolveArgs, via: Invocation) -> Result<ExitCode, Error> {
     require_wrapper(app, via)?;
     let editor = script_editor(app)?;
-    let (mut cache, target) = resolve(app, &args.query, args.pick)?;
+    let (cache, target) = resolve(app, &args.query, args.pick)?;
     // Check the path can be printed before cloning anything.
     let script = shell::on_script(&target.path, editor.as_str())?;
     ensure_cloned(app, &cache, &target)?;
-    record_access(app, &mut cache, &target)?;
+    record_access(app, &cache, &target);
     app.ui.stdout_line(&script)?;
     Ok(ExitCode::SUCCESS)
 }
@@ -86,11 +86,11 @@ pub fn on(app: &mut App, args: &ResolveArgs, via: Invocation) -> Result<ExitCode
 ///
 /// Resolution, clone, editor, or cache failures.
 pub fn edit(app: &mut App, args: &ResolveArgs) -> Result<ExitCode, Error> {
-    let (mut cache, target) = prepare(app, args, Local::Clone)?;
+    let (cache, target) = prepare(app, args, Local::Clone)?;
     // The editor inherits stdout: pending output must land first.
     app.ui.flush()?;
     platform::spawn_editor(&EditorCmd::from_env(&app.env), &target.path)?;
-    record_access(app, &mut cache, &target)?;
+    record_access(app, &cache, &target);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -100,8 +100,8 @@ pub fn edit(app: &mut App, args: &ResolveArgs) -> Result<ExitCode, Error> {
 ///
 /// Resolution, clone, or cache failures.
 pub fn clone(app: &mut App, args: &ResolveArgs) -> Result<ExitCode, Error> {
-    let (mut cache, target) = prepare(app, args, Local::Clone)?;
-    record_access(app, &mut cache, &target)?;
+    let (cache, target) = prepare(app, args, Local::Clone)?;
+    record_access(app, &cache, &target);
     app.ui.stdout_line(&target.path.display().to_string())?;
     Ok(ExitCode::SUCCESS)
 }
@@ -116,10 +116,10 @@ pub fn clone(app: &mut App, args: &ResolveArgs) -> Result<ExitCode, Error> {
 ///
 /// Only on a broken [`Target`] invariant (see [`Target::repo`]).
 pub fn browse(app: &mut App, args: &ResolveArgs) -> Result<ExitCode, Error> {
-    let (mut cache, target) = prepare(app, args, Local::NotNeeded)?;
+    let (cache, target) = prepare(app, args, Local::NotNeeded)?;
     app.ui.flush()?;
     platform::open_url(&target.repo(&cache.repos).html_url)?;
-    record_access(app, &mut cache, &target)?;
+    record_access(app, &cache, &target);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -129,10 +129,10 @@ pub fn browse(app: &mut App, args: &ResolveArgs) -> Result<ExitCode, Error> {
 ///
 /// Resolution, clone, opener, or cache failures.
 pub fn open(app: &mut App, args: &ResolveArgs) -> Result<ExitCode, Error> {
-    let (mut cache, target) = prepare(app, args, Local::Clone)?;
+    let (cache, target) = prepare(app, args, Local::Clone)?;
     app.ui.flush()?;
     platform::open_dir(&target.path)?;
-    record_access(app, &mut cache, &target)?;
+    record_access(app, &cache, &target);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -163,8 +163,8 @@ fn script_editor(app: &App) -> Result<EditorCmd, ShellError> {
 /// Loads the cache (refreshing it when needed) and resolves `query`.
 /// Nothing is cloned or recorded yet.
 fn resolve(app: &mut App, query: &str, pick: bool) -> Result<(Cache, Target), Error> {
-    let mut cache = load_or_refresh(app, Freshness::AutoUpdate)?;
-    let target = resolve_target(app, &mut cache, query, pick)?;
+    let cache = load_or_refresh(app, Freshness::AutoUpdate)?;
+    let target = resolve_target(app, &cache, query, pick)?;
     Ok((cache, target))
 }
 

@@ -1,6 +1,6 @@
 //! Repo frecency: access count times a recency multiplier (pure).
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -101,9 +101,9 @@ impl Frecency {
         (top, runner_up)
     }
 
-    /// Drops every entry whose slug is not in `live`.
-    pub fn retain_slugs(&mut self, live: &HashSet<&Slug>) {
-        self.0.retain(|slug, _| live.contains(slug));
+    /// Keeps only the entries for which `keep` returns true.
+    pub fn retain(&mut self, mut keep: impl FnMut(&Slug, &FrecencyData) -> bool) {
+        self.0.retain(|slug, data| keep(slug, data));
     }
 
     /// The raw entry for `s`, if any (tests).
@@ -195,12 +195,12 @@ mod tests {
     }
 
     #[test]
-    fn retain_slugs_drops_dead() {
+    fn retain_keeps_only_matching_entries() {
         let (a, b) = (slug("h.com/a/a"), slug("h.com/a/b"));
         let mut f = Frecency::default();
         f.record(&a, t(0));
         f.record(&b, t(0));
-        f.retain_slugs(&HashSet::from([&a]));
+        f.retain(|s, _| *s == a);
         assert!(f.get(&a).is_some());
         assert!(f.get(&b).is_none());
     }

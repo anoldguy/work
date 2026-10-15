@@ -128,8 +128,7 @@ fn pull_failure_is_a_one_line_error_and_does_not_record_frecency() {
             "work: could not pull acme/foo: ",
         ))
         .stderr(predicate::str::ends_with("\n"));
-    let cache = fs::read_to_string(env.cache_path()).expect("cache");
-    assert!(!cache.contains("access_count"), "{cache}");
+    assert!(!env.frecency_path().exists());
 }
 
 #[test]
@@ -137,8 +136,8 @@ fn pull_records_frecency_on_success() {
     let env = TestEnv::new();
     cloned(&env);
     pull(&env).success();
-    let cache = fs::read_to_string(env.cache_path()).expect("cache");
-    assert!(cache.contains("access_count"), "{cache}");
+    let history = fs::read_to_string(env.frecency_path()).expect("frecency");
+    assert!(history.contains("access_count"), "{history}");
 }
 
 #[test]
@@ -278,6 +277,7 @@ fn sync_neither_writes_the_cache_nor_records_frecency() {
     let before = fs::read_to_string(env.cache_path()).expect("cache");
     sync(&env).success();
     assert_eq!(fs::read_to_string(env.cache_path()).expect("cache"), before);
+    assert!(!env.frecency_path().exists());
 }
 
 #[test]
