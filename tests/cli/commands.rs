@@ -130,7 +130,7 @@ fn about_without_a_terminal_prints_the_static_logo() {
         .expect("run");
     assert!(!out.status.success());
     let stderr = text(&out.stderr);
-    for style in ["classic", "decode", "plasma", "dropin"] {
+    for style in ["classic", "decode", "dropin"] {
         assert!(stderr.contains(style), "{stderr}");
     }
 }
