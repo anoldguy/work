@@ -1,23 +1,16 @@
 # Query-Level Frecency
 
-## Problem
+## Purpose
 
-The current frecency system tracks which repositories the user accesses, but not which query led to the selection. This creates a blind spot: if the user types `work cd foo` fourteen times and picks `github.com/acme/foobar` from the selector every time, the system learns that `foobar` is popular, but it doesn't learn that `foo` means `foobar`.
+Query frecency records which repo the user picks for an ambiguous query. Once a query has a clear favorite, that query resolves to it without showing the selector.
 
-The practical consequence is that short, ambiguous substrings keep triggering the interactive selector even when the user's intent is well-established. The selector is a speed bump on a well-worn path.
+## Data Model
 
-## Desired Outcome
-
-When a user has repeatedly selected the same repo for a given query, the system should auto-resolve that query to the chosen repo without showing the selector. The user's established query-to-repo associations should be treated as learned preferences.
-
-## Design
-
-### Data Model
-
-Add a `QueryFrecency` map to the cache alongside the existing `Frecency` map:
+Query frecency lives in `frecency.json` next to repo frecency (see [search-resolution.md](search-resolution.md#frecency-storage)):
 
 ```json
 {
+  "version": 1,
   "frecency": {
     "github.com/acme/foobar": { "access_count": 14, "last_access": "..." }
   },
@@ -32,93 +25,46 @@ Add a `QueryFrecency` map to the cache alongside the existing `Frecency` map:
 }
 ```
 
-The structure is `map[string]map[string]FrecencyData`, keyed first by the normalized query string (lowercased, trimmed), then by repo slug. Each entry reuses the existing `FrecencyData` struct (access count and last access time).
+`query_frecency` maps a normalized query to a map of repo slugs, each with an access count and the time of the latest access.
 
-### Recording
+## Query Normalization
 
-Query frecency is recorded only when ambiguity is involved: either the query was auto-resolved via an existing query frecency association, or the user selected from the interactive picker. Queries that resolve unambiguously (single result or single exact match) do not record query frecency. This avoids unnecessary bookkeeping on the common hot path. If a previously unambiguous query becomes ambiguous (e.g., a new repo is added), the user builds an association in 3 selections, which is fast enough not to warrant pre-recording.
+Queries are lowercased and trimmed of surrounding whitespace before lookup and storage. Nothing else changes: `Foo` and `foo` share an entry, and `acme/foo` is a different entry from `foo`.
 
-### Resolution
+## Recording
 
-Query frecency participates in resolution, not search ranking. The check happens after `Resolve` returns `ErrAmbiguous` but before the interactive selector is shown:
+A query pick is recorded only when the query was ambiguous: either query frecency settled it, or the user picked from the selector. A query that resolves on its own (one result, or a single exact match) records no query frecency.
 
-1. `Resolve` returns `ErrAmbiguous` with multiple candidates.
-2. Look up the query in `QueryFrecency`.
-3. Rank the query's history entries by query-specific frecency score (same formula: `access_count * recency_multiplier`). If the top entry is not among the current candidates, show the selector.
-4. If the top entry's query frecency score exceeds a confidence threshold, auto-resolve to that repo.
-5. Otherwise, fall through to the interactive selector as today.
+The pick is recorded together with the repo access, after the command succeeds.
 
-This keeps query frecency out of the general search scoring path. It acts as a disambiguation override, not a ranking factor. The search results, their order, and the selector contents remain unchanged; only the "do we need to ask?" decision is affected.
+## Resolution
 
-### Confidence Threshold
+Query frecency takes part in resolution, not in search ranking. It runs only when a query is ambiguous, before the selector appears:
 
-A query-level association should only auto-resolve when the signal is strong enough that the user would be surprised if the selector appeared. The threshold has two components:
+1. Look up the query's history.
+2. Score each entry with the frecency formula (access count × recency multiplier).
+3. If the top entry is not among the current candidates, show the selector.
+4. If the top entry passes the confidence threshold, resolve to it.
+5. Otherwise, show the selector (or, without a terminal, report the ambiguity).
 
-1. Minimum access count: the query must have been resolved to the top candidate at least 3 times. This prevents a single accidental selection from creating a permanent binding.
-2. Dominance ratio: the top entry's query frecency score must be at least 3x the second-highest entry in the query's history, whether or not that repo is a current candidate. If there is no second entry, or its score is 0, this check passes. This handles the case where the user has selected different repos for the same query over time.
+The search results, their order, and the selector's contents are the same with or without query frecency.
 
-Both conditions must be met. If either fails, the selector is shown.
+## Confidence Threshold
 
-These values (3 accesses, 3x dominance) are starting points. They should be constants in the code, easy to tune if real usage suggests different thresholds.
+Both conditions must hold:
 
-### Query Normalization
+1. **Minimum count.** The top entry has at least 3 recorded picks.
+2. **Dominance.** The top entry's score is at least 3× the score of the second-highest entry in the query's history, whether or not that repo is a current candidate. With no second entry, or a second entry scoring 0, this condition holds.
 
-Queries are normalized before lookup and storage: lowercased and whitespace-trimmed. No other normalization (no stemming, no slash manipulation). The query `Foo` and `foo` map to the same entry; `acme/foo` is a distinct entry from `foo`.
+The values 3 and 3× are named constants.
 
-### Garbage Collection
+## Changing a Preference
 
-During cache updates (`BuildUpdatedCache`), query frecency entries are cleaned up the same way repo frecency entries are today:
-
-- Remove any slug from a query's map if the slug no longer exists in the repo list.
-- Remove any query entry entirely if its slug map is empty after cleanup.
-
-### Escape Hatch
-
-If the user's preference changes (they now want `foo` to resolve to a different repo), they need a way to break the learned association. Two paths handle this naturally:
-
-1. The selector: if the user runs the command and the system auto-resolves to the wrong repo, they can use a more specific query to reach the desired repo. That new query builds its own association. Meanwhile, not using the old query lets its recency decay.
-2. Recency decay: if the user stops selecting a particular repo for a query, the recency multiplier drops over time (1.0 to 0.5 to 0.2 to 0.05), eventually falling below the confidence threshold. The selector reappears, and the user can establish a new preference.
-
-A `--pick` flag on `cd` (and other navigation commands) could force the selector to appear regardless of query frecency, giving the user an explicit override. This flag is optional for the initial implementation but worth considering.
+- `--pick` always shows the selector, and the pick is recorded, so repeated picks move the preference.
+- A more specific query builds its own history.
+- An entry that stops being picked decays (1.0 → 0.5 → 0.2 → 0.05) until it no longer passes the threshold, and the selector returns.
 
 ## Scope
 
-### Affected Commands
-
-All commands that call `resolveOrSelect`: `cd`, `on`, `edit`, `clone`, `browse`, `open`, `pull`.
-
-### Not Affected
-
-- `work list`: uses `Filter`, not `Search`/`Resolve`. No query frecency.
-- Search ranking: query frecency does not alter the `match_score + frecency_score` formula. It only affects the ambiguity resolution step.
-
-## Implementation Sketch
-
-### Cache Changes (src/cache/)
-
-- Add `QueryFrecency map[string]map[string]FrecencyData` field to `Cache`.
-- Add `RecordQueryAccess(query, slug string)` method, parallel to `RecordAccess`.
-- Add `GetQueryFrecencyScore(query, slug string) float64` method.
-- Add `ResolveWithQueryFrecency(c *Cache, results []SearchResult, query string) (*Repo, error)` that wraps `Resolve` and applies the query frecency override on `ErrAmbiguous`.
-- Update `BuildUpdatedCache` to preserve and garbage-collect query frecency.
-- Update `Read` to initialize the map if nil (same pattern as `Frecency`).
-
-### Command Changes (src/commands/)
-
-- Update `resolveOrSelect` to accept the cache, call `Resolve` first, then `ResolveWithQueryFrecency` on ambiguity. Record query frecency inline when ambiguity is resolved (auto or selector).
-- `recordFrecency` remains repo-level only; query frecency is handled in `resolveOrSelect`.
-- Thread the cache through from each command's `RunE` to `resolveOrSelect`.
-
-### Test Cases
-
-- Query frecency auto-resolves after threshold is met.
-- Query frecency does not auto-resolve below minimum access count.
-- Query frecency does not auto-resolve when dominance ratio is insufficient.
-- Dominance with runner-up: 3x ratio auto-resolves.
-- No query history falls through to ambiguous.
-- Single result and exact match bypass query frecency entirely.
-- Query frecency recorded on ambiguous selector pick.
-- Query frecency NOT recorded on clean (unambiguous) resolve.
-- Garbage collection removes entries for deleted repos.
-- Garbage collection removes empty query entries.
-- `--pick` flag (if implemented) bypasses query frecency.
+- **Uses query frecency:** every command that resolves one repository: `cd`, `on`, `edit`, `clone`, `browse`, `open`, `pull`.
+- **Does not:** `work list`, and the search ranking formula.

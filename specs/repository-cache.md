@@ -2,61 +2,55 @@
 
 ## Purpose
 
-The tool maintains a local cache of all repositories the user has access to across all configured GitHub domains. This enables fast search, tab completion, and navigation without hitting the GitHub API on every command.
+The repository cache is a local list of every repository the user can reach across all configured GitHub domains. It makes search, tab completion, and navigation fast without calling the GitHub API on every command.
 
 ## Cache Contents
 
 The cache stores:
 
-- A list of repositories, each with: slug (`domain/org/repo`), clone URL, and domain.
-- A timestamp of when the cache was last updated.
-- Frecency data for each repository (access count and last access time) to personalize search ranking.
+- A list of repositories, each with its slug (`domain/org/repo`), clone URL, and web URL.
+- A timestamp of when the list was last updated.
+
+The cache holds no usage history. Frecency lives in its own file (see [search-resolution.md](search-resolution.md#frecency-storage)), and nothing in this spec reads or changes it.
 
 ## Cache Location
 
-Stored as a JSON file in the configured cache directory (default: `~/.local/state/work/cache.json`). The cache directory and parent directories are created automatically if they don't exist.
+`{cache_path}/cache.json` (default: `~/.local/state/work/cache.json`). The directory and its parents are created when needed.
 
 ## Staleness
 
-- The cache is considered stale if it was last updated more than 24 hours ago.
-- When a command that needs the cache runs and the cache is stale, an auto-update is triggered before the command executes.
-- The `sync` and `pull` commands skip auto-update (they are local git operations).
-- If no cache file exists at all, an update is triggered automatically.
+- The cache is stale when it was last updated more than 24 hours ago, or when its timestamp is more than 5 minutes in the future.
+- A command that needs the cache refreshes it first when it is missing, unreadable, or stale. The command waits for the refresh, which shows live progress on stderr.
+- `sync` and `pull` never refresh the cache. They are local git operations.
 
 ## Cache Update
 
 `work update [--all-orgs]`
 
-Running `work update` always performs a full cache refresh regardless of staleness. If the user ran it manually, they want an update.
+`work update` always refreshes the cache, however fresh it is.
 
-During a cache update:
+During a refresh, for each configured domain:
 
-1. For each configured domain, the tool fetches:
-   - All personal repositories: those the user owns and those they're a collaborator on (owned by other users). Global org filters apply to these by owner; favorites do not.
-   - All repositories from organizations the user belongs to.
-2. Organization filtering:
-   - Global `include_orgs` / `exclude_orgs` filters are applied first.
-   - Then per-domain `favorite_orgs` are applied (unless `--all-orgs` is passed).
-   - If a domain has favorites configured and `--all-orgs` is NOT set, only favorite orgs are synced.
-   - If no favorites are configured, all orgs (after global filters) are synced.
-3. Organization repos are fetched concurrently (up to 8 orgs at a time).
-4. Progress is shown via spinner indicators during the update.
-5. The `--all-orgs` flag ignores per-domain favorites for this update.
+1. `gh` lists the user's personal repositories: those they own and those they collaborate on (owned by other users). Global org filters apply to these by owner; favorites do not.
+2. `gh` lists the repositories of the organizations the user belongs to, plus the domain's `extra_orgs`.
+3. Organization filtering:
+   - Global `include_orgs` / `exclude_orgs` filters apply first.
+   - Then per-domain `favorite_orgs` apply, unless `--all-orgs` is passed.
+   - If a domain has favorites and `--all-orgs` is not set, only favorite orgs are listed.
+   - If a domain has no favorites, every org that passes the global filters is listed.
+4. Listings run concurrently, up to 8 at a time across all domains.
+5. Progress shows on stderr: a header with the overall count, then one spinner line per listing in flight.
+6. `--all-orgs` ignores per-domain favorites for this update only.
 
-## Frecency Preservation
-
-When the cache is updated, frecency data (access counts and timestamps) from the previous cache is preserved for repositories that still exist. Frecency entries for repositories that no longer appear in the update are cleaned up.
-
-## Cache Creation
-
-If the cache doesn't exist when a command needs it, a full update is performed automatically. The spinner writes to stderr, so it does not interfere with stdout-based shell eval output from `sh-` commands.
+A repository that appears in more than one listing is stored once.
 
 ## Error Behavior
 
-Failures are contained, reported, and never destructive. A refresh replaces the whole repo list, so anything that fails to fetch keeps its previous cache entries rather than vanishing (which would also garbage-collect its frecency history).
+Failures are contained and reported. A refresh replaces the whole repository list, so anything that fails to list keeps its previous entries.
 
-- If an individual org fetch fails, a warning naming the org and cause is printed to stderr, other orgs continue, and the org's previously cached repos are carried forward.
-- If a domain cannot be refreshed (no token, network failure, org listing failed), a warning is printed, other domains continue, and the domain's previously cached repos are carried forward.
-- If every configured domain fails, the update returns an error and nothing is written, so the existing cache and its timestamp are kept and the next command retries.
-- Warnings are printed whether or not the progress UI is shown. In the interactive UI they are held until the spinners finish so they are not painted over.
-- If the cache file can't be read (corrupted, permissions), an update is triggered to recreate it.
+- If one listing fails, a warning naming it and the cause goes to stderr, the other listings continue, and that org's previously cached repos stay in the cache.
+- If a domain cannot be refreshed (not logged in, network failure, the org listing failed), a warning goes to stderr, other domains continue, and the domain's previously cached repos stay.
+- If every configured domain fails, the update returns an error and writes nothing. The existing cache and its timestamp stay, and the next command tries again. A command that only needed a refresh because the cache was stale warns and uses the stale cache instead.
+- Entries that fail validation (a malformed name or a URL that is not on the domain) are skipped, with one warning per listing giving the count.
+- Warnings appear whether or not progress is shown. With live progress, they are held until the progress display is cleared.
+- An unreadable cache file (corrupt, wrong version, permissions) is renamed to `cache.json.corrupt` once a refresh succeeds, and the new cache replaces it.

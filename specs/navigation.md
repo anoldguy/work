@@ -2,7 +2,7 @@
 
 ## Overview
 
-Navigation commands are the core user-facing commands. They let users quickly get to a repository — whether that means changing directories, opening an editor, or opening a browser.
+Navigation commands get the user to a repository: change into its directory, open it in an editor, a browser, or a file manager, or clone it.
 
 ## Commands
 
@@ -10,71 +10,63 @@ Navigation commands are the core user-facing commands. They let users quickly ge
 
 Change the shell's working directory to a repository.
 
-- With a query: resolves the repo, clones if not present locally, changes to the repo directory.
-- Without a query: changes to the work root directory.
-- Records a frecency access for the resolved repo.
-- Requires shell integration (the `work` shell function) because a subprocess cannot change the parent shell's directory.
-- If the repo is ambiguous, shows an error with suggestions.
+- With a query: resolves the repo, clones it if it is not present locally, and changes to its directory.
+- Without a query: changes to the work directory, creating it if it is missing.
+- Requires shell integration (see [shell-integration.md](shell-integration.md)).
 
 ### work on \<query\>
 
-Convenience command that combines `cd` and `edit`.
+`cd` followed by the editor.
 
-- Resolves the repo, clones if needed, changes to the directory, AND opens the editor.
-- Records a frecency access.
+- Resolves the repo, clones it if needed, changes to its directory, then opens the editor there.
 - Requires shell integration.
-- A query is required (unlike `cd`).
+- A query is required.
 
 ### work edit \<query\>
 
-Open a repository in the configured editor.
+Open a repository in the editor.
 
-- Resolves the repo, clones if needed, opens in the editor.
-- Records a frecency access.
+- Resolves the repo, clones it if needed, and opens it in the editor.
 - Editor resolution: `$WORK_EDITOR` → `$EDITOR` → `vi`.
-- Does NOT require shell integration (doesn't change directory).
+- Does not need shell integration.
 
 ### work clone \<query\>
 
-Clone a repository from GitHub.
+Clone a repository and print its path.
 
-- Resolves the repo query to a specific repository.
-- If already cloned (`.git` exists at the target path), does nothing.
-- If not cloned, clones via git using the repo's URL from the cache.
-- Authentication tokens are passed to git for private repos.
-- Records a frecency access.
+- Resolves the query to one repository.
+- If it is already cloned (`.git` exists at the target path), does nothing.
+- Otherwise, clones it with git from the clone URL in the cache. git authenticates through `gh` (see [authentication.md](authentication.md)).
 
 ### work browse \<query\>
 
 Open a repository's GitHub page in the default web browser.
 
-- Resolves the repo, opens its URL (from the cache) in the system browser.
-- Does NOT clone the repository.
-- Records a frecency access.
-- Uses the platform's native "open URL" mechanism (`xdg-open` on Linux, `open` on macOS).
+- Resolves the repo and opens its web URL from the cache.
+- Never clones.
+- Uses the platform's "open URL" mechanism (`xdg-open` on Linux, `open` on macOS).
 
 ### work open \<query\>
 
-Open a repository's local directory in the system file manager.
+Open a repository's local directory in the file manager.
 
-- Resolves the repo, clones if needed, opens the directory in Finder/file manager.
-- Records a frecency access.
-- Uses the platform's native "open directory" mechanism.
+- Resolves the repo, clones it if needed, and opens the directory.
+- Uses the platform's "open directory" mechanism.
 
 ## Common Behaviors
 
 ### Auto-clone
 
-Commands that need a local copy (`cd`, `on`, `edit`, `open`) automatically clone the repository if it doesn't exist locally. Clone is idempotent — if the repo is already cloned, it's a no-op.
+`cd`, `on`, `edit`, `clone` and `open` clone the repository when it is not present locally. Missing parent directories are created; if the clone fails, the directories it created are removed again.
 
 ### Frecency tracking
 
-All navigation commands record an access when a repo is successfully resolved. This influences future search ranking.
+Every navigation command records an access once its action succeeds. A failed clone, editor, or opener records nothing.
 
 ### Shell integration requirement
 
-Commands that change the shell's working directory (`cd`, `on`) require shell integration. Without it, the tool prints an error directing the user to set up shell integration via `work activate`.
+`cd` and `on` change the shell's working directory, so they need the shell wrapper. Without it, the command fails with a message pointing to `work activate`.
 
 ### Query resolution
 
-All commands resolve queries using the search system (exact → substring → fuzzy, combined with frecency). See [search-resolution.md](search-resolution.md).
+Every command resolves its query with the search system (exact → substring → fuzzy, combined with frecency). See [search-resolution.md](search-resolution.md).

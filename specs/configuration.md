@@ -13,7 +13,7 @@
 | Key | Description | Default |
 |-----|-------------|---------|
 | `work_dir` | Root directory for all cloned repos | `~/code` |
-| `cache_path` | Directory where the cache file lives | `~/.local/state/work` (XDG state dir) |
+| `cache_path` | Directory holding the repository cache and the frecency history | `~/.local/state/work` (XDG state dir) |
 
 ### `[filters]` Section
 
@@ -26,14 +26,15 @@ If both are specified, `include_orgs` takes precedence over `exclude_orgs`.
 
 ### `[domains.<hostname>]` Sections
 
-One section per GitHub domain (e.g., `github.com`, `github.enterprise.com`).
+One section per GitHub domain (e.g., `github.com`, `github.enterprise.com`). The hostname is quoted: `[domains."github.com"]`.
 
 | Key | Description |
 |-----|-------------|
 | `is_default` | Boolean. At most one domain may be `true`. Controls path stripping behavior. |
 | `favorite_orgs` | List of org names for this domain. Only these orgs are synced during cache updates unless `--all-orgs` is used. |
 | `extra_orgs` | List of extra org names (e.g. orgs reachable through team or collaborator access without membership) to include in cache updates. |
-| `api_url` | Optional. Base URL of the domain's REST API. Defaults to `https://api.github.com` for `github.com`, `https://api.<host>` for `*.ghe.com`, and `https://<host>/api/v3` for other GitHub Enterprise Server hosts. Must be `https` (plain `http` is accepted only for loopback hosts, which is useful for testing). Set it when the API lives behind a proxy or at a non-standard path. |
+
+With no domains configured, `github.com` is the implicit default domain.
 
 ### Example
 
@@ -56,7 +57,7 @@ favorite_orgs = ["corp-team"]
 
 ### `work setup [domain]`
 
-Interactive first-time setup. Prompts for work directory, tests auth for the domain, and creates the config file. Can be re-run to add additional domains.
+Interactive first-time setup. Prompts for the work directory, checks that `gh` is logged in to the domain, and creates the config file. Re-running it adds another domain.
 
 ### `work config`
 
@@ -64,17 +65,16 @@ Show all current configuration values in a formatted summary.
 
 ### `work config --edit`
 
-Open the config file in the configured editor (`$WORK_EDITOR`, then `$EDITOR`, then `vi`) for direct editing. This is the escape hatch for power users who need to change values like `work_dir`, `cache_path`, or filter lists.
+Open the config file in the configured editor (`$WORK_EDITOR`, then `$EDITOR`, then `vi`) for direct editing. This is the way to change values like `work_dir`, `cache_path`, or filter lists.
 
 ### `work config path`
 
-Print the config file location on stdout, and whether it exists (`config file exists` / `config file missing`) on stderr, so `$(work config path)` yields just the path. Useful for debugging and scripting.
+Print the config file location on stdout, and whether it exists (`config file exists` / `config file missing`) on stderr, so `$(work config path)` yields just the path.
 
 ### `work config default [domain]`
 
-Set which domain is the default. If no domain is specified, shows an interactive picker.
+Set which domain is the default. With no domain given, shows an interactive picker.
 
 ### `work favorite [domain]`
 
-Interactive picker for selecting favorite orgs. Shows all orgs the user has access to on the specified domain and lets them toggle favorites. If no domain is specified, it uses the only configured domain, or shows an interactive domain picker when more than one is configured. With no domains configured, it fails and suggests `work setup`.
-
+Interactive picker for selecting favorite orgs. Shows all orgs the user has access to on the domain and lets them toggle favorites. With no domain given, it uses the only configured domain, or shows a domain picker when more than one is configured. With no domains configured, it fails and suggests `work setup`.

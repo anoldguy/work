@@ -2,7 +2,7 @@
 
 ## Purpose
 
-When a repo query is ambiguous (multiple matches, no single exact match), the tool's behavior depends on whether it is running in an interactive terminal or in a scripted/piped context.
+When a repo query is ambiguous (several matches, no single exact match, and no learned query preference; see [query-frecency.md](query-frecency.md)), the behavior depends on whether `work` runs in a terminal or in a script.
 
 ## Interactive Mode (TTY)
 
@@ -13,7 +13,7 @@ When stdin and stderr are both connected to a terminal, ambiguous queries presen
 - Enter selects the highlighted entry. Escape cancels. Ctrl-C aborts the command.
 - In multi-select pickers (for example favorite orgs), Tab toggles the highlighted entry, and selections survive filter changes.
 - If the user cancels, the command falls back to the same error as non-interactive mode.
-- The selector renders to stderr so it does not interfere with stdout-based output (e.g., shell eval commands).
+- The selector renders to stderr so stdout carries only command output (such as the path `sh-cd` prints for the shell wrapper).
 
 ## Non-Interactive Mode (piped/scripted)
 
@@ -25,4 +25,4 @@ All commands that resolve a single repository from a query: `cd`, `on`, `edit`, 
 
 ## Rationale
 
-Interactive selection eliminates the frustrating "ambiguous query" → retype cycle for terminal users, while preserving predictable, scriptable error behavior for automation.
+In a terminal, the user picks instead of retyping. In scripts, the outcome is a predictable error.
