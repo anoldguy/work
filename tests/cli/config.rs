@@ -31,7 +31,7 @@ fn invalid_config_fails_cd_in_one_line_but_not_config_free_commands() {
 
     let out = env.command().arg("sh-editor").output().expect("run");
     assert!(out.status.success(), "{}", text(&out.stderr));
-    let home = env.home();
+    let home = env.home().canonicalize().expect("canonical home");
     let home = home.to_str().expect("utf-8");
     assert_eq!(env.calls("editor"), [format!("{home}\t{home}")]);
 }

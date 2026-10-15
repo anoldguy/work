@@ -50,9 +50,9 @@ printf 'fake gh: unsupported: %s\n' "$*" >&2
 exit 1
 "#;
 
-/// Logs its cwd and argv to `<root>/<own name>.log`.
+/// Logs its physical cwd and argv to `<root>/<own name>.log`.
 const LOGGER: &str = r#"#!/bin/sh
-printf '%s\t%s\n' "$PWD" "$*" >> "${0%/*}/../${0##*/}.log"
+printf '%s\t%s\n' "$(pwd -P)" "$*" >> "${0%/*}/../${0##*/}.log"
 "#;
 
 const OPENER: &str = if cfg!(target_os = "macos") {

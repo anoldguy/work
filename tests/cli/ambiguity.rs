@@ -26,3 +26,15 @@ fn ambiguous_query_without_a_tty_lists_every_candidate() {
     assert_eq!(listed, slugs);
     assert!(!env.work_dir().join("acme").exists());
 }
+
+#[test]
+fn one_exact_match_among_several_resolves_without_asking() {
+    let env = TestEnv::new();
+    env.config_domains(&["github.com"]);
+    env.seed_cache(&["github.com/acme/foo", "github.com/acme/foobar"], false);
+    env.remote("github.com/acme/foo");
+
+    let out = env.command().args(["clone", "foo"]).output().expect("run");
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(env.work_dir().join("acme/foo/.git").is_dir());
+}
