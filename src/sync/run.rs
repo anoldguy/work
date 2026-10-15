@@ -4,21 +4,21 @@
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
-use crate::auth::GitAuth;
 use crate::core::sync_outcome::{Plan, SyncOutcome, classify};
+use crate::domain::Domain;
 use crate::git::{Git, GitError};
 use crate::pool::run_bounded;
 use crate::progress::{Noun, Step, Tasks, Verb};
 use crate::sync::SyncError;
 
-/// One repo for [`sync_all`]: where it is and the auth to fetch it with.
+/// One repo for [`sync_all`]: where it is and the domain git authenticates
+/// for when fetching it.
 #[derive(Debug)]
 pub struct SyncTarget<'t> {
     /// The repo's path relative to `work_dir`.
     pub path: PathBuf,
-    /// The header for the repo's cached domain, scoped to that host; `None`
-    /// fetches unauthenticated.
-    pub auth: Option<GitAuth<'t>>,
+    /// The repo's cached domain (not its remote's host).
+    pub domain: &'t Domain,
 }
 
 /// One line of the `sync` report.
@@ -30,19 +30,20 @@ pub struct SyncReport {
     pub outcome: SyncOutcome,
 }
 
-/// Fetches `repo`, reads its facts, classifies, and fast-forwards when the
-/// plan says so, reporting each step to `on_step`. Every failure becomes
-/// `SyncOutcome::Error` (one line, redacted); this never returns early.
+/// Fetches `repo` (authenticating for `domain`), reads its facts,
+/// classifies, and fast-forwards when the plan says so, reporting each step
+/// to `on_step`. Every failure becomes `SyncOutcome::Error` (one line); this
+/// never returns early.
 #[must_use]
 pub fn pull_one(
     git: &dyn Git,
     repo: &Path,
-    auth: Option<&GitAuth<'_>>,
+    domain: &Domain,
     on_step: &dyn Fn(Step),
 ) -> SyncOutcome {
-    let fail = |err: &GitError| error_outcome(err, auth);
+    let fail = |err: &GitError| SyncOutcome::Error(crate::text::sanitize(&err.to_string()));
     on_step(Step::Fetching);
-    if let Err(err) = git.fetch(repo, auth) {
+    if let Err(err) = git.fetch(repo, domain) {
         return fail(&err);
     }
     let facts = match git.facts(repo) {
@@ -59,16 +60,6 @@ pub fn pull_one(
             }
         }
     }
-}
-
-/// A one-line, redacted error outcome.
-fn error_outcome(err: &GitError, auth: Option<&GitAuth<'_>>) -> SyncOutcome {
-    let text = err.to_string();
-    let text = match auth {
-        Some(a) => a.redact(&text),
-        None => text,
-    };
-    SyncOutcome::Error(crate::text::sanitize(&text))
 }
 
 /// The `SomeFailed` error for `reports`, or `None` when no repo errored.
@@ -92,7 +83,7 @@ pub fn failures(reports: &[SyncReport]) -> Option<SyncError> {
 
 /// Runs [`pull_one`] over `repos` with `jobs` workers, reporting a `Header`
 /// and one task per repo to `tasks`. Each repo is fetched with its own
-/// [`SyncTarget::auth`]. Results are sorted by relative path.
+/// [`SyncTarget::domain`]. Results are sorted by relative path.
 #[must_use]
 pub fn sync_all(
     git: &dyn Git,
@@ -111,7 +102,7 @@ pub fn sync_all(
         let task = tasks.start(&target.path.display().to_string());
         let path = work_dir.join(&target.path);
         let on_step = |step: Step| task.detail(step.label());
-        let outcome = pull_one(git, &path, target.auth.as_ref(), &on_step);
+        let outcome = pull_one(git, &path, target.domain, &on_step);
         match &outcome {
             SyncOutcome::Error(reason) => task.fail(reason),
             _ => task.ok(None),
@@ -131,7 +122,6 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
-    use crate::auth::SecretToken;
     use crate::core::sync_outcome::{FetchedReason, RepoFacts, Upstream};
     use crate::domain::Domain;
     use crate::progress::{Header, TaskDetail, TaskOutcome, UiEvent};
@@ -173,13 +163,13 @@ mod tests {
         names.iter().map(PathBuf::from).collect()
     }
 
-    /// Unauthenticated targets for `names`.
-    fn targets(names: &[&str]) -> Vec<SyncTarget<'static>> {
+    /// Targets for `names`, all on `domain`.
+    fn targets<'d>(names: &[&str], domain: &'d Domain) -> Vec<SyncTarget<'d>> {
         names
             .iter()
             .map(|n| SyncTarget {
                 path: PathBuf::from(n),
-                auth: None,
+                domain,
             })
             .collect()
     }
@@ -193,12 +183,12 @@ mod tests {
         let steps = RefCell::new(Vec::new());
         let on_step = |s| steps.borrow_mut().push(s);
         assert_eq!(
-            pull_one(&git, &w.join("a"), None, &on_step),
+            pull_one(&git, &w.join("a"), &dom("github.com"), &on_step),
             SyncOutcome::Pulled { commits: 3 }
         );
         assert_eq!(*steps.borrow(), [Step::Fetching, Step::FastForwarding]);
         assert_eq!(
-            pull_one(&git, &w.join("b"), None, &|_| {}),
+            pull_one(&git, &w.join("b"), &dom("github.com"), &|_| {}),
             SyncOutcome::UpToDate
         );
         let ff = git
@@ -221,7 +211,7 @@ mod tests {
         };
         let git = FakeGit::new().with_repo(w, script(facts));
         assert_eq!(
-            pull_one(&git, w, None, &|_| {}),
+            pull_one(&git, w, &dom("github.com"), &|_| {}),
             SyncOutcome::Fetched(FetchedReason::DirtyWorktree)
         );
         assert!(git.calls().iter().all(|c| c.op != GitOp::FastForward));
@@ -238,62 +228,41 @@ mod tests {
             let mut s = script(behind(1));
             s.fail = Some(failing(op, "boom"));
             let git = FakeGit::new().with_repo(w, s);
-            let outcome = pull_one(&git, w, None, &|_| {});
+            let outcome = pull_one(&git, w, &dom("github.com"), &|_| {});
             assert_matches!(outcome, SyncOutcome::Error(ref m) if m.contains("boom"));
             assert_eq!(git.calls().len(), expect_calls);
         }
     }
 
     #[test]
-    fn pull_one_redacts_the_token_in_errors() {
-        let token = SecretToken::new("gho_supersecret").expect("token");
-        let auth = GitAuth::new(dom("github.com"), &token);
-        let w = Path::new("/w/a");
-        let mut s = script(behind(1));
-        s.fail = Some(failing(GitOp::Fetch, "bad gho_supersecret\nline2"));
-        let git = FakeGit::new().with_repo(w, s);
-        let outcome = pull_one(&git, w, Some(&auth), &|_| {});
-        assert_matches!(outcome, SyncOutcome::Error(ref m)
-            if !m.contains("gho_supersecret") && !m.contains('\n'));
-    }
-
-    #[test]
-    fn each_repo_is_fetched_with_its_own_auth() {
-        let token = SecretToken::new("gho_tok").expect("token");
+    fn each_repo_is_fetched_for_its_own_domain() {
+        let (github, ghe) = (dom("github.com"), dom("ghe.example.com"));
         let w = Path::new("/w");
         let repos = [
             SyncTarget {
                 path: PathBuf::from("acme/a"),
-                auth: Some(GitAuth::new(dom("github.com"), &token)),
+                domain: &github,
             },
             SyncTarget {
                 path: PathBuf::from("ghe.example.com/acme/b"),
-                auth: Some(GitAuth::new(dom("ghe.example.com"), &token)),
-            },
-            SyncTarget {
-                path: PathBuf::from("other.example.com/acme/c"),
-                auth: None,
+                domain: &ghe,
             },
         ];
         let git = FakeGit::new();
         let (sink, _rx) = Tasks::channel();
         let reports = sync_all(&git, w, &repos, one(), &sink);
-        assert_eq!(reports.len(), 3);
+        assert_eq!(reports.len(), 2);
         let fetches: Vec<_> = git
             .calls()
             .into_iter()
             .filter(|c| c.op == GitOp::Fetch)
-            .map(|c| (c.path, c.auth_host))
+            .map(|c| (c.path, c.host))
             .collect();
         assert_eq!(
             fetches,
             [
-                (w.join("acme/a"), Some(dom("github.com"))),
-                (
-                    w.join("ghe.example.com/acme/b"),
-                    Some(dom("ghe.example.com"))
-                ),
-                (w.join("other.example.com/acme/c"), None),
+                (w.join("acme/a"), Some(github)),
+                (w.join("ghe.example.com/acme/b"), Some(ghe)),
             ]
         );
     }
@@ -307,7 +276,8 @@ mod tests {
             .with_repo(&w.join("b/bad"), bad)
             .with_repo(&w.join("a/ok"), script(behind(2)));
         let (sink, rx) = Tasks::channel();
-        let repos = targets(&["b/bad", "a/ok"]);
+        let github = dom("github.com");
+        let repos = targets(&["b/bad", "a/ok"], &github);
         let reports = sync_all(&git, w, &repos, one(), &sink);
         drop(sink);
         assert_eq!(reports[0].path, PathBuf::from("a/ok"));
@@ -361,7 +331,8 @@ mod tests {
     fn pool_limit_is_respected_and_order_is_deterministic() {
         let names: Vec<String> = (0..24).map(|i| format!("o/r{i:02}")).collect();
         let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-        let repos = targets(&name_refs);
+        let github = dom("github.com");
+        let repos = targets(&name_refs, &github);
         let (sink, _rx) = Tasks::channel();
         let git = FakeGit::new();
         let jobs = NonZeroUsize::new(3).expect("nonzero");

@@ -43,26 +43,6 @@ pub struct EnvSnapshot {
     pub path: Option<OsString>,
     /// `NO_COLOR` is set to a non-empty value.
     pub no_color: bool,
-    /// `GIT_CONFIG_COUNT`; git children append their auth header after the
-    /// user's own `GIT_CONFIG_KEY_n`/`VALUE_n` entries.
-    pub git_config_count: GitConfigCount,
-    /// Names of inherited variables that make git log traffic
-    /// (`GIT_TRACE*` and `GIT_CURL_VERBOSE`); stripped from authenticated git
-    /// children.
-    pub git_trace_vars: Vec<OsString>,
-}
-
-/// The inherited `GIT_CONFIG_COUNT`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum GitConfigCount {
-    /// Unset or empty: entries start at index 0.
-    #[default]
-    Unset,
-    /// A valid count: entries start at this index.
-    Count(u32),
-    /// Set but not a number. git itself rejects this, so no auth entries are
-    /// added and git reports the problem.
-    Invalid,
 }
 
 impl EnvSnapshot {
@@ -78,10 +58,6 @@ impl EnvSnapshot {
         let mut env = Self::default();
         for (name, value) in vars {
             let Some(name) = name.to_str() else { continue };
-            if name.starts_with("GIT_TRACE") || name == "GIT_CURL_VERBOSE" {
-                env.git_trace_vars.push(OsString::from(name));
-                continue;
-            }
             if value.is_empty() {
                 continue;
             }
@@ -103,16 +79,9 @@ impl EnvSnapshot {
                 "HOMEBREW_PREFIX" => env.homebrew_prefix = Some(PathBuf::from(value)),
                 "PATH" => env.path = Some(value),
                 "NO_COLOR" => env.no_color = true,
-                "GIT_CONFIG_COUNT" => {
-                    env.git_config_count = value
-                        .to_str()
-                        .and_then(|text| text.parse().ok())
-                        .map_or(GitConfigCount::Invalid, GitConfigCount::Count);
-                }
                 _ => {}
             }
         }
-        env.git_trace_vars.sort();
         env
     }
 }
@@ -123,7 +92,7 @@ mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;
 
-    use super::{EnvSnapshot, EnvToken, GitConfigCount};
+    use super::{EnvSnapshot, EnvToken};
 
     fn snapshot(pairs: &[(&str, &str)]) -> EnvSnapshot {
         EnvSnapshot::from_vars(
@@ -173,42 +142,10 @@ mod tests {
             ("XDG_STATE_HOME", ""),
             ("GITHUB_TOKEN", ""),
             ("NO_COLOR", ""),
-            ("GIT_CONFIG_COUNT", ""),
         ]);
         assert_eq!(env.home, None);
         assert_eq!(env.xdg_state_home, None);
         assert_matches!(env.github_token, EnvToken::Unset);
         assert!(!env.no_color);
-        assert_eq!(env.git_config_count, GitConfigCount::Unset);
-    }
-
-    #[test]
-    fn git_config_count_is_parsed_or_flagged_invalid() {
-        assert_eq!(
-            snapshot(&[("GIT_CONFIG_COUNT", "3")]).git_config_count,
-            GitConfigCount::Count(3)
-        );
-        assert_eq!(
-            snapshot(&[("GIT_CONFIG_COUNT", "many")]).git_config_count,
-            GitConfigCount::Invalid
-        );
-    }
-
-    #[test]
-    fn git_trace_variables_are_listed_by_name() {
-        let env = snapshot(&[
-            ("GIT_TRACE", "1"),
-            ("GIT_CURL_VERBOSE", "1"),
-            ("GIT_TRACE_PACKET", ""),
-            ("GIT_DIR", "/x"),
-        ]);
-        assert_eq!(
-            env.git_trace_vars,
-            [
-                OsString::from("GIT_CURL_VERBOSE"),
-                OsString::from("GIT_TRACE"),
-                OsString::from("GIT_TRACE_PACKET"),
-            ]
-        );
     }
 }

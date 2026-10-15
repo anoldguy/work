@@ -72,7 +72,7 @@ pub enum SyncOutcome {
     UpToDate,
     /// Fetched only.
     Fetched(FetchedReason),
-    /// Something failed; one line, already redacted.
+    /// Something failed; one line.
     Error(String),
 }
 

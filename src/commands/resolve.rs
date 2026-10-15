@@ -4,7 +4,6 @@
 use std::path::{Path, PathBuf};
 
 use crate::app::App;
-use crate::auth::Tokens;
 use crate::cache::{Cache, store};
 use crate::core::paths::repo_path;
 use crate::core::query_frecency::{Decision, decide};
@@ -163,18 +162,14 @@ pub(crate) fn short_name(slug: &Slug, default: Option<&Domain>) -> String {
     }
 }
 
-/// Clones the target unless `.git` exists: resolves a token for the repo's
-/// domain, creates the parent directories, and runs `git clone` under a
-/// progress title. With no token for the domain, git clones without auth
-/// (public repos, ssh `insteadOf`, credential helpers). When the clone
-/// fails, the parent directories it created are removed again (if still
-/// empty).
+/// Clones the target unless `.git` exists: creates the parent directories
+/// and runs `git clone` under a progress title, with git authenticating
+/// through `gh` for the repo's domain. When the clone fails, the parent
+/// directories it created are removed again (if still empty).
 ///
 /// # Errors
 ///
-/// [`Error::CreateDir`], an invalid `GITHUB_TOKEN`
-/// ([`AuthError::InvalidEnvToken`]), a stdout flush failure, or the git
-/// failure.
+/// [`Error::CreateDir`], a stdout flush failure, or the git failure.
 ///
 /// # Panics
 ///
@@ -186,8 +181,6 @@ pub fn ensure_cloned(app: &mut App, cache: &Cache, target: &Target) -> Result<Cl
     }
     let repo = target.repo(&cache.repos);
     let domain = repo.slug.domain();
-    let tokens = Tokens::resolve(&*app.gh, &app.env.github_token, [domain]);
-    let auth = tokens.git_auth(domain)?;
     // Pending stdout must land before git (which may inherit it) runs.
     app.ui.flush()?;
     let created = match target.path.parent() {
@@ -207,9 +200,9 @@ pub fn ensure_cloned(app: &mut App, cache: &Cache, target: &Target) -> Result<Cl
     );
     let git = &*app.git;
     let dest = target.path.as_path();
-    let cloned = app.ui.with_progress(&title, |_| {
-        git.clone_repo(&repo.clone_url, dest, auth.as_ref())
-    });
+    let cloned = app
+        .ui
+        .with_progress(&title, |_| git.clone_repo(&repo.clone_url, dest, domain));
     if cloned.is_err() {
         // Best effort: `remove_dir` refuses a directory that is not empty,
         // so nothing that was already there (or appeared since) is lost.
@@ -305,7 +298,7 @@ mod tests {
 
     use super::*;
     use crate::app::Adapters;
-    use crate::auth::{AuthError, EnvToken, GitAuth};
+
     use crate::config::{self, Locations};
     use crate::core::sync_outcome::{RepoFacts, Upstream};
     use crate::domain::{CloneUrl, HtmlUrl, Repo, StoredTime};
@@ -330,20 +323,15 @@ mod tests {
     }
 
     impl Git for SharedGit {
-        fn clone_repo(
-            &self,
-            url: &CloneUrl,
-            dest: &Path,
-            auth: Option<&GitAuth<'_>>,
-        ) -> Result<(), GitError> {
+        fn clone_repo(&self, url: &CloneUrl, dest: &Path, host: &Domain) -> Result<(), GitError> {
             self.out_at_clone
                 .lock()
                 .expect("lock")
                 .push(self.out.contents());
-            self.inner.clone_repo(url, dest, auth)
+            self.inner.clone_repo(url, dest, host)
         }
-        fn fetch(&self, repo: &Path, auth: Option<&GitAuth<'_>>) -> Result<(), GitError> {
-            self.inner.fetch(repo, auth)
+        fn fetch(&self, repo: &Path, host: &Domain) -> Result<(), GitError> {
+            self.inner.fetch(repo, host)
         }
         fn facts(&self, repo: &Path) -> Result<RepoFacts, GitError> {
             self.inner.facts(repo)
@@ -640,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_cloned_creates_parents_and_clones_with_the_domain_token() {
+    fn ensure_cloned_creates_parents_and_clones_for_the_domain() {
         let git = Arc::new(FakeGit::new());
         let mut h = cloning(Arc::clone(&git));
         let mut cache = cache();
@@ -655,7 +643,7 @@ mod tests {
         );
         assert_matches!(
             git.calls().as_slice(),
-            [call] if call.op == GitOp::Clone && call.auth_host == Some(github())
+            [call] if call.op == GitOp::Clone && call.host == Some(github())
         );
     }
 
@@ -679,7 +667,6 @@ mod tests {
     #[test]
     fn ensure_cloned_does_nothing_when_git_exists() {
         let git = Arc::new(FakeGit::new());
-        // No token: an attempted clone would fail.
         let mut h = harness_in(
             tempfile::tempdir().expect("tempdir"),
             ScriptedInteraction::new(false, vec![]),
@@ -695,30 +682,19 @@ mod tests {
     }
 
     #[test]
-    fn ensure_cloned_without_a_token_clones_without_auth() {
+    fn ensure_cloned_authenticates_for_the_cached_domain() {
         let git = Arc::new(FakeGit::new());
         let mut h = cloning(Arc::clone(&git));
         let mut cache = cache();
-        // The token is for github.com; `api` lives on ghe.corp.com.
+        // `api` lives on ghe.corp.com.
         let target = resolve_target(&mut h.app, &mut cache, "api", false).expect("ok");
         let status = ensure_cloned(&mut h.app, &cache, &target).expect("clone");
         assert_eq!(status, CloneStatus::Cloned);
+        let ghe: Domain = "ghe.corp.com".parse().expect("domain");
         assert_matches!(
             git.calls().as_slice(),
-            [call] if call.op == GitOp::Clone && call.auth_host.is_none()
+            [call] if call.op == GitOp::Clone && call.host.as_ref() == Some(&ghe)
         );
-    }
-
-    #[test]
-    fn ensure_cloned_with_an_invalid_env_token_fails_before_git() {
-        let git = Arc::new(FakeGit::new());
-        let mut h = cloning(Arc::clone(&git));
-        h.app.env.github_token = EnvToken::Invalid;
-        let mut cache = cache();
-        let target = resolve_target(&mut h.app, &mut cache, "foobar", false).expect("ok");
-        let err = ensure_cloned(&mut h.app, &cache, &target).expect_err("invalid token");
-        assert_matches!(err, Error::Auth(AuthError::InvalidEnvToken));
-        assert_eq!(git.calls(), []);
     }
 
     #[test]
