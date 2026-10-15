@@ -151,10 +151,9 @@ favorite_orgs = ["my-team", "my-company"]
 [domains."github.enterprise.com"]
 favorite_orgs = ["team-a", "team-b"]
 extra_orgs = ["partner-team", "shared-infra"]
-api_url = "https://github.enterprise.com/api/v3"
 ```
 
-Per domain, `api_url` overrides the API base. You rarely need it. The default is `api.github.com` for `github.com`, `https://api.<host>` for `*.ghe.com`, and `https://<host>/api/v3` for GitHub Enterprise Server. It has to be `https`, or `http` for loopback hosts only, because sending your token over plain HTTP to a stranger is not a feature. Unknown keys are rejected with an error rather than silently ignored, so a typo like `favourite_orgs` tells you instead of quietly doing nothing. Quote the hostname (`[domains."github.com"]`); an unquoted one gets a hint.
+Every API call goes through `gh api --hostname <domain>`, so `gh` decides where each host's API lives and which credential it gets. Unknown keys are rejected with an error rather than silently ignored, so a typo like `favourite_orgs` tells you instead of quietly doing nothing. Quote the hostname (`[domains."github.com"]`); an unquoted one gets a hint.
 
 ## Default Domains
 

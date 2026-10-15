@@ -13,7 +13,7 @@
 //! `Locations` is computed at most once, only for commands that need it, so
 //! `work version` works without `HOME`.
 //!
-//! Layering: `core` and `domain` are pure; adapters (`git`, `gh`, `github`,
+//! Layering: `core` and `domain` are pure; adapters (`git`, `gh`,
 //! `proc`, `platform`, stores) do the I/O; services report progress through
 //! `progress`, never `ui`; only `ui` writes to the terminal.
 
@@ -31,7 +31,6 @@ pub mod frecency;
 pub(crate) mod fsutil;
 pub mod gh;
 pub mod git;
-pub mod github;
 pub mod platform;
 pub mod pool;
 pub mod proc;

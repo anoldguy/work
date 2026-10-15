@@ -119,7 +119,7 @@ fn plain_cd_and_on_name_work_activate_without_resolving() {
         );
     }
     // Nothing was resolved: no cache was fetched or written.
-    assert_eq!(env.api.requests().len(), 0);
+    assert_eq!(env.gh.api_calls().len(), 0);
     assert!(!env.cache_path().exists());
 }
 

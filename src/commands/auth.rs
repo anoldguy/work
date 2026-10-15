@@ -1,11 +1,9 @@
-//! `auth login|logout|status`.
+//! `auth login|logout|status`, all delegated to `gh` with stdio inherited.
 
 use std::process::ExitCode;
 
 use crate::app::App;
-use crate::auth::{AuthError, Tokens, login_hint};
 use crate::cli::{AuthAction, AuthArgs};
-use crate::domain::Domain;
 use crate::error::Error;
 use crate::gh::{Gh, GhError};
 use crate::ui::Ui;
@@ -31,14 +29,14 @@ pub fn login_logout(gh: &dyn Gh, ui: &mut Ui, action: &AuthAction) -> Result<(),
     Ok(())
 }
 
-/// `login`/`logout` delegate to gh with stdio inherited. `status` prints one
-/// line per effective domain and returns exit code 1, without an error line,
-/// if any domain has no token.
+/// `login`/`logout` delegate to gh with stdio inherited. `status` runs
+/// `gh auth status --hostname <d>` for every effective domain, letting gh
+/// print its own report, and returns exit code 1, without an error line, if
+/// any domain is not logged in.
 ///
 /// # Errors
 ///
-/// gh failures for `login`/`logout`; a missing `gh` for `status`; a broken
-/// pipe.
+/// gh failures for `login`/`logout`; a missing `gh`; a broken pipe.
 pub fn run(app: &mut App, args: &AuthArgs) -> Result<ExitCode, Error> {
     let AuthArgs { action } = args;
     match action {
@@ -51,41 +49,19 @@ pub fn run(app: &mut App, args: &AuthArgs) -> Result<ExitCode, Error> {
 }
 
 fn status(app: &mut App) -> Result<ExitCode, Error> {
-    let domains = app.config.effective_domains();
-    let tokens = Tokens::resolve(&*app.gh, &app.env.github_token, &domains);
-    let mut lines = Vec::with_capacity(domains.len());
-    let mut missing = false;
-    for domain in &domains {
-        match tokens.get(domain) {
-            Ok((_, source)) => {
-                lines.push(format!("{domain}: token found ({})", source.label()));
-            }
-            Err(AuthError::Gh(GhError::NotInstalled)) => {
-                return Err(GhError::NotInstalled.into());
-            }
-            Err(err) => {
-                missing = true;
-                lines.push(failure_line(domain, &err));
-            }
+    let mut failed = false;
+    for domain in &app.config.effective_domains() {
+        // gh inherits stdio, so nothing of ours may still be buffered.
+        app.ui.flush()?;
+        match app.gh.auth_status(domain) {
+            Ok(()) => {}
+            Err(GhError::Failed { .. }) => failed = true,
+            Err(err) => return Err(err.into()),
         }
     }
-    for line in &lines {
-        app.ui.stdout_line(line)?;
-    }
-    app.ui.flush()?;
-    Ok(if missing {
+    Ok(if failed {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
     })
-}
-
-fn failure_line(domain: &Domain, err: &AuthError) -> String {
-    match err {
-        AuthError::NoToken { .. } => {
-            format!("{domain}: no token ({})", login_hint(domain))
-        }
-        AuthError::InvalidEnvToken => format!("{domain}: GITHUB_TOKEN is set but invalid"),
-        AuthError::Gh(gh) => format!("{domain}: no token ({gh})"),
-    }
 }

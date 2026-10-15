@@ -4,13 +4,12 @@ use crate::config::{self, Config, Locations};
 use crate::domain::StoredTime;
 use crate::env::EnvSnapshot;
 use crate::error::Error;
-use crate::gh::{Gh, MemoGh, ProcessGh};
+use crate::gh::{Gh, ProcessGh};
 use crate::git::{Git, ProcessGit};
-use crate::github::{GitHubApi, HttpGitHub};
 use crate::ui::Ui;
 
 /// Process-wide context with public, disjoint fields, so a command can
-/// borrow `app.ui` mutably while sharing `&*app.api` with workers.
+/// borrow `app.ui` mutably while sharing `&*app.gh` with workers.
 ///
 /// `now` is read once here and passed down; nothing else reads the clock.
 /// `Debug` is safe to print (the token redacts itself).
@@ -26,29 +25,25 @@ pub struct App {
     pub ui: Ui,
     /// The git seam.
     pub git: Box<dyn Git>,
-    /// The gh seam.
+    /// The gh seam: every GitHub API call and `gh auth`.
     pub gh: Box<dyn Gh>,
-    /// The GitHub API seam.
-    pub api: Box<dyn GitHubApi>,
     /// "Now" for this process.
     pub now: StoredTime,
 }
 
-/// The three external seams, grouped so [`App::with_parts`] stays readable.
+/// The external seams, grouped so [`App::with_parts`] stays readable.
 #[derive(Debug)]
 pub struct Adapters {
     /// The git seam.
     pub git: Box<dyn Git>,
-    /// The gh seam.
+    /// The gh seam: every GitHub API call and `gh auth`.
     pub gh: Box<dyn Gh>,
-    /// The GitHub API seam.
-    pub api: Box<dyn GitHubApi>,
 }
 
 impl App {
     /// Builds the real context: the config at `locations.config_file`
-    /// (implicit `github.com` when none), `ProcessGit`, `ProcessGh`,
-    /// `HttpGitHub` with the configured API bases, and `StoredTime::now()`.
+    /// (implicit `github.com` when none), `ProcessGit`, `ProcessGh`, and
+    /// `StoredTime::now()`.
     /// `lib::run` computes `locations` once and also uses it for stage-1
     /// commands.
     ///
@@ -60,7 +55,6 @@ impl App {
         let adapters = Adapters {
             git: Box::new(ProcessGit::new()),
             gh: Box::new(ProcessGh),
-            api: Box::new(HttpGitHub::new(config.api_bases())),
         };
         Ok(Self::with_parts(
             env,
@@ -72,9 +66,7 @@ impl App {
         ))
     }
 
-    /// Assembles a context from parts (tests, and `new` itself). The gh seam
-    /// is wrapped in [`MemoGh`], so a domain's token comes from `gh` at most
-    /// once per process.
+    /// Assembles a context from parts (tests, and `new` itself).
     #[must_use]
     pub fn with_parts(
         env: EnvSnapshot,
@@ -84,15 +76,14 @@ impl App {
         adapters: Adapters,
         now: StoredTime,
     ) -> Self {
-        let Adapters { git, gh, api } = adapters;
+        let Adapters { git, gh } = adapters;
         Self {
             env,
             locations,
             config,
             ui,
             git,
-            gh: Box::new(MemoGh::new(gh)),
-            api,
+            gh,
             now,
         }
     }
@@ -105,7 +96,7 @@ mod tests {
 
     use super::*;
     use crate::config::ConfigError;
-    use crate::testing::{FakeGh, FakeGit, NullGitHub, ScriptedInteraction, SharedBuf};
+    use crate::testing::{FakeGh, FakeGit, ScriptedInteraction, SharedBuf};
 
     fn env_with_home(home: &Path) -> EnvSnapshot {
         EnvSnapshot {
@@ -159,53 +150,9 @@ mod tests {
         let adapters = Adapters {
             git: Box::new(FakeGit::new()),
             gh: Box::new(FakeGh::new()),
-            api: Box::new(NullGitHub),
         };
         let app = App::with_parts(env, locations.clone(), config, test_ui(), adapters, now);
         assert_eq!(app.now, now);
         assert_eq!(app.locations, locations);
-    }
-
-    #[test]
-    fn gh_token_is_fetched_once_per_process_but_failures_are_retried() {
-        use crate::auth::{EnvToken, Tokens};
-        use crate::domain::Domain;
-        use std::sync::Arc;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let env = env_with_home(dir.path());
-        let locations = Locations::from_env(&env).expect("locations");
-        let config = config::store::load(&locations).expect("config");
-        let now = StoredTime::from_unix_seconds(1_700_000_000).expect("time");
-        let github: Domain = "github.com".parse().expect("domain");
-        let ghe: Domain = "ghe.example.com".parse().expect("domain");
-        let gh = Arc::new(
-            FakeGh::new()
-                .with_token(github.clone(), "gho_a")
-                .with_token_after_login(ghe.clone(), "gho_b"),
-        );
-        let adapters = Adapters {
-            git: Box::new(FakeGit::new()),
-            gh: Box::new(Arc::clone(&gh)),
-            api: Box::new(NullGitHub),
-        };
-        let app = App::with_parts(env, locations, config, test_ui(), adapters, now);
-        let both = [github.clone(), ghe.clone()];
-        for _ in 0..3 {
-            let tokens = Tokens::resolve(&*app.gh, &EnvToken::Unset, &both);
-            assert_matches!(tokens.get(&github), Ok(_));
-            assert_matches!(tokens.get(&ghe), Err(_));
-        }
-        app.gh.login(&ghe).expect("login");
-        let tokens = Tokens::resolve(&*app.gh, &EnvToken::Unset, &both);
-        assert_matches!(tokens.get(&ghe), Ok(_));
-        let count = |host: &Domain, action: &str| {
-            gh.calls()
-                .iter()
-                .filter(|c| c.host == *host && c.action == action)
-                .count()
-        };
-        assert_eq!(count(&github, "token"), 1);
-        assert_eq!(count(&ghe, "token"), 4);
     }
 }

@@ -17,7 +17,7 @@ pub use query::QueryKey;
 pub use repo::Repo;
 pub use slug::Slug;
 pub use time::StoredTime;
-pub use url::{ApiUrl, CloneUrl, HtmlUrl};
+pub use url::{CloneUrl, HtmlUrl};
 
 /// Why a value failed validation.
 ///
@@ -70,14 +70,6 @@ pub enum NameError {
     /// Not an allowed web URL.
     #[error("invalid web url {given:?} ({reason})")]
     HtmlUrl {
-        /// The rejected input.
-        given: String,
-        /// What is wrong with it.
-        reason: &'static str,
-    },
-    /// Not an allowed API base URL.
-    #[error("invalid api_url {given:?} ({reason})")]
-    ApiUrl {
         /// The rejected input.
         given: String,
         /// What is wrong with it.

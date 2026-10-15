@@ -3,7 +3,6 @@
 use std::process::ExitCode;
 
 use crate::app::App;
-use crate::auth::Tokens;
 use crate::cli::FavoriteArgs;
 use crate::commands::config::pick_domain;
 use crate::config::{ConfigDoc, ConfigError};
@@ -32,7 +31,7 @@ enum Choice {
 ///
 /// # Errors
 ///
-/// `UiError::NotInteractive` without a TTY, unknown domain, token, API, or
+/// `UiError::NotInteractive` without a TTY, unknown domain, gh, or
 /// config write failures.
 pub fn run(app: &mut App, args: &FavoriteArgs) -> Result<ExitCode, Error> {
     if !app.ui.interact().is_interactive() {
@@ -52,12 +51,10 @@ pub fn run(app: &mut App, args: &FavoriteArgs) -> Result<ExitCode, Error> {
             domain: domain.clone(),
         })?;
 
-    let tokens = Tokens::resolve(&*app.gh, &app.env.github_token, [&domain]);
-    let (token, _) = tokens.get(&domain)?;
-    let api = &*app.api;
+    let gh = &*app.gh;
     let mut orgs = app
         .ui
-        .with_progress(PROGRESS_TITLE, |_| api.member_orgs(&domain, token))?;
+        .with_progress(PROGRESS_TITLE, |_| gh.member_orgs(&domain))?;
     orgs.extend_from_slice(&cfg.extra_orgs);
 
     match choose_favorites(app.ui.interact(), &domain, &orgs, &cfg.favorite_orgs)? {
@@ -150,12 +147,11 @@ mod tests {
 
     use super::*;
     use crate::app::Adapters;
-    use crate::auth::{EnvToken, SecretToken};
     use crate::config::{self, Locations};
     use crate::domain::StoredTime;
     use crate::env::EnvSnapshot;
     use crate::testing::interact::PromptCall;
-    use crate::testing::{Answer, FakeGh, FakeGit, FakeGitHub, ScriptedInteraction, SharedBuf};
+    use crate::testing::{Answer, FakeGh, FakeGit, ScriptedInteraction, SharedBuf};
     use crate::ui::Ui;
 
     const CONFIG: &str = "# my config\n[domains.\"github.com\"]\nis_default = true # keep\nfavorite_orgs = [\"acme\"]\nextra_orgs = [\"extra\"]\n";
@@ -169,7 +165,6 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let env = EnvSnapshot {
             home: Some(dir.path().to_path_buf()),
-            github_token: EnvToken::Valid(SecretToken::new("ghp_test").expect("token")),
             ..EnvSnapshot::default()
         };
         let locations = Locations::from_env(&env).expect("locations");
@@ -184,11 +179,10 @@ mod tests {
             Box::new(SharedBuf::new()),
             Box::new(script),
         );
-        let api = FakeGitHub::new().with_member_orgs(dom(), orgs(&["acme", "widgets"]));
+        let gh = FakeGh::new().with_member_orgs(dom(), orgs(&["acme", "widgets"]));
         let adapters = Adapters {
             git: Box::new(FakeGit::new()),
-            gh: Box::new(FakeGh::new()),
-            api: Box::new(api),
+            gh: Box::new(gh),
         };
         let now = StoredTime::from_unix_seconds(1_700_000_000).expect("time");
         let mut app = App::with_parts(env, locations, config, ui, adapters, now);

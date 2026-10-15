@@ -1,4 +1,4 @@
-//! [`TestEnv`]: a hermetic home, shims, fake API and seeded state.
+//! [`TestEnv`]: a hermetic home, shims and seeded state.
 
 use std::ffi::OsString;
 use std::fs;
@@ -11,7 +11,6 @@ use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use toml_edit::{Array, DocumentMut, Item, Table, value};
 
-use super::api::FakeApi;
 use super::git::{Origin, git};
 use super::shims::{Shim, install_script};
 
@@ -36,10 +35,8 @@ pub struct TestEnv {
     token: Option<String>,
     /// The default domain of the last written config; drives `repo_path`.
     default_domain: Mutex<Option<String>>,
-    /// The fake GitHub API; `config()` points each domain's `api_url` at
-    /// its own namespace on it (`api.host(h)`, `api.domain_url(h)`).
-    pub api: FakeApi,
-    /// The `gh` shim; use `set_token(host, ..)` for `gh auth token`.
+    /// The `gh` shim: `set_token(host, ..)` for `gh auth token`/`status`,
+    /// `set_api`/`fail_api` for `gh api`.
     pub gh: Shim,
     /// The editor shim, exported as `WORK_EDITOR`.
     pub editor: Shim,
@@ -54,7 +51,7 @@ impl Default for TestEnv {
 }
 
 impl TestEnv {
-    /// Creates the directories, shims and fake API. `GITHUB_TOKEN` defaults
+    /// Creates the directories and shims. `GITHUB_TOKEN` defaults
     /// to `test-token`; see [`TestEnv::token`].
     ///
     /// # Panics
@@ -81,7 +78,6 @@ impl TestEnv {
             gh: Shim::install(&shims, "gh"),
             editor: Shim::install(&shims, "editor"),
             opener: Shim::install(&shims, opener_name),
-            api: FakeApi::start(),
             token: Some("test-token".to_owned()),
             default_domain: Mutex::new(None),
             root,
@@ -280,19 +276,10 @@ pub struct DomainCfg {
     is_default: bool,
     favorite_orgs: Vec<String>,
     extra_orgs: Vec<String>,
-    api_url: ApiUrl,
-}
-
-#[derive(Debug, Clone)]
-enum ApiUrl {
-    FakeApi,
-    Explicit(String),
-    Omitted,
 }
 
 impl DomainCfg {
-    /// A domain whose `api_url` is its own namespace on the fake API
-    /// (`api.domain_url(host)`, routes via `api.host(host)`).
+    /// A domain section for `host`.
     #[must_use]
     pub fn new(host: &str) -> Self {
         Self {
@@ -300,7 +287,6 @@ impl DomainCfg {
             is_default: false,
             favorite_orgs: Vec::new(),
             extra_orgs: Vec::new(),
-            api_url: ApiUrl::FakeApi,
         }
     }
 
@@ -322,20 +308,6 @@ impl DomainCfg {
     #[must_use]
     pub fn extras(mut self, orgs: &[&str]) -> Self {
         self.extra_orgs = orgs.iter().map(|org| (*org).to_owned()).collect();
-        self
-    }
-
-    /// Uses `url` instead of the fake API (e.g. a dead port).
-    #[must_use]
-    pub fn api_url(mut self, url: &str) -> Self {
-        self.api_url = ApiUrl::Explicit(url.to_owned());
-        self
-    }
-
-    /// Omits `api_url`, exercising the computed default.
-    #[must_use]
-    pub fn no_api_url(mut self) -> Self {
-        self.api_url = ApiUrl::Omitted;
         self
     }
 }
@@ -399,13 +371,6 @@ impl ConfigSeed<'_> {
                 }
                 if !domain.extra_orgs.is_empty() {
                     table["extra_orgs"] = value(array(&domain.extra_orgs));
-                }
-                match &domain.api_url {
-                    ApiUrl::FakeApi => {
-                        table["api_url"] = value(self.env.api.domain_url(&domain.host));
-                    }
-                    ApiUrl::Explicit(url) => table["api_url"] = value(url.as_str()),
-                    ApiUrl::Omitted => {}
                 }
                 domains.insert(&domain.host, Item::Table(table));
             }
@@ -677,7 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn config_seed_points_every_domain_at_the_fake_api() {
+    fn config_seed_writes_domains_and_filters() {
         let env = TestEnv::new();
         env.config()
             .domain(
@@ -685,12 +650,7 @@ mod tests {
                     .default_domain()
                     .favorites(&["acme"]),
             )
-            .domain(
-                DomainCfg::new("ghe.example.com")
-                    .extras(&["x"])
-                    .no_api_url(),
-            )
-            .domain(DomainCfg::new("dead.test").api_url("http://127.0.0.1:1"))
+            .domain(DomainCfg::new("ghe.example.com").extras(&["x"]))
             .exclude_orgs(&["old"])
             .include_orgs(&["a", "b"])
             .write();
@@ -701,17 +661,8 @@ mod tests {
         assert_eq!(github["is_default"].as_bool(), Some(true));
         assert_eq!(github["favorite_orgs"][0].as_str(), Some("acme"));
         assert_eq!(
-            github["api_url"].as_str(),
-            Some(env.api.domain_url("github.com").as_str())
-        );
-        assert!(doc["domains"]["ghe.example.com"].get("api_url").is_none());
-        assert_eq!(
             doc["domains"]["ghe.example.com"]["extra_orgs"][0].as_str(),
             Some("x")
-        );
-        assert_eq!(
-            doc["domains"]["dead.test"]["api_url"].as_str(),
-            Some("http://127.0.0.1:1")
         );
         assert_eq!(doc["filters"]["exclude_orgs"][0].as_str(), Some("old"));
         assert_eq!(doc["filters"]["include_orgs"][1].as_str(), Some("b"));
@@ -849,6 +800,5 @@ mod tests {
             assert!(shim.path().is_file());
         }
         assert!(env.shim_dir().join("git").exists());
-        assert_eq!(TestEnv::default().api.requests().len(), 0);
     }
 }

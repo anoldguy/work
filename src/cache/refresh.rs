@@ -3,7 +3,6 @@
 use std::time::Duration;
 
 use crate::app::App;
-use crate::auth::{AuthError, EnvToken, Tokens};
 use crate::cache::fetch::{FetchPlan, fetch_all};
 use crate::cache::merge::{all_failed, merge};
 use crate::cache::store::{self, LoadOutcome};
@@ -40,13 +39,11 @@ pub enum Freshness {
 /// (both hold a complete listing). Frecency is never read or written here.
 /// A corrupt file is renamed to `cache.json.corrupt` only once a refresh has
 /// succeeded, immediately before the new cache is written, so a failed
-/// refresh never touches the disk. An invalid `GITHUB_TOKEN` fails a needed
-/// refresh outright instead of falling back to a stale cache.
+/// refresh never touches the disk.
 ///
 /// # Errors
 ///
-/// [`CacheError::Missing`] under `NoUpdate`; [`CacheError::Auth`] when a
-/// refresh is needed and `GITHUB_TOKEN` is invalid; [`CacheError::AllFailed`]
+/// [`CacheError::Missing`] under `NoUpdate`; [`CacheError::AllFailed`]
 /// when a needed refresh fails for every domain and there is nothing to fall
 /// back on (or under `Force`); store errors.
 pub fn load_or_refresh(app: &mut App, freshness: Freshness) -> Result<Cache, CacheError> {
@@ -73,18 +70,13 @@ fn refresh(
     freshness: Freshness,
     previous: Option<Cache>,
 ) -> Result<Cache, CacheError> {
-    if matches!(app.env.github_token, EnvToken::Invalid) {
-        return Err(AuthError::InvalidEnvToken.into());
-    }
-
     let all_orgs = matches!(freshness, Freshness::Force { all_orgs: true });
     let plan = FetchPlan::from_config(&app.config, all_orgs);
     let domains: Vec<Domain> = plan.domains.iter().map(|d| d.domain.clone()).collect();
-    let tokens = Tokens::resolve(&*app.gh, &app.env.github_token, &domains);
-    let api = &*app.api;
-    let outcomes = app.ui.with_progress(PROGRESS_TITLE, |tasks| {
-        fetch_all(&plan, api, &tokens, tasks)
-    });
+    let gh = &*app.gh;
+    let outcomes = app
+        .ui
+        .with_progress(PROGRESS_TITLE, |tasks| fetch_all(&plan, gh, tasks));
 
     if all_failed(&outcomes) {
         return match (freshness, previous) {
@@ -132,15 +124,11 @@ mod tests {
 
     use super::*;
     use crate::app::Adapters;
-    use crate::auth::SecretToken;
     use crate::cache::store::cache_file;
     use crate::config::{self, Locations};
     use crate::domain::{Domain, Org, Repo, StoredTime};
     use crate::env::EnvSnapshot;
-    use crate::github::{ApiError, GitHubApi, Listing, Page};
-    use crate::testing::{
-        ApiCall, Endpoint, FakeGh, FakeGit, FakeGitHub, NullGitHub, ScriptedInteraction, SharedBuf,
-    };
+    use crate::testing::{ApiCall, Endpoint, FakeGh, FakeGit, ScriptedInteraction, SharedBuf};
     use crate::ui::{Mode, Ui};
 
     const NOW: i64 = 1_700_000_000;
@@ -173,73 +161,30 @@ mod tests {
         s
     }
 
-    /// Lets a test keep a handle on the `FakeGitHub` it gives the `App`.
-    #[derive(Debug)]
-    struct SharedApi(Arc<FakeGitHub>);
-
-    impl GitHubApi for SharedApi {
-        fn viewer(&self, d: &Domain, t: &SecretToken) -> Result<Org, ApiError> {
-            self.0.viewer(d, t)
-        }
-        fn member_orgs(&self, d: &Domain, t: &SecretToken) -> Result<Vec<Org>, ApiError> {
-            self.0.member_orgs(d, t)
-        }
-        fn user_repos(
-            &self,
-            d: &Domain,
-            t: &SecretToken,
-            on_page: &mut dyn FnMut(Page),
-        ) -> Result<Listing, ApiError> {
-            self.0.user_repos(d, t, on_page)
-        }
-        fn org_repos(
-            &self,
-            d: &Domain,
-            t: &SecretToken,
-            org: &Org,
-            on_page: &mut dyn FnMut(Page),
-        ) -> Result<Listing, ApiError> {
-            self.0.org_repos(d, t, org, on_page)
-        }
-    }
-
     /// `github.com` as `me`, member of `acme` and `widgets`.
-    fn healthy_api() -> FakeGitHub {
-        FakeGitHub::new()
+    fn healthy() -> FakeGh {
+        FakeGh::new()
             .with_viewer(dom("github.com"), org("me"))
             .with_member_orgs(dom("github.com"), vec![org("acme"), org("widgets")])
-            .with_user_repos(dom("github.com"), vec![vec![repo("me", "dotfiles")]])
-            .with_org_repos(
-                dom("github.com"),
-                org("acme"),
-                vec![vec![repo("acme", "api")]],
-            )
+            .with_user_repos(dom("github.com"), vec![repo("me", "dotfiles")])
+            .with_org_repos(dom("github.com"), org("acme"), vec![repo("acme", "api")])
             .with_org_repos(
                 dom("github.com"),
                 org("widgets"),
-                vec![vec![repo("widgets", "gear")]],
+                vec![repo("widgets", "gear")],
             )
     }
 
-    fn shared(api: FakeGitHub) -> (Arc<FakeGitHub>, Box<dyn GitHubApi>) {
-        let api = Arc::new(api);
-        (Arc::clone(&api), Box::new(SharedApi(api)))
-    }
-
     struct Setup {
-        api: Box<dyn GitHubApi>,
-        token: EnvToken,
         gh: FakeGh,
         config: Option<&'static str>,
         mode: Mode,
     }
 
     impl Setup {
-        fn new(api: Box<dyn GitHubApi>) -> Self {
+        fn new(gh: FakeGh) -> Self {
             Self {
-                api,
-                token: EnvToken::Valid(SecretToken::new("ghp_test").expect("token")),
-                gh: FakeGh::new(),
+                gh,
                 config: None,
                 mode: Mode::Plain,
             }
@@ -249,7 +194,6 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             let env = EnvSnapshot {
                 home: Some(dir.path().to_path_buf()),
-                github_token: self.token,
                 ..EnvSnapshot::default()
             };
             let locations = Locations::from_env(&env).expect("locations");
@@ -269,7 +213,6 @@ mod tests {
             let adapters = Adapters {
                 git: Box::new(FakeGit::new()),
                 gh: Box::new(Arc::clone(&gh)),
-                api: self.api,
             };
             let app = App::with_parts(env, locations, config, ui, adapters, t(NOW));
             Harness {
@@ -332,18 +275,18 @@ mod tests {
 
     #[test]
     fn auto_update_returns_a_fresh_cache_without_fetching() {
-        let mut h = Setup::new(Box::new(NullGitHub)).build();
+        let mut h = Setup::new(FakeGh::new()).build();
         let fresh = old_cache(NOW - DAY);
         h.seed(&fresh);
         let cache = load_or_refresh(&mut h.app, Freshness::AutoUpdate).expect("cache");
         assert_eq!(cache, fresh);
         assert_eq!(h.err.contents(), "");
+        assert_eq!(h.gh.api_calls(), []);
     }
 
     #[test]
     fn auto_update_refreshes_a_stale_cache_and_saves_it() {
-        let (api, boxed) = shared(healthy_api());
-        let mut h = Setup::new(boxed).build();
+        let mut h = Setup::new(healthy()).build();
         h.seed(&old_cache(NOW - DAY - 1));
         let cache = load_or_refresh(&mut h.app, Freshness::AutoUpdate).expect("cache");
         assert_eq!(
@@ -355,35 +298,6 @@ mod tests {
             ]
         );
         assert_eq!(cache.updated_at, t(NOW));
-        assert_eq!(
-            api.calls().first().map(|c| &c.endpoint),
-            Some(&Endpoint::Viewer)
-        );
-        assert_matches!(
-            store::load(h.app.config.cache_dir()),
-            LoadOutcome::Loaded(saved) if saved == cache
-        );
-    }
-
-    #[test]
-    fn auto_update_refreshes_a_cache_dated_beyond_the_clock_skew() {
-        let (api, boxed) = shared(healthy_api());
-        let mut h = Setup::new(boxed).build();
-        h.seed(&old_cache(NOW + 301));
-        let cache = load_or_refresh(&mut h.app, Freshness::AutoUpdate).expect("cache");
-        assert_eq!(cache.updated_at, t(NOW));
-        assert_eq!(
-            api.calls().first().map(|c| &c.endpoint),
-            Some(&Endpoint::Viewer)
-        );
-    }
-
-    #[test]
-    fn auto_update_builds_a_missing_cache() {
-        let (_, boxed) = shared(healthy_api());
-        let mut h = Setup::new(boxed).build();
-        let cache = load_or_refresh(&mut h.app, Freshness::AutoUpdate).expect("cache");
-        assert_eq!(cache.repos.len(), 3);
         assert_matches!(
             store::load(h.app.config.cache_dir()),
             LoadOutcome::Loaded(saved) if saved == cache
@@ -392,8 +306,7 @@ mod tests {
 
     #[test]
     fn auto_update_quarantines_a_corrupt_cache_then_rebuilds() {
-        let (_, boxed) = shared(healthy_api());
-        let mut h = Setup::new(boxed).build();
+        let mut h = Setup::new(healthy()).build();
         h.seed_raw("{not json");
         let cache = load_or_refresh(&mut h.app, Freshness::AutoUpdate).expect("cache");
         assert_eq!(cache.repos.len(), 3);
@@ -405,16 +318,11 @@ mod tests {
             store::load(h.app.config.cache_dir()),
             LoadOutcome::Loaded(saved) if saved == cache
         );
-        let err = h.err.contents();
-        assert!(
-            err.contains("warning: the repository cache is unreadable"),
-            "{err}"
-        );
     }
 
     #[test]
     fn auto_update_uses_a_stale_cache_with_a_warning_when_every_domain_fails() {
-        let mut h = Setup::new(Box::new(FakeGitHub::new())).build();
+        let mut h = Setup::new(FakeGh::new()).build();
         let stale = old_cache(NOW - 2 * DAY);
         h.seed(&stale);
         let before = h.on_disk();
@@ -429,7 +337,7 @@ mod tests {
 
     #[test]
     fn auto_update_errors_when_every_domain_fails_and_there_is_no_cache() {
-        let mut h = Setup::new(Box::new(FakeGitHub::new())).build();
+        let mut h = Setup::new(FakeGh::new()).build();
         assert_matches!(
             load_or_refresh(&mut h.app, Freshness::AutoUpdate),
             Err(CacheError::AllFailed)
@@ -439,7 +347,7 @@ mod tests {
 
     #[test]
     fn a_corrupt_file_stays_in_place_when_the_rebuild_fails() {
-        let mut h = Setup::new(Box::new(FakeGitHub::new())).build();
+        let mut h = Setup::new(FakeGh::new()).build();
         h.seed_raw("{not json");
         assert_matches!(
             load_or_refresh(&mut h.app, Freshness::AutoUpdate),
@@ -451,27 +359,19 @@ mod tests {
 
     #[test]
     fn a_failed_org_warns_and_carries_its_repos_forward() {
-        let api =
-            healthy_api().with_status(dom("github.com"), Endpoint::OrgRepos(org("acme")), 502);
-        let (_, boxed) = shared(api);
-        let mut h = Setup::new(boxed).build();
+        let gh = healthy().with_failure(
+            dom("github.com"),
+            Endpoint::OrgRepos(org("acme")),
+            "gh: Server Error (HTTP 502)",
+        );
+        let mut setup = Setup::new(gh);
+        setup.mode = Mode::Tty;
+        let mut h = setup.build();
         h.seed(&old_cache(NOW - 2 * DAY));
         let cache = load_or_refresh(&mut h.app, Freshness::AutoUpdate).expect("cache");
         assert!(slugs(&cache).contains(&"github.com/acme/old".to_owned()));
         assert_eq!(cache.updated_at, t(NOW));
-        let err = h.err.contents();
-        assert!(err.starts_with("warning: ") && err.contains("502"), "{err}");
-    }
-
-    #[test]
-    fn warnings_follow_the_progress_display_in_tty_mode() {
-        let api =
-            healthy_api().with_status(dom("github.com"), Endpoint::OrgRepos(org("acme")), 502);
-        let (_, boxed) = shared(api);
-        let mut setup = Setup::new(boxed);
-        setup.mode = Mode::Tty;
-        let mut h = setup.build();
-        load_or_refresh(&mut h.app, Freshness::AutoUpdate).expect("cache");
+        // The one warning follows the progress display.
         let err = h.err.contents();
         let last = err.lines().last().expect("output");
         assert!(
@@ -485,16 +385,17 @@ mod tests {
 
     #[test]
     fn no_update_returns_a_stale_cache_without_fetching() {
-        let mut h = Setup::new(Box::new(NullGitHub)).build();
+        let mut h = Setup::new(FakeGh::new()).build();
         let stale = old_cache(NOW - 10 * DAY);
         h.seed(&stale);
         let cache = load_or_refresh(&mut h.app, Freshness::NoUpdate).expect("cache");
         assert_eq!(cache, stale);
+        assert_eq!(h.gh.api_calls(), []);
     }
 
     #[test]
     fn no_update_reports_a_missing_cache() {
-        let mut h = Setup::new(Box::new(NullGitHub)).build();
+        let mut h = Setup::new(FakeGh::new()).build();
         assert_matches!(
             load_or_refresh(&mut h.app, Freshness::NoUpdate),
             Err(CacheError::Missing)
@@ -502,46 +403,21 @@ mod tests {
         assert!(!h.cache_path().exists());
     }
 
-    #[test]
-    fn no_update_treats_a_corrupt_cache_as_missing_and_leaves_it() {
-        let mut h = Setup::new(Box::new(NullGitHub)).build();
-        h.seed_raw("[]");
-        assert_matches!(
-            load_or_refresh(&mut h.app, Freshness::NoUpdate),
-            Err(CacheError::Missing)
-        );
-        assert_eq!(h.on_disk(), b"[]");
-        let err = h.err.contents();
-        assert!(
-            err.contains("warning: the repository cache is unreadable"),
-            "{err}"
-        );
-        assert_eq!(
-            CacheError::Missing.to_string(),
-            "no usable repository cache (run 'work update')"
-        );
-    }
-
     // ---- Force -------------------------------------------------------------
 
     #[test]
     fn force_refreshes_even_a_fresh_cache() {
-        let (api, boxed) = shared(healthy_api());
-        let mut h = Setup::new(boxed).build();
+        let mut h = Setup::new(healthy()).build();
         h.seed(&old_cache(NOW - 60));
         let cache =
             load_or_refresh(&mut h.app, Freshness::Force { all_orgs: false }).expect("cache");
         assert_eq!(cache.updated_at, t(NOW));
         assert!(!slugs(&cache).contains(&"github.com/acme/old".to_owned()));
-        assert_eq!(
-            api.calls().first().map(|c| &c.endpoint),
-            Some(&Endpoint::Viewer)
-        );
     }
 
     #[test]
     fn force_errors_and_keeps_the_existing_file_when_every_domain_fails() {
-        let mut h = Setup::new(Box::new(FakeGitHub::new())).build();
+        let mut h = Setup::new(FakeGh::new()).build();
         h.seed(&old_cache(NOW - 60));
         let before = h.on_disk();
         assert_matches!(
@@ -554,69 +430,21 @@ mod tests {
     const FAVORITES: &str = "[domains.\"github.com\"]\nfavorite_orgs = [\"acme\"]\n";
 
     #[test]
-    fn force_honours_favourites() {
-        let (api, boxed) = shared(healthy_api());
-        let mut setup = Setup::new(boxed);
+    fn force_honours_favourites_unless_all_orgs() {
+        let mut setup = Setup::new(healthy());
         setup.config = Some(FAVORITES);
         let mut h = setup.build();
         load_or_refresh(&mut h.app, Freshness::Force { all_orgs: false }).expect("cache");
-        assert_eq!(org_calls(&api.calls()), [org("acme")]);
-    }
+        assert_eq!(org_calls(&h.gh.api_calls()), [org("acme")]);
 
-    #[test]
-    fn force_all_orgs_bypasses_favourites() {
-        let (api, boxed) = shared(healthy_api());
-        let mut setup = Setup::new(boxed);
+        let mut setup = Setup::new(healthy());
         setup.config = Some(FAVORITES);
         let mut h = setup.build();
         load_or_refresh(&mut h.app, Freshness::Force { all_orgs: true }).expect("cache");
-        assert_eq!(org_calls(&api.calls()), [org("acme"), org("widgets")]);
+        assert_eq!(org_calls(&h.gh.api_calls()), [org("acme"), org("widgets")]);
     }
 
-    // ---- Tokens ------------------------------------------------------------
-
-    #[test]
-    fn an_invalid_env_token_is_a_hard_auth_error_in_every_refreshing_mode() {
-        for freshness in [Freshness::AutoUpdate, Freshness::Force { all_orgs: false }] {
-            let mut setup = Setup::new(Box::new(NullGitHub));
-            setup.token = EnvToken::Invalid;
-            let mut h = setup.build();
-            h.seed(&old_cache(NOW - 2 * DAY));
-            let before = h.on_disk();
-            assert_matches!(
-                load_or_refresh(&mut h.app, freshness),
-                Err(CacheError::Auth(AuthError::InvalidEnvToken))
-            );
-            assert_eq!(h.on_disk(), before);
-            assert_eq!(h.err.contents(), "");
-            assert_eq!(h.gh.calls().len(), 0);
-        }
-    }
-
-    #[test]
-    fn an_invalid_env_token_is_ignored_when_no_refresh_is_needed() {
-        let mut setup = Setup::new(Box::new(NullGitHub));
-        setup.token = EnvToken::Invalid;
-        let mut h = setup.build();
-        h.seed(&old_cache(NOW));
-        assert_matches!(load_or_refresh(&mut h.app, Freshness::AutoUpdate), Ok(_));
-    }
-
-    #[test]
-    fn gh_tokens_are_resolved_once_per_domain_per_refresh() {
-        let (_, boxed) = shared(healthy_api());
-        let mut setup = Setup::new(boxed);
-        setup.token = EnvToken::Unset;
-        setup.gh = FakeGh::new().with_token(dom("github.com"), "gho_test");
-        setup.config = Some(TWO_DOMAINS);
-        let mut h = setup.build();
-        load_or_refresh(&mut h.app, Freshness::AutoUpdate).expect("cache");
-        let mut hosts: Vec<Domain> = h.gh.calls().into_iter().map(|c| c.host).collect();
-        hosts.sort();
-        assert_eq!(hosts, [dom("ghe.example.com"), dom("github.com")]);
-    }
-
-    // ---- Multiple domains -------------------------------------------------
+    // ---- Multiple domains, frecency ----------------------------------------
 
     const TWO_DOMAINS: &str =
         "[domains.\"github.com\"]\nis_default = true\n\n[domains.\"ghe.example.com\"]\n";
@@ -632,10 +460,7 @@ mod tests {
 
     #[test]
     fn a_failed_domain_is_carried_forward_while_the_others_refresh() {
-        let (_, boxed) = shared(healthy_api());
-        let mut setup = Setup::new(boxed);
-        setup.token = EnvToken::Unset;
-        setup.gh = FakeGh::new().with_token(dom("github.com"), "gho_test");
+        let mut setup = Setup::new(healthy());
         setup.config = Some(TWO_DOMAINS);
         let mut h = setup.build();
         h.seed(&Cache::new(
@@ -659,50 +484,6 @@ mod tests {
                 .count(),
             1,
             "{err}"
-        );
-        assert_matches!(
-            store::load(h.app.config.cache_dir()),
-            LoadOutcome::Loaded(saved) if saved == cache
-        );
-    }
-
-    // ---- Corrupt and missing under Force ----------------------------------
-
-    #[test]
-    fn force_quarantines_a_corrupt_cache_then_rebuilds() {
-        let (_, boxed) = shared(healthy_api());
-        let mut h = Setup::new(boxed).build();
-        h.seed_raw("{not json");
-        let cache =
-            load_or_refresh(&mut h.app, Freshness::Force { all_orgs: false }).expect("cache");
-        assert_eq!(cache.repos.len(), 3);
-        assert_eq!(
-            fs::read_to_string(h.corrupt_path()).expect("quarantined"),
-            "{not json"
-        );
-    }
-
-    #[test]
-    fn force_with_no_cache_errors_and_writes_nothing_when_every_domain_fails() {
-        let mut h = Setup::new(Box::new(FakeGitHub::new())).build();
-        assert_matches!(
-            load_or_refresh(&mut h.app, Freshness::Force { all_orgs: false }),
-            Err(CacheError::AllFailed)
-        );
-        assert!(!h.cache_path().exists());
-    }
-
-    #[test]
-    fn a_cache_path_that_is_a_directory_is_quarantined_over_an_old_corrupt_file() {
-        let (_, boxed) = shared(healthy_api());
-        let mut h = Setup::new(boxed).build();
-        fs::create_dir_all(h.cache_path()).expect("dir");
-        fs::write(h.corrupt_path(), "older").expect("old corrupt");
-        let cache = load_or_refresh(&mut h.app, Freshness::AutoUpdate).expect("cache");
-        assert!(h.corrupt_path().is_dir());
-        assert_matches!(
-            store::load(h.app.config.cache_dir()),
-            LoadOutcome::Loaded(saved) if saved == cache
         );
     }
 

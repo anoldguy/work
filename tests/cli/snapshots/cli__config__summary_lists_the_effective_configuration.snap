@@ -12,8 +12,6 @@ domains:
   ghe.example.com
     favorite_orgs: (none)
     extra_orgs:    guests
-    api_url:       https://ghe.example.com/api/v3 (default)
   github.com (default)
     favorite_orgs: my-team, my-company
     extra_orgs:    (none)
-    api_url:       https://api.github.com (default)

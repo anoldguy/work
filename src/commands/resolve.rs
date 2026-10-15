@@ -305,8 +305,7 @@ mod tests {
     use crate::git::{Git, GitError};
     use crate::testing::interact::PromptCall;
     use crate::testing::{
-        Answer, FakeGh, FakeGit, GitOp, NullGitHub, PromptLog, RepoScript, ScriptedInteraction,
-        SharedBuf,
+        Answer, FakeGh, FakeGit, GitOp, PromptLog, RepoScript, ScriptedInteraction, SharedBuf,
     };
     use crate::ui::Ui;
 
@@ -377,7 +376,6 @@ mod tests {
                 out_at_clone: Arc::clone(&out_at_clone),
             }),
             gh: Box::new(gh),
-            api: Box::new(NullGitHub),
         };
         let app = App::with_parts(env, locations, config, ui, adapters, now());
         Harness {

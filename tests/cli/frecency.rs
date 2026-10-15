@@ -2,28 +2,19 @@
 
 use std::fs;
 
-use crate::support::{DomainCfg, RepoSeed, Response, TestEnv};
+use crate::support::{DomainCfg, RepoSeed, TestEnv, repo_line};
 
-/// An org listing of `acme`'s `names`, as the API returns it.
-fn acme_repos(names: &[&str]) -> Response {
+/// github.com as `me`, a member of `acme` only, which holds `names`.
+fn serve_acme(env: &TestEnv, names: &[&str]) {
+    let gh = &env.gh;
+    gh.set_api("github.com", "user", &["me".to_owned()]);
+    gh.set_api("github.com", "user/orgs", &["acme".to_owned()]);
+    gh.set_api("github.com", "user/repos", &[]);
     let repos: Vec<String> = names
         .iter()
-        .map(|name| {
-            format!(
-                r#"{{"name":"{name}","owner":{{"login":"acme"}},"clone_url":"https://github.com/acme/{name}.git","html_url":"https://github.com/acme/{name}","private":false}}"#
-            )
-        })
+        .map(|name| repo_line("github.com", "acme", name))
         .collect();
-    Response::json(&format!("[{}]", repos.join(",")))
-}
-
-/// github.com as `me`, a member of `acme` only.
-fn serve_acme(env: &TestEnv, names: &[&str]) {
-    let api = env.api.host("github.com");
-    api.route("/user", Response::json(r#"{"login":"me"}"#));
-    api.route("/user/orgs", Response::json(r#"[{"login":"acme"}]"#));
-    api.route("/user/repos", Response::json("[]"));
-    api.route("/orgs/acme/repos", acme_repos(names));
+    gh.set_api("github.com", "orgs/acme/repos", &repos);
 }
 
 fn env() -> TestEnv {

@@ -18,7 +18,6 @@ use crate::config::ConfigError;
 use crate::domain::NameError;
 use crate::gh::GhError;
 use crate::git::GitError;
-use crate::github::ApiError;
 use crate::platform::PlatformError;
 use crate::shell::ShellError;
 use crate::sync::SyncError;
@@ -46,9 +45,6 @@ pub enum Error {
     /// git.
     #[error(transparent)]
     Git(#[from] GitError),
-    /// The GitHub API.
-    #[error(transparent)]
-    Api(#[from] ApiError),
     /// Query resolution.
     #[error(transparent)]
     Resolve(#[from] ResolveError),

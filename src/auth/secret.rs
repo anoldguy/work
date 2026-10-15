@@ -34,14 +34,6 @@ impl SecretToken {
     pub fn expose(&self) -> &str {
         &self.0
     }
-
-    /// A second copy of the secret, for the per-process token memo in
-    /// [`crate::gh::MemoGh`]. Deliberately not `Clone`, so copies stay rare
-    /// and visible.
-    #[must_use]
-    pub(crate) fn duplicate(&self) -> Self {
-        Self(self.0.clone())
-    }
 }
 
 impl fmt::Debug for SecretToken {

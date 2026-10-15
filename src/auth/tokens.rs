@@ -31,9 +31,7 @@ impl TokenSource {
 /// Immutable and `Sync`, so fetch and sync workers share it by reference.
 /// When `GITHUB_TOKEN` is set it answers for every domain and `gh` is never
 /// run. Failures are kept per domain but never memoised across builds: after
-/// `gh auth login`, build a new `Tokens`. (Successes are memoised for the
-/// whole process by the `App`'s [`crate::gh::MemoGh`], so rebuilding is
-/// cheap.)
+/// `gh auth login`, build a new `Tokens`.
 #[derive(Debug)]
 pub struct Tokens<'e> {
     env: &'e EnvToken,
