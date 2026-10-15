@@ -1,5 +1,4 @@
-//! [`TtyInteraction`]: pickers and prompts on the real terminal, and
-//! `Ui::interact`.
+//! Pickers and prompts on the real terminal.
 
 use std::fmt::{self, Write as _};
 use std::io::Write;
@@ -19,11 +18,10 @@ const KEY_WAIT: Duration = Duration::from_millis(500);
 /// The most picker lines (filter line plus items) drawn below the prompt.
 const MAX_PICKER_ROWS: u16 = 12;
 
-/// Show the cursor (the guard hides it, and restores it on drop).
+/// Shows the cursor while a prompt reads a line; the guard hides it.
 const SHOW_CURSOR: &str = "\x1b[?25h";
 
-/// The real [`Interaction`]: renders `picker::PickerState` and the prompts
-/// on its own stderr handle inside a `TerminalGuard` (`Screen::Inline`).
+/// The real [`Interaction`], drawn inline on stderr.
 ///
 /// A picker over no items could only be escaped, so `pick_one` and
 /// `pick_many` with empty `items` return `Ok(None)` (cancelled) at once.
@@ -48,7 +46,6 @@ impl TtyInteraction {
         }
     }
 
-    /// [`UiError::NotInteractive`] unless there is a terminal.
     const fn require_terminal(&self, what: &'static str) -> Result<(), UiError> {
         if self.interactive {
             Ok(())
@@ -57,7 +54,6 @@ impl TtyInteraction {
         }
     }
 
-    /// Takes over the terminal for one picker or prompt.
     fn guard(&mut self, what: &'static str) -> Result<TerminalGuard<'_>, UiError> {
         self.require_terminal(what)?;
         TerminalGuard::acquire(&mut *self.err, Screen::Inline, Arc::clone(&self.backend))
@@ -129,9 +125,8 @@ impl Ui {
     /// The pickers and prompts. Borrowing the Ui keeps them from
     /// interleaving with any other output.
     ///
-    /// Flushes buffered stdout first (best effort; a real failure resurfaces
-    /// from the next [`Ui::flush`]), so earlier output cannot land after the
-    /// picker.
+    /// Flushes buffered stdout first, so earlier output cannot land after
+    /// the picker.
     pub fn interact(&mut self) -> &mut dyn Interaction {
         self.flush_for_stderr();
         &mut *self.interact

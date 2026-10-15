@@ -1,10 +1,9 @@
 //! The `about` splash: a registry of animation styles that render into a
-//! pure [`Frame`] buffer.
+//! [`Frame`] buffer.
 //!
 //! Styles are time-based (a dropped frame skips ahead) and draw randomness
-//! only from the seed they are started with, so tests render deterministic
-//! frames at a fixed seed, time and size. `Ui::splash` (in `splash/run.rs`)
-//! plays one on the terminal.
+//! only from the seed they are started with, so a frame is fixed by seed,
+//! time and size.
 
 pub mod classic;
 pub mod decode;
@@ -30,8 +29,7 @@ pub trait Style: Sync {
     fn start(&self, seed: u64, w: u16, h: u16) -> Box<dyn StyleRun>;
 }
 
-/// One running animation. Stateful runs (such as `fire`) keep their state
-/// here.
+/// One running animation, holding any state the style keeps between frames.
 pub trait StyleRun {
     /// Draws the frame at time `t` since the start into `frame` (which has
     /// the run's size).
@@ -53,7 +51,7 @@ pub fn find_style(name: &str) -> Option<&'static dyn Style> {
     STYLES.iter().copied().find(|s| s.name() == name)
 }
 
-/// Every style name, in registry order (for the unknown-style list error).
+/// Every style name, in registry order.
 #[must_use]
 pub fn style_names() -> Vec<&'static str> {
     STYLES.iter().map(|s| s.name()).collect()

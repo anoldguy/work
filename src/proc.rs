@@ -67,9 +67,9 @@ impl<'ui> Interactive<'ui> {
 /// What [`stderr_summary`] keeps when stderr has no `fatal:`/`error:` line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fallback {
-    /// The last line (git: earlier lines are progress and `remote:` noise).
+    /// The last line.
     LastLine,
-    /// Every line, joined (gh splits one message over several lines).
+    /// Every line, joined.
     AllLines,
 }
 

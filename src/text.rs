@@ -1,12 +1,7 @@
-//! Display-width, wording and sanitising helpers for terminal text (pure,
-//! std-only).
+//! Display-width, wording and sanitising helpers for terminal text.
 //!
 //! Widths are conservative: never less than a terminal will use, so a line
 //! measured or clipped with these cannot wrap.
-//!
-//! [`is_invisible_format`] is the crate's one list of invisible Unicode
-//! format characters, and [`one_line`] the one sanitiser; every check and
-//! sanitiser that keeps text on one visible line goes through them.
 
 /// Bidi controls (including the Arabic letter mark), zero-width characters,
 /// the soft hyphen, the byte-order mark, and the line and paragraph
@@ -131,8 +126,7 @@ pub(crate) fn plural<'w, N: Copy + PartialEq + From<u8>>(
 
 /// Conservative terminal columns for `c`.
 ///
-/// ASCII, the progress view's own narrow glyphs (`✓`, `✗`, braille
-/// spinners) and Latin/Greek/Cyrillic letters are one column; combining
+/// ASCII, `✓`, `✗`, braille spinners and Latin/Greek/Cyrillic letters are one column; combining
 /// marks are zero; everything else (CJK, emoji, and East Asian "ambiguous"
 /// symbols such as `…` and `·`) counts as two.
 #[must_use]
