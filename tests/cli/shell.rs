@@ -132,6 +132,16 @@ fn wrapper_navigates(shell: &str) {
         text(&out.stderr)
     );
     assert_eq!(env.editor.calls(), [vec![repo.to_owned()]]);
+
+    if shell != "fish" {
+        let out = run(&env, &bin, "set -u; work >/dev/null; echo rc=$?");
+        assert_eq!(
+            text(&out.stdout),
+            "rc=0\n",
+            "{shell}: stderr {}",
+            text(&out.stderr)
+        );
+    }
 }
 
 #[test]

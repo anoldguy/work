@@ -257,7 +257,7 @@ pub fn record_access(app: &mut App, cache: &Cache, target: &Target) {
         }
     });
     match recorded {
-        Ok(None | Some(Problem::UnknownVersion { .. })) => {}
+        Ok(None | Some(Problem::UnknownVersion { .. } | Problem::Unreadable { .. })) => {}
         Ok(Some(problem)) => app.ui.warn(&problem.to_string()),
         Err(err) => app.ui.warn(&err.to_string()),
     }

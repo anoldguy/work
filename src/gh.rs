@@ -13,6 +13,7 @@ pub use repo_line::{REPO_JQ, parse_repo_line};
 use std::ffi::OsStr;
 use std::fmt::Debug;
 use std::io::{self, BufRead, BufReader, Read};
+use std::panic::{self, AssertUnwindSafe};
 use std::process::{Command, Stdio};
 use std::thread;
 
@@ -200,11 +201,22 @@ fn api_lines(
             }
             buf
         });
-        let read_error = stdout.and_then(|out| read_lines(out, on_line).err());
-        if read_error.is_some() {
-            // Nobody reads stdout any more; stop the child so `wait` returns.
-            let _ = child.kill();
-        }
+        let read =
+            stdout.map(|out| panic::catch_unwind(AssertUnwindSafe(|| read_lines(out, on_line))));
+        // Once stdout is abandoned the child can block writing it, so stop it
+        // before waiting on the stderr drain.
+        let read_error = match read {
+            Some(Ok(Ok(()))) | None => None,
+            Some(Ok(Err(err))) => {
+                let _ = child.kill();
+                Some(err)
+            }
+            Some(Err(payload)) => {
+                let _ = child.kill();
+                let _ = drain.join();
+                panic::resume_unwind(payload);
+            }
+        };
         (read_error, drain.join().unwrap_or_default())
     });
     let status = child.wait().map_err(|e| map_spawn(&e))?;
@@ -317,8 +329,7 @@ fn interactive_via(program: &OsStr, action: &'static str, host: &Domain) -> Resu
     }
 }
 
-/// A failure running `gh`. `Clone` so it can live inside a cloned
-/// `AuthError` and be scripted by test fakes.
+/// A failure running `gh`. `Clone` so test fakes can script it.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum GhError {
     /// `gh` is not on `PATH`.
@@ -333,7 +344,7 @@ pub enum GhError {
     /// `gh auth <action>` ran and failed.
     #[error("gh auth {action} failed for {host}: {detail}")]
     Failed {
-        /// `token`, `status`, `login`, or `logout`.
+        /// `status`, `login`, or `logout`.
         action: &'static str,
         /// The host it ran against.
         host: Domain,
