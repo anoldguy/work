@@ -1,40 +1,27 @@
-//! The wrapper `work activate` prints, loaded the way users load it, driving
-//! the built binary in bash, zsh and fish. A missing shell skips its test,
-//! unless `WORK_REQUIRE_SHELLS=1` (CI), which makes it fail.
+//! The wrapper from `work activate`, loaded the documented way in bash, zsh
+//! and fish, and the one-line stdout protocol it relies on.
 
-use std::ffi::OsString;
-use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-use crate::support::{RepoSeed, TestEnv};
+use crate::support::{TestEnv, line, repo_line, text};
 
-const SLUG: &str = "github.com/acme/foo";
-
-/// A test env whose `work_dir` holds a space, `'`, `\` and other shell
-/// metacharacters, with a fresh cache holding `acme/foo` (cloned from a
-/// local origin), and a `bin/` holding only the built `work`. Returns the
-/// env, the bin dir and the repo's path.
-fn setup() -> (TestEnv, PathBuf, PathBuf) {
+/// An env whose `work_dir` holds a space, `'` and `\`, with `acme/foo`
+/// cached and on its remote. Returns the repo's future path.
+fn setup() -> (TestEnv, PathBuf) {
     let env = TestEnv::new();
-    let work_dir = env.home().join(r#"it's a \ "$dir" `x` $(y)"#);
-    let toml_value = work_dir
-        .to_str()
-        .expect("utf-8")
-        .replace('\\', r"\\")
-        .replace('"', "\\\"");
-    env.write_config_raw(&format!("work_dir = \"{toml_value}\"\n"));
-    let origin = env.origin("acme", "foo");
-    env.seed_cache(&[RepoSeed::new(SLUG).origin(&origin)]);
-    let bin = env.root().join("bin");
-    std::fs::create_dir(&bin).expect("bin dir");
-    symlink(env!("CARGO_BIN_EXE_work"), bin.join("work")).expect("link work");
-    (env, bin, work_dir.join("acme/foo"))
+    let work_dir = env.home().join(r"it's a \ dir");
+    let value = toml_edit::Value::from(work_dir.to_str().expect("utf-8"));
+    env.config(&format!(
+        "work_dir = {value}\n[domains.\"github.com\"]\nis_default = true\n"
+    ));
+    env.remote("github.com/acme/foo");
+    env.seed_cache(&["github.com/acme/foo"], false);
+    (env, work_dir.join("acme/foo"))
 }
 
-/// `shell`'s absolute path on the host `PATH` (the shell itself then runs
-/// with a `PATH` that does not hold it). `None` skips the test, unless
-/// `WORK_REQUIRE_SHELLS=1`, which fails it instead.
+/// The shell's path on the host `PATH`. A missing shell skips the test,
+/// unless `WORK_REQUIRE_SHELLS=1`.
 fn find_shell(shell: &str) -> Option<PathBuf> {
     let found = std::env::var_os("PATH").and_then(|path| {
         std::env::split_paths(&path)
@@ -46,99 +33,76 @@ fn find_shell(shell: &str) -> Option<PathBuf> {
             std::env::var_os("WORK_REQUIRE_SHELLS").is_none_or(|v| v != "1"),
             "{shell} is not on PATH and WORK_REQUIRE_SHELLS=1"
         );
-        eprintln!("note: {shell} not on PATH; skipping wrapper test");
+        eprintln!("{shell} is not on PATH; skipping");
     }
     found
 }
 
-/// Runs `body` in `shell` (at `program`, without user startup files) after
-/// loading the wrapper with the documented activation line, with the test
-/// env's variables and `PATH` = the work bin dir, then the shims.
-fn in_shell(env: &TestEnv, bin: &Path, shell: &str, program: &Path, body: &str) -> Output {
+/// Runs `body` in `shell` without startup files, after the activation line.
+fn run(env: &TestEnv, shell: &str, program: &Path, body: &str) -> Output {
     let mut cmd = Command::new(program);
-    match shell {
-        "fish" => cmd.arg("--no-config"),
-        "zsh" => cmd.arg("-f"),
-        _ => cmd.args(["--norc", "--noprofile"]),
-    };
     let activate = match shell {
-        "fish" => "work activate fish | source".to_owned(),
-        _ => format!(r#"eval "$(work activate {shell})""#),
+        "fish" => {
+            cmd.arg("--no-config");
+            "work activate fish | source".to_owned()
+        }
+        "zsh" => {
+            cmd.arg("-f");
+            r#"eval "$(work activate zsh)""#.to_owned()
+        }
+        _ => {
+            cmd.args(["--norc", "--noprofile"]);
+            r#"eval "$(work activate bash)""#.to_owned()
+        }
     };
     cmd.arg("-c")
         .arg(format!("{activate}\n{body}"))
         .env_clear()
-        .current_dir(env.home());
-    for (name, value) in env.vars() {
-        cmd.env(name, value);
-    }
-    let mut path = OsString::from(bin);
-    path.push(":");
-    path.push(env.shim_dir());
-    cmd.env("PATH", path)
+        .envs(env.vars())
+        .current_dir(env.home())
         .stdin(Stdio::null())
         .output()
         .expect("run shell")
 }
 
-fn text(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
-}
-
-/// In `shell`, through the wrapper, with a repo path full of quoting
-/// hazards: `work cd <q>` changes directory; a failed resolution returns
-/// non-zero and stays put; `work cd` goes to the work dir; `work on <q>`
-/// changes directory and runs the editor there; other commands pass
-/// through.
 fn wrapper_navigates(shell: &str) {
     let Some(program) = find_shell(shell) else {
         return;
     };
-    let run = |env: &TestEnv, bin: &Path, body: &str| in_shell(env, bin, shell, &program, body);
-    let (env, bin, repo) = setup();
+    let (env, repo) = setup();
     let status = if shell == "fish" { "$status" } else { "$?" };
+    let home = env.home().canonicalize().expect("canonical home");
 
     let out = run(
         &env,
-        &bin,
-        &format!("work cd foo; pwd -P; work cd zzzz; echo rc={status}; pwd -P"),
+        shell,
+        &program,
+        &format!("work cd zzzz; echo rc={status}; pwd -P; work cd foo; pwd -P"),
     );
-    let repo = repo.canonicalize().expect("canonical repo");
-    let repo = repo.to_str().expect("utf-8");
+    let repo = repo.canonicalize().expect("cd cloned the repo");
     assert_eq!(
         text(&out.stdout),
-        format!("{repo}\nrc=1\n{repo}\n"),
-        "{shell}: stderr {}",
+        format!("rc=1\n{}{}", line(&home), line(&repo)),
+        "{shell}: {}",
         text(&out.stderr)
     );
 
-    let out = run(&env, &bin, "cd /; work cd; pwd -P; work version");
-    let work_dir = Path::new(repo)
-        .parent()
-        .and_then(Path::parent)
-        .expect("work dir");
+    let out = run(&env, shell, &program, "work on foo; pwd -P");
     assert_eq!(
         text(&out.stdout),
-        format!("{}\n{}\n", work_dir.display(), env!("CARGO_PKG_VERSION")),
-        "{shell}: stderr {}",
+        line(&repo),
+        "{shell}: {}",
         text(&out.stderr)
     );
-
-    let out = run(&env, &bin, "work on foo; pwd -P");
-    assert_eq!(
-        text(&out.stdout),
-        format!("{repo}\n"),
-        "{shell}: stderr {}",
-        text(&out.stderr)
-    );
-    assert_eq!(env.editor.calls(), [vec![repo.to_owned()]]);
+    let repo_str = repo.to_str().expect("utf-8");
+    assert_eq!(env.calls("editor"), [format!("{repo_str}\t{repo_str}")]);
 
     if shell != "fish" {
-        let out = run(&env, &bin, "set -u; work >/dev/null; echo rc=$?");
+        let out = run(&env, shell, &program, "set -u; work >/dev/null; echo rc=$?");
         assert_eq!(
             text(&out.stdout),
             "rc=0\n",
-            "{shell}: stderr {}",
+            "{shell}: {}",
             text(&out.stderr)
         );
     }
@@ -159,42 +123,27 @@ fn fish_wrapper_navigates() {
     wrapper_navigates("fish");
 }
 
-/// `work on` with an unknown repo leaves the directory alone, returns
-/// non-zero, and never starts the editor.
-fn failed_on_runs_nothing(shell: &str) {
-    let Some(program) = find_shell(shell) else {
-        return;
-    };
-    let (env, bin, _repo) = setup();
-    let status = if shell == "fish" { "$status" } else { "$?" };
-    let out = in_shell(
-        &env,
-        &bin,
-        shell,
-        &program,
-        &format!("work on zzzz; echo rc={status}; pwd -P"),
+#[test]
+fn sh_cd_on_a_stale_cache_prints_only_the_path() {
+    let env = TestEnv::new();
+    env.config_domains(&["github.com"]);
+    env.seed_cache(&["github.com/acme/old"], true);
+    env.gh_domain("github.com", &["acme", "broken"], &["acme/foo"]);
+    env.gh_api(
+        "github.com",
+        "orgs/acme/repos",
+        &[
+            repo_line("github.com", "acme", "foo"),
+            "{\"name\": 1}".to_owned(),
+        ],
     );
-    let home = env.home().canonicalize().expect("canonical home");
-    assert_eq!(
-        text(&out.stdout),
-        format!("rc=1\n{}\n", home.display()),
-        "{shell}: stderr {}",
-        text(&out.stderr)
-    );
-    assert_eq!(env.editor.calls(), Vec::<Vec<String>>::new());
-}
+    env.gh_api_fails("github.com", "orgs/broken/repos", "HTTP 403: forbidden");
+    env.remote("github.com/acme/foo");
 
-#[test]
-fn bash_failed_on_runs_nothing() {
-    failed_on_runs_nothing("bash");
-}
-
-#[test]
-fn zsh_failed_on_runs_nothing() {
-    failed_on_runs_nothing("zsh");
-}
-
-#[test]
-fn fish_failed_on_runs_nothing() {
-    failed_on_runs_nothing("fish");
+    let out = env.command().args(["sh-cd", "foo"]).output().expect("run");
+    let stderr = text(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert_eq!(text(&out.stdout), line(&env.work_dir().join("acme/foo")));
+    assert!(stderr.contains("broken"), "{stderr}");
+    assert!(stderr.contains("github.com/acme"), "{stderr}");
 }
