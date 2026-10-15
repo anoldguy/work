@@ -14,6 +14,6 @@ pub struct Repo {
     pub slug: Slug,
     /// What `git clone` is given.
     pub clone_url: CloneUrl,
-    /// What `browse` opens.
+    /// The repository's web page.
     pub html_url: HtmlUrl,
 }
