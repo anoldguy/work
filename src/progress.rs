@@ -1,15 +1,21 @@
-//! Progress events from workers to the terminal owner, and the pure view
-//! that folds them into display lines.
-//!
-//! This module has no terminal dependencies. Workers only ever hold
-//! [`Tasks`] and [`Task`]; `ui::Ui::with_progress` owns the receiver, folds events
-//! into a [`ProgressView`], and draws it.
+//! Progress for long-running work: workers report through [`Tasks`] and
+//! [`Task`], which drive `indicatif` bars on the `MultiProgress` that
+//! `ui::Ui` owns. Workers never write to the terminal; `ui::Ui::with_progress`
+//! prints the summary line and the deferred warnings once the display ends.
 
-use std::collections::BTreeMap;
+use std::mem;
+#[cfg(test)]
 use std::sync::atomic::{AtomicU32, Ordering};
+#[cfg(test)]
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
-use crate::text::{display_width, pad_to, plural, sanitize, truncate};
+#[cfg(test)]
+use indicatif::ProgressDrawTarget;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+
+use crate::text::{plural, sanitize};
 
 /// What a progress display counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,405 +94,80 @@ pub struct Header {
     pub domains: Option<u32>,
 }
 
-/// The in-flight detail shown after a task's label.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TaskDetail {
-    /// `page 3 · 280 repos`.
-    Page {
-        /// Pages received so far.
-        page: u32,
-        /// Repos received so far.
-        repos: u32,
-    },
-    /// A fixed step.
-    Step(Step),
-    /// Free text, from [`Task::detail`].
-    Text(String),
-}
-
-/// How a task ended.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TaskOutcome {
-    /// Success; collapses into the `✓ N done` line.
-    Ok {
-        /// Repos fetched, summed into the final summary line; `None` for
-        /// tasks that do not fetch repos.
-        repos: Option<u32>,
-    },
-    /// Failure; keeps a `✗ <label>  <reason>` line until the end.
-    Failed {
-        /// One line, already redacted.
-        reason: String,
-    },
-}
-
-/// One message from a worker to the terminal owner.
-///
-/// Task ids are chosen by the sender and are unique within one
-/// `with_progress` call (the job's index is the natural choice).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UiEvent {
-    /// Replaces the title line with a counted header. Sent once, before any
-    /// task starts.
-    Header(Header),
-    /// A task began; `label` is e.g. `github.com/acme` or `acme/foo`.
-    TaskStarted {
-        /// Task id.
-        id: u32,
-        /// What the task works on.
-        label: String,
-    },
-    /// A task advanced.
-    TaskProgress {
-        /// Task id.
-        id: u32,
-        /// The new detail.
-        detail: TaskDetail,
-    },
-    /// A task ended.
-    TaskFinished {
-        /// Task id.
-        id: u32,
-        /// How it ended.
-        outcome: TaskOutcome,
-    },
-    /// A warning, printed (one line) after the display is cleared.
-    Warn(String),
-}
-
-/// The sending half given to workers. Cheap to clone and `Sync`, so scoped
-/// workers can share `&ProgressSink`. Sends never fail: once the receiver is
-/// gone, events are dropped.
-#[derive(Debug, Clone)]
-pub struct ProgressSink(mpsc::Sender<UiEvent>);
-
-impl ProgressSink {
-    /// A connected sink and receiver.
-    #[must_use]
-    pub fn channel() -> (Self, mpsc::Receiver<UiEvent>) {
-        let (tx, rx) = mpsc::channel();
-        (Self(tx), rx)
-    }
-
-    /// Sends `event`, ignoring a disconnected receiver.
-    pub fn send(&self, event: UiEvent) {
-        // A closed receiver means nobody is drawing any more; dropping the
-        // event is the intended behaviour.
-        self.0.send(event).ok();
-    }
-
-    /// Sends a [`UiEvent::Warn`].
-    pub fn warn(&self, message: impl Into<String>) {
-        self.send(UiEvent::Warn(message.into()));
-    }
-}
-
-/// What workers get from `ui::Ui::with_progress`: they start tasks and
-/// queue warnings, and never write to the terminal. Cheap to clone and
-/// `Sync`, so scoped workers can share `&Tasks`.
-#[derive(Debug)]
-pub struct Tasks {
-    sink: ProgressSink,
-    next_id: AtomicU32,
-}
-
-impl Tasks {
-    /// Tasks reporting to `sink`.
-    #[must_use]
-    pub(crate) const fn new(sink: ProgressSink) -> Self {
-        Self {
-            sink,
-            next_id: AtomicU32::new(0),
-        }
-    }
-
-    /// Connected tasks and the receiver of their events (tests).
-    #[cfg(test)]
-    #[must_use]
-    pub fn channel() -> (Self, mpsc::Receiver<UiEvent>) {
-        let (sink, rx) = ProgressSink::channel();
-        (Self::new(sink), rx)
-    }
-
-    /// Sends a raw event (tests of the display).
-    #[cfg(test)]
-    pub(crate) fn send(&self, event: UiEvent) {
-        self.sink.send(event);
-    }
-
-    /// Replaces the title with a counted header, e.g.
-    /// `Updating 12 sources across 2 domains  [7/12]`. Call once, before
-    /// any task starts.
-    pub fn set_total(&self, verb: Verb, total: u32, noun: Noun, domains: Option<u32>) {
-        self.sink.send(UiEvent::Header(Header {
-            verb,
-            total,
-            noun,
-            domains,
-        }));
-    }
-
-    /// Starts a task shown as `label` (e.g. `github.com/acme`).
-    pub fn start(&self, label: &str) -> Task {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.sink.send(UiEvent::TaskStarted {
-            id,
-            label: label.to_owned(),
-        });
-        Task {
-            id,
-            sink: self.sink.clone(),
-            finished: false,
-        }
-    }
-
-    /// Queues a one-line warning, printed after the display is cleared.
-    pub fn warn(&self, message: impl Into<String>) {
-        self.sink.warn(message);
-    }
-}
-
-/// One in-flight task. End it with [`Task::ok`] or [`Task::fail`]; a task
-/// dropped without either (an early return, or a panicking worker) ends as
-/// failed with the reason `abandoned`, so the display always completes.
-#[derive(Debug)]
-#[must_use = "end the task with `ok` or `fail`"]
-pub struct Task {
-    id: u32,
-    sink: ProgressSink,
-    finished: bool,
-}
-
-impl Task {
-    /// Replaces the text shown after the task's label (e.g. `280 repos`).
-    pub fn detail(&self, text: &str) {
-        self.sink.send(UiEvent::TaskProgress {
-            id: self.id,
-            detail: TaskDetail::Text(text.to_owned()),
-        });
-    }
-
-    /// Ends the task successfully; `repos` (when known) is summed into the
-    /// final summary line.
-    pub fn ok(mut self, repos: Option<u32>) {
-        self.finish(TaskOutcome::Ok { repos });
-    }
-
-    /// Ends the task with a failure, kept as a `✗ <label>  <reason>` line.
-    pub fn fail(mut self, reason: &str) {
-        self.finish(TaskOutcome::Failed {
-            reason: reason.to_owned(),
-        });
-    }
-
-    fn finish(&mut self, outcome: TaskOutcome) {
-        self.finished = true;
-        self.sink.send(UiEvent::TaskFinished {
-            id: self.id,
-            outcome,
-        });
-    }
-}
-
-impl Drop for Task {
-    fn drop(&mut self) {
-        if !self.finished {
-            self.finish(TaskOutcome::Failed {
-                reason: "abandoned".to_owned(),
-            });
-        }
-    }
-}
-
-/// One in-flight task in a [`ProgressView`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct InFlight {
-    label: String,
-    detail: Option<TaskDetail>,
-}
-
-/// One failed task in a [`ProgressView`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct FailedTask {
-    label: String,
-    reason: String,
-}
-
-/// Braille spinner frames; in-flight line `i` shows frame `tick + i`.
-const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-/// ANSI styles used when colour is on.
+/// ANSI styles, used only when colour is on.
 const BOLD: &str = "\x1b[1m";
 const GREEN: &str = "\x1b[32m";
 const RED: &str = "\x1b[31m";
 const CYAN: &str = "\x1b[36m";
 const RESET: &str = "\x1b[0m";
 
-/// The pure state of the live multi-line display (snapshot-tested).
-///
-/// Layout, top to bottom: the header (or the title until a header arrives)
-/// with `[done/total]`; `✓ N done · M failed`; one `✗` line per failure; one
-/// spinner line per in-flight task, capped to the height with
-/// `… and K more`. Warnings are not part of the view.
-///
-/// Text from events and the title is stored with control characters
-/// replaced by spaces, so a stray `\n` or `\r` cannot add terminal rows.
+/// Braille spinner frames; the last entry is indicatif's "finished" frame.
+const SPINNER: [&str; 11] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", " "];
+
+/// How often a running task's spinner advances.
+const TICK: Duration = Duration::from_millis(80);
+
+/// Counters and deferred output shared by [`Tasks`] and every [`Task`].
 #[derive(Debug, Default)]
-pub struct ProgressView {
-    title: String,
-    color: bool,
+struct State {
     header: Option<Header>,
-    in_flight: BTreeMap<u32, InFlight>,
     done: u32,
-    /// Repos summed from `Ok { repos: Some(_) }`; `None` until one arrives,
-    /// so displays that never count repos (`sync`) leave them out.
+    failed: u32,
+    /// Repos summed from `ok(Some(_))`; `None` until one arrives, so
+    /// displays that never count repos (`sync`) leave them out.
     repos: Option<u64>,
-    failed: Vec<FailedTask>,
+    warnings: Vec<String>,
+    /// Every bar added to the display, so the end can remove them all
+    /// (failed bars must stay alive to keep their `✗` line on screen).
+    bars: Vec<ProgressBar>,
 }
 
-impl ProgressView {
-    /// An empty view showing `title` until a `Header` arrives. `color` is
-    /// false under `NO_COLOR` or in plain mode.
-    #[must_use]
-    pub fn new(title: &str, color: bool) -> Self {
-        Self {
-            title: sanitize(title),
-            color,
-            ..Self::default()
-        }
-    }
-
-    /// Folds one event in. `Warn` events are ignored here; the owner defers
-    /// them.
-    pub fn apply(&mut self, event: UiEvent) {
-        match event {
-            UiEvent::Header(header) => self.header = Some(header),
-            UiEvent::TaskStarted { id, label } => {
-                self.in_flight.insert(
-                    id,
-                    InFlight {
-                        label: sanitize(&label),
-                        detail: None,
-                    },
-                );
-            }
-            UiEvent::TaskProgress { id, detail } => {
-                if let Some(task) = self.in_flight.get_mut(&id) {
-                    task.detail = Some(match detail {
-                        TaskDetail::Text(text) => TaskDetail::Text(sanitize(&text)),
-                        other => other,
-                    });
-                }
-            }
-            UiEvent::TaskFinished { id, outcome } => {
-                let label = self
-                    .in_flight
-                    .remove(&id)
-                    .map_or_else(|| format!("task {id}"), |task| task.label);
-                match outcome {
-                    TaskOutcome::Ok { repos } => {
-                        self.done = self.done.saturating_add(1);
-                        if let Some(n) = repos {
-                            self.repos = Some(self.repos.unwrap_or(0).saturating_add(u64::from(n)));
-                        }
-                    }
-                    TaskOutcome::Failed { reason } => {
-                        self.failed.push(FailedTask {
-                            label,
-                            reason: sanitize(&reason),
-                        });
-                    }
-                }
-            }
-            UiEvent::Warn(_) => {}
-        }
-    }
-
-    /// Finished tasks, successful or not.
+impl State {
     fn finished(&self) -> u32 {
-        let failed = u32::try_from(self.failed.len()).unwrap_or(u32::MAX);
-        self.done.saturating_add(failed)
+        self.done.saturating_add(self.failed)
+    }
+}
+
+#[derive(Debug)]
+struct Shared {
+    multi: MultiProgress,
+    header: ProgressBar,
+    title: String,
+    color: bool,
+    state: Mutex<State>,
+    #[cfg(test)]
+    next_id: AtomicU32,
+    /// Test-only recording of what workers reported.
+    #[cfg(test)]
+    events: Option<mpsc::Sender<UiEvent>>,
+}
+
+impl Shared {
+    fn state(&self) -> MutexGuard<'_, State> {
+        // The state stays consistent across a panicking holder: every
+        // update is a single field write.
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The display for a `w`×`h` terminal at spinner frame `tick`.
-    ///
-    /// Every line is at most `w - 1` columns wide (see [`display_width`])
-    /// and there are at most `h - 1` lines (never fewer than one), so an
-    /// in-place redraw never wraps or scrolls. When there is no row left
-    /// for task lines, the in-flight count joins the count line.
-    #[must_use]
-    pub fn lines(&self, w: u16, h: u16, tick: u8) -> Vec<String> {
-        let width = usize::from(w.saturating_sub(1).max(1));
-        let mut out = vec![self.head_line(width)];
-        // Rows below the header; one row is always left for the cursor.
-        let mut rows = usize::from(h.saturating_sub(2));
-        if rows == 0 {
-            return out;
+    #[cfg(test)]
+    fn record(&self, event: UiEvent) {
+        if let Some(tx) = &self.events {
+            // A closed receiver means the test stopped listening.
+            tx.send(event).ok();
         }
+    }
 
-        let running = self.in_flight.len();
-        let show_count = self.finished() > 0;
-        if show_count {
-            rows -= 1;
-        }
-        let failed_shown = self.failed.len().min(rows);
-        rows -= failed_shown;
-        let (in_flight_shown, more_line) = if running <= rows {
-            (running, false)
-        } else if rows >= 1 {
-            (rows - 1, true)
+    fn paint(&self, style: &str, text: &str) -> String {
+        if self.color {
+            format!("{style}{text}{RESET}")
         } else {
-            (0, false)
-        };
-        // No row at all for in-flight tasks: say how many in the count line.
-        let fold_running = running > in_flight_shown && !more_line;
-
-        if show_count || fold_running {
-            let mut parts = vec![format!("{} done", self.done)];
-            if !self.failed.is_empty() {
-                parts.push(format!("{} failed", self.failed.len()));
-            }
-            if fold_running {
-                parts.push(format!("{running} running"));
-            }
-            out.push(self.row("✓", GREEN, &parts.join(" · "), width));
+            text.to_owned()
         }
-
-        let failed = &self.failed[..failed_shown];
-        let pad = failed
-            .iter()
-            .map(|f| display_width(&f.label))
-            .chain(
-                self.in_flight
-                    .values()
-                    .take(in_flight_shown)
-                    .map(|t| display_width(&t.label)),
-            )
-            .max()
-            .unwrap_or(0);
-
-        for f in failed {
-            let text = format!("{}  {}", pad_to(&f.label, pad), f.reason);
-            out.push(self.row("✗", RED, &text, width));
-        }
-        for (i, task) in self.in_flight.values().take(in_flight_shown).enumerate() {
-            let frame = SPINNER[(usize::from(tick) + i) % SPINNER.len()];
-            let text = match &task.detail {
-                Some(detail) => format!("{}  {}", pad_to(&task.label, pad), detail_text(detail)),
-                None => task.label.clone(),
-            };
-            out.push(self.row(frame, CYAN, &text, width));
-        }
-        if more_line {
-            let more = running - in_flight_shown;
-            out.push(truncate(&format!("  … and {more} more"), width));
-        }
-        out
     }
 
-    /// The header (with `[done/total]`) or, before one arrives, the title.
-    fn head_line(&self, width: usize) -> String {
-        let text = match &self.header {
+    /// Redraws the header: the title, or `Updating 12 sources  [7/12]`.
+    fn refresh_header(&self, state: &State) {
+        let text = match &state.header {
             Some(header) => {
                 let across = match header.domains {
                     Some(1) => " across 1 domain".to_owned(),
@@ -498,73 +179,252 @@ impl ProgressView {
                     header.verb.word(),
                     header.total,
                     header.noun.word(header.total),
-                    self.finished(),
+                    state.finished(),
                     header.total
                 )
             }
             None => self.title.clone(),
         };
-        let text = truncate(&text, width);
-        if self.color {
-            format!("{BOLD}{text}{RESET}")
-        } else {
-            text
+        self.header.set_message(self.paint(BOLD, &text));
+    }
+}
+
+/// What workers get from `ui::Ui::with_progress`: they start tasks and
+/// queue warnings, and never write to the terminal themselves. `Sync`, so
+/// scoped workers share `&Tasks`.
+#[derive(Debug)]
+pub struct Tasks {
+    shared: Arc<Shared>,
+}
+
+impl Tasks {
+    /// Tasks drawn on `multi`, showing `title` until [`Tasks::set_total`].
+    /// `color` is false under `NO_COLOR` or in plain mode.
+    pub(crate) fn new(multi: MultiProgress, title: &str, color: bool) -> Self {
+        let header = multi.add(ProgressBar::new(0).with_style(plain_style()));
+        let shared = Shared {
+            multi,
+            header,
+            title: sanitize(title),
+            color,
+            state: Mutex::new(State::default()),
+            #[cfg(test)]
+            next_id: AtomicU32::new(0),
+            #[cfg(test)]
+            events: None,
+        };
+        let state = shared.state();
+        shared.refresh_header(&state);
+        drop(state);
+        shared.header.tick();
+        Self {
+            shared: Arc::new(shared),
         }
     }
 
-    /// One `  <glyph> <text>` row, truncated to `width`, glyph coloured.
-    fn row(&self, glyph: &str, style: &str, text: &str, width: usize) -> String {
-        let plain = truncate(&format!("  {glyph} {text}"), width);
-        let prefix = format!("  {glyph}");
-        match plain.strip_prefix(&prefix) {
-            Some(rest) if self.color => format!("  {style}{glyph}{RESET}{rest}"),
-            _ => plain,
-        }
-    }
-
-    /// The line left on stderr once the display is cleared, e.g.
-    /// `✓ 12 sources · 1,204 repos · 1 failed`. `None` if nothing ran.
+    /// Tasks on a hidden display and the receiver of everything they
+    /// report, with task ids in start order (tests).
+    #[cfg(test)]
     #[must_use]
-    pub fn summary_line(&self) -> Option<String> {
-        let finished = self.finished();
+    pub fn channel() -> (Self, mpsc::Receiver<UiEvent>) {
+        let (tx, rx) = mpsc::channel();
+        let mut tasks = Self::new(
+            MultiProgress::with_draw_target(ProgressDrawTarget::hidden()),
+            "",
+            false,
+        );
+        if let Some(shared) = Arc::get_mut(&mut tasks.shared) {
+            shared.events = Some(tx);
+        }
+        (tasks, rx)
+    }
+
+    /// Replaces the title with a counted header, e.g.
+    /// `Updating 12 sources across 2 domains  [7/12]`. Call once, before
+    /// any task starts.
+    pub fn set_total(&self, verb: Verb, total: u32, noun: Noun, domains: Option<u32>) {
+        let header = Header {
+            verb,
+            total,
+            noun,
+            domains,
+        };
+        self.shared.header.set_length(u64::from(total));
+        #[cfg(test)]
+        self.shared.record(UiEvent::Header(header.clone()));
+        let mut state = self.shared.state();
+        state.header = Some(header);
+        self.shared.refresh_header(&state);
+    }
+
+    /// Starts a task shown as a spinner line `label` (e.g.
+    /// `github.com/acme`).
+    pub fn start(&self, label: &str) -> Task {
+        let shared = &self.shared;
+        #[cfg(test)]
+        let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
+        let label = sanitize(label);
+        let frames: Vec<String> = SPINNER.iter().map(|f| shared.paint(CYAN, f)).collect();
+        let frames: Vec<&str> = frames.iter().map(String::as_str).collect();
+        let style = ProgressStyle::with_template("  {spinner} {wide_msg}")
+            .map_or_else(|_| plain_style(), |style| style.tick_strings(&frames));
+        let bar = shared
+            .multi
+            .add(ProgressBar::new_spinner().with_style(style));
+        bar.set_message(label.clone());
+        if !shared.multi.is_hidden() {
+            bar.enable_steady_tick(TICK);
+        }
+        shared.state().bars.push(bar.clone());
+        #[cfg(test)]
+        shared.record(UiEvent::TaskStarted {
+            id,
+            label: label.clone(),
+        });
+        Task {
+            #[cfg(test)]
+            id,
+            label,
+            bar,
+            shared: Arc::clone(shared),
+            finished: false,
+        }
+    }
+
+    /// Queues a one-line warning, printed after the display is cleared.
+    pub fn warn(&self, message: impl Into<String>) {
+        let message = message.into();
+        #[cfg(test)]
+        self.shared.record(UiEvent::Warn(message.clone()));
+        self.shared.state().warnings.push(message);
+    }
+
+    /// Ends the display: removes every bar (clearing it from the screen
+    /// unless the thread is panicking, when a stale frame is left), and
+    /// returns the summary line (`None` if nothing finished) and the
+    /// deferred warnings.
+    pub(crate) fn end(&self) -> (Option<String>, Vec<String>) {
+        let shared = &self.shared;
+        let mut state = shared.state();
+        // Best effort: a broken stderr loses the display.
+        let _ = shared.multi.clear();
+        shared.multi.remove(&shared.header);
+        for bar in mem::take(&mut state.bars) {
+            shared.multi.remove(&bar);
+        }
+        (self.summary_line(&state), mem::take(&mut state.warnings))
+    }
+
+    /// `✓ 12 sources · 1,204 repos · 1 failed`; `None` if nothing ran.
+    fn summary_line(&self, state: &State) -> Option<String> {
+        let finished = state.finished();
         if finished == 0 {
             return None;
         }
         let count = group(u64::from(finished));
-        let mut parts = vec![match &self.header {
+        let mut parts = vec![match &state.header {
             Some(header) => format!("{count} {}", header.noun.word(finished)),
             None => format!("{count} finished"),
         }];
-        if let Some(repos) = self.repos {
+        if let Some(repos) = state.repos {
             let unit = plural(repos, "repo", "repos");
             parts.push(format!("{} {unit}", group(repos)));
         }
-        if !self.failed.is_empty() {
-            parts.push(format!("{} failed", self.failed.len()));
+        if state.failed > 0 {
+            parts.push(format!("{} failed", state.failed));
         }
-        let (glyph, style) = if self.done == 0 {
-            ("✗", RED)
+        let glyph = if state.done == 0 {
+            self.shared.paint(RED, "✗")
         } else {
-            ("✓", GREEN)
-        };
-        let glyph = if self.color {
-            format!("{style}{glyph}{RESET}")
-        } else {
-            glyph.to_owned()
+            self.shared.paint(GREEN, "✓")
         };
         Some(format!("{glyph} {}", parts.join(" · ")))
     }
 }
 
-/// The in-flight text for a detail: `page 3 · 280 repos` or a step label.
-fn detail_text(detail: &TaskDetail) -> String {
-    match detail {
-        TaskDetail::Page { page, repos } => {
-            let unit = plural(*repos, "repo", "repos");
-            format!("page {page} · {} {unit}", group(u64::from(*repos)))
+/// A bare `{wide_msg}` style.
+fn plain_style() -> ProgressStyle {
+    ProgressStyle::with_template("{wide_msg}").unwrap_or_else(|_| ProgressStyle::default_bar())
+}
+
+/// One in-flight task. End it with [`Task::ok`] or [`Task::fail`]; a task
+/// dropped without either (an early return, or a panicking worker) ends as
+/// failed with the reason `abandoned`, so the display always completes.
+#[derive(Debug)]
+#[must_use = "end the task with `ok` or `fail`"]
+pub struct Task {
+    #[cfg(test)]
+    id: u32,
+    label: String,
+    bar: ProgressBar,
+    shared: Arc<Shared>,
+    finished: bool,
+}
+
+impl Task {
+    /// Replaces the text shown after the task's label (e.g. `280 repos`).
+    pub fn detail(&self, text: &str) {
+        let text = sanitize(text);
+        self.bar.set_message(format!("{}  {text}", self.label));
+        #[cfg(test)]
+        self.shared.record(UiEvent::TaskProgress {
+            id: self.id,
+            detail: TaskDetail::Text(text),
+        });
+    }
+
+    /// Ends the task successfully and clears its line; `repos` (when known)
+    /// is summed into the final summary line.
+    pub fn ok(mut self, repos: Option<u32>) {
+        self.finished = true;
+        self.bar.finish_and_clear();
+        self.shared.multi.remove(&self.bar);
+        let mut state = self.shared.state();
+        state.done = state.done.saturating_add(1);
+        if let Some(n) = repos {
+            state.repos = Some(state.repos.unwrap_or(0).saturating_add(u64::from(n)));
         }
-        TaskDetail::Step(step) => step.label().to_owned(),
-        TaskDetail::Text(text) => text.clone(),
+        self.shared.refresh_header(&state);
+        drop(state);
+        #[cfg(test)]
+        self.shared.record(UiEvent::TaskFinished {
+            id: self.id,
+            outcome: TaskOutcome::Ok { repos },
+        });
+    }
+
+    /// Ends the task with a failure, kept on screen as
+    /// `✗ <label>  <reason>` until the display ends.
+    pub fn fail(mut self, reason: &str) {
+        self.finish_failed(reason);
+    }
+
+    fn finish_failed(&mut self, reason: &str) {
+        self.finished = true;
+        let reason = sanitize(reason);
+        let glyph = self.shared.paint(RED, "✗");
+        self.bar.set_style(
+            ProgressStyle::with_template("  {wide_msg}").unwrap_or_else(|_| plain_style()),
+        );
+        self.bar
+            .abandon_with_message(format!("{glyph} {}  {reason}", self.label));
+        let mut state = self.shared.state();
+        state.failed = state.failed.saturating_add(1);
+        self.shared.refresh_header(&state);
+        drop(state);
+        #[cfg(test)]
+        self.shared.record(UiEvent::TaskFinished {
+            id: self.id,
+            outcome: TaskOutcome::Failed { reason },
+        });
+    }
+}
+
+impl Drop for Task {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.finish_failed("abandoned");
+        }
     }
 }
 
@@ -582,352 +442,264 @@ pub(crate) fn group(n: u64) -> String {
     out
 }
 
+/// The in-flight detail a worker reported (tests).
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskDetail {
+    /// Free text, from [`Task::detail`], sanitised.
+    Text(String),
+}
+
+/// How a task ended (tests).
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskOutcome {
+    /// [`Task::ok`].
+    Ok {
+        /// Repos fetched, when known.
+        repos: Option<u32>,
+    },
+    /// [`Task::fail`], or `abandoned` when dropped unfinished.
+    Failed {
+        /// One line, sanitised.
+        reason: String,
+    },
+}
+
+/// One thing a worker reported through [`Tasks`] (tests; see
+/// [`Tasks::channel`]). Ids are assigned in start order from 0.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UiEvent {
+    /// [`Tasks::set_total`].
+    Header(Header),
+    /// [`Tasks::start`].
+    TaskStarted {
+        /// Task id.
+        id: u32,
+        /// What the task works on, sanitised.
+        label: String,
+    },
+    /// [`Task::detail`].
+    TaskProgress {
+        /// Task id.
+        id: u32,
+        /// The new detail.
+        detail: TaskDetail,
+    },
+    /// [`Task::ok`] or [`Task::fail`].
+    TaskFinished {
+        /// Task id.
+        id: u32,
+        /// How it ended.
+        outcome: TaskOutcome,
+    },
+    /// [`Tasks::warn`].
+    Warn(String),
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{
-        Header, Noun, ProgressSink, ProgressView, Step, TaskDetail, TaskOutcome, Tasks, UiEvent,
-        Verb, display_width, group,
-    };
+    use std::assert_matches;
+    use std::io;
+    use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+    use indicatif::{ProgressDrawTarget, TermLike};
+
+    use super::{Noun, TaskOutcome, Tasks, UiEvent, Verb};
+    use crate::testing::{ScriptedInteraction, SharedBuf};
+    use crate::ui::{Mode, Ui};
+
+    const WIDTH: u16 = 60;
+
+    /// A tiny terminal: autowrapping rows, a cursor, and every string
+    /// indicatif wrote.
+    #[derive(Debug, Default)]
+    struct Screen {
+        rows: Vec<Vec<char>>,
+        row: usize,
+        col: usize,
+        writes: Vec<String>,
+    }
+
+    impl Screen {
+        fn put(&mut self, s: &str) {
+            self.writes.push(s.to_owned());
+            for c in s.chars() {
+                if c == '\r' {
+                    self.col = 0;
+                    continue;
+                }
+                if self.col >= usize::from(WIDTH) {
+                    self.row += 1;
+                    self.col = 0;
+                }
+                if self.rows.len() <= self.row {
+                    self.rows.resize(self.row + 1, Vec::new());
+                }
+                let line = &mut self.rows[self.row];
+                if line.len() <= self.col {
+                    line.resize(self.col + 1, ' ');
+                }
+                line[self.col] = c;
+                self.col += 1;
+            }
+        }
+
+        /// The non-blank rows, right-trimmed.
+        fn visible(&self) -> Vec<String> {
+            self.rows
+                .iter()
+                .map(|r| r.iter().collect::<String>().trim_end().to_owned())
+                .filter(|r| !r.is_empty())
+                .collect()
+        }
+    }
+
+    #[derive(Debug, Clone, Default)]
+    struct FakeTerm(Arc<Mutex<Screen>>);
+
+    impl FakeTerm {
+        fn screen(&self) -> MutexGuard<'_, Screen> {
+            self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        }
+    }
+
+    impl TermLike for FakeTerm {
+        fn width(&self) -> u16 {
+            WIDTH
+        }
+        fn height(&self) -> u16 {
+            24
+        }
+        fn move_cursor_up(&self, n: usize) -> io::Result<()> {
+            let mut s = self.screen();
+            s.row = s.row.saturating_sub(n);
+            Ok(())
+        }
+        fn move_cursor_down(&self, n: usize) -> io::Result<()> {
+            self.screen().row += n;
+            Ok(())
+        }
+        fn move_cursor_right(&self, n: usize) -> io::Result<()> {
+            self.screen().col += n;
+            Ok(())
+        }
+        fn move_cursor_left(&self, n: usize) -> io::Result<()> {
+            let mut s = self.screen();
+            s.col = s.col.saturating_sub(n);
+            Ok(())
+        }
+        fn write_line(&self, s: &str) -> io::Result<()> {
+            let mut screen = self.screen();
+            screen.put(s);
+            screen.row += 1;
+            screen.col = 0;
+            Ok(())
+        }
+        fn write_str(&self, s: &str) -> io::Result<()> {
+            self.screen().put(s);
+            Ok(())
+        }
+        fn clear_line(&self) -> io::Result<()> {
+            let mut s = self.screen();
+            let row = s.row;
+            if let Some(line) = s.rows.get_mut(row) {
+                line.clear();
+            }
+            s.col = 0;
+            Ok(())
+        }
+        fn flush(&self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A Ui in `mode`; in `Tty` mode live progress draws on the returned
+    /// [`FakeTerm`].
+    fn ui(mode: Mode) -> (Ui, SharedBuf, SharedBuf, FakeTerm) {
+        let (out, err, term) = (SharedBuf::new(), SharedBuf::new(), FakeTerm::default());
+        let mut ui = Ui::for_test_mode(
+            mode,
+            Box::new(out.clone()),
+            Box::new(err.clone()),
+            Box::new(ScriptedInteraction::new(false, vec![])),
+        );
+        if mode == Mode::Tty {
+            ui.set_progress_target(ProgressDrawTarget::term_like(Box::new(term.clone())));
+        }
+        (ui, out, err, term)
+    }
+
+    /// Two orgs: one fetches 1,204 repos, one fails; one warning. Returns
+    /// the screen as it was once both had ended.
+    fn two_orgs(tasks: &Tasks, term: &FakeTerm) -> Vec<String> {
+        tasks.set_total(Verb::Updating, 2, Noun::Sources, Some(1));
+        let acme = tasks.start("github.com/acme");
+        let widgets = tasks.start("github.com/widgets");
+        acme.detail("page 3");
+        tasks.warn("org widgets failed: HTTP 502");
+        acme.ok(Some(1_204));
+        widgets.fail("HTTP 502");
+        term.screen().visible()
+    }
+
+    #[test]
+    fn tty_mode_keeps_failures_on_screen_then_prints_the_summary_and_warnings() {
+        let (mut ui, out, err, term) = ui(Mode::Tty);
+        let during = ui.with_progress("Updating…", |tasks| two_orgs(tasks, &term));
+        assert!(
+            during
+                .iter()
+                .any(|row| row == "  ✗ github.com/widgets  HTTP 502"),
+            "{during:?}"
+        );
+        assert!(!during.iter().any(|row| row.contains("acme")), "{during:?}");
+        assert_eq!(term.screen().visible(), Vec::<String>::new(), "cleared");
+        assert_eq!(out.contents(), "");
+        assert_eq!(
+            err.contents(),
+            "✓ 2 sources · 1,204 repos · 1 failed\nwarning: org widgets failed: HTTP 502\n"
+        );
+    }
+
+    #[test]
+    fn plain_mode_prints_only_the_warnings() {
+        let (mut ui, out, err, term) = ui(Mode::Plain);
+        ui.with_progress("Updating…", |tasks| two_orgs(tasks, &term));
+        assert_eq!(out.contents(), "");
+        assert_eq!(err.contents(), "warning: org widgets failed: HTTP 502\n");
+        assert_eq!(term.screen().writes, Vec::<String>::new());
+    }
 
     #[test]
     fn a_task_dropped_without_an_outcome_ends_as_abandoned() {
         let (tasks, rx) = Tasks::channel();
         drop(tasks.start("github.com/acme"));
-        tasks.start("github.com/beta").ok(None);
-        let mut view = ProgressView::new("t", false);
         let events: Vec<UiEvent> = rx.try_iter().collect();
-        let abandoned = events.iter().filter(|e| {
-            matches!(e, UiEvent::TaskFinished { outcome: TaskOutcome::Failed { reason }, .. } if reason == "abandoned")
-        });
-        assert_eq!(abandoned.count(), 1);
-        for event in events {
-            view.apply(event);
-        }
-        assert_eq!(
-            view.lines(80, 24, 0).len(),
-            3,
-            "header, count, one failure; nothing in flight"
+        assert_matches!(
+            events.last(),
+            Some(UiEvent::TaskFinished { id: 0, outcome: TaskOutcome::Failed { reason } })
+                if reason == "abandoned"
         );
+
+        let (mut ui, _out, err, _term) = ui(Mode::Tty);
+        ui.with_progress("t", |tasks| drop(tasks.start("acme/a")));
+        assert_eq!(err.contents(), "✗ 1 finished · 1 failed\n");
     }
 
     #[test]
-    fn task_detail_text_cannot_add_terminal_rows() {
-        let (tasks, rx) = Tasks::channel();
-        let task = tasks.start("acme");
-        task.detail("page 1\n\x1b[2Jboom");
-        let mut view = ProgressView::new("t", false);
-        for event in rx.try_iter() {
-            view.apply(event);
-        }
-        let lines = view.lines(80, 24, 0);
-        assert_eq!(lines.len(), 2, "{lines:?}");
-        assert!(!lines[1].contains(['\n', '\x1b']), "{lines:?}");
-        task.ok(None);
-    }
-
-    #[test]
-    fn counts_are_grouped_by_thousands() {
-        assert_eq!(group(1_204), "1,204");
-        assert_eq!(group(999), "999");
-    }
-
-    fn update_header(total: u32) -> UiEvent {
-        UiEvent::Header(Header {
-            verb: Verb::Updating,
-            total,
-            noun: Noun::Sources,
-            domains: Some(2),
-        })
-    }
-
-    fn sync_header(total: u32) -> UiEvent {
-        UiEvent::Header(Header {
-            verb: Verb::Syncing,
-            total,
-            noun: Noun::Repositories,
-            domains: None,
-        })
-    }
-
-    fn start(view: &mut ProgressView, id: u32, label: &str) {
-        view.apply(UiEvent::TaskStarted {
-            id,
-            label: label.to_owned(),
+    fn control_characters_never_reach_the_terminal() {
+        let (mut ui, _out, _err, term) = ui(Mode::Tty);
+        ui.with_progress("a\nb", |tasks| {
+            let task = tasks.start("acme\x1b[2J");
+            task.detail("page 1\r\nboom");
+            task.fail("bad\nreason");
         });
-    }
-
-    fn page(view: &mut ProgressView, id: u32, page: u32, repos: u32) {
-        view.apply(UiEvent::TaskProgress {
-            id,
-            detail: TaskDetail::Page { page, repos },
-        });
-    }
-
-    fn ok(view: &mut ProgressView, id: u32, repos: Option<u32>) {
-        view.apply(UiEvent::TaskFinished {
-            id,
-            outcome: TaskOutcome::Ok { repos },
-        });
-    }
-
-    fn fail(view: &mut ProgressView, id: u32, reason: &str) {
-        view.apply(UiEvent::TaskFinished {
-            id,
-            outcome: TaskOutcome::Failed {
-                reason: reason.to_owned(),
-            },
-        });
-    }
-
-    /// The §5.4 example: 12 sources, 6 done, 1 failed, 3 in flight.
-    fn example(color: bool) -> ProgressView {
-        let mut view = ProgressView::new("Updating…", color);
-        view.apply(update_header(12));
-        for id in 0..6 {
-            start(&mut view, id, &format!("github.com/org{id}"));
-            ok(&mut view, id, Some(100));
+        let screen = term.screen();
+        assert_ne!(screen.writes, Vec::<String>::new());
+        for write in screen.writes.iter().filter(|w| *w != "\r") {
+            assert!(!write.contains(char::is_control), "{write:?}");
         }
-        start(&mut view, 6, "ghe.corp.com/infra");
-        fail(&mut view, 6, "HTTP 502 (kept 41 cached repos)");
-        start(&mut view, 7, "github.com/acme");
-        page(&mut view, 7, 3, 280);
-        start(&mut view, 8, "github.com/widgets");
-        page(&mut view, 8, 1, 64);
-        start(&mut view, 9, "github.com/@me (personal)");
-        page(&mut view, 9, 2, 150);
-        view
-    }
-
-    /// 1 failure and 10 in-flight repos.
-    fn crowded() -> ProgressView {
-        let mut view = ProgressView::new("Syncing…", false);
-        view.apply(sync_header(20));
-        start(&mut view, 99, "acme/broken");
-        fail(&mut view, 99, "not a fast-forward");
-        for id in 0..10 {
-            start(&mut view, id, &format!("acme/repo{id}"));
-        }
-        view
-    }
-
-    fn frame(view: &ProgressView, w: u16, h: u16, tick: u8) -> String {
-        view.lines(w, h, tick).join("\n")
-    }
-
-    #[test]
-    fn shows_the_title_until_a_header_arrives() {
-        let view = ProgressView::new("Refreshing cache", false);
-        insta::assert_snapshot!(frame(&view, 80, 24, 0), @r"Refreshing cache");
-        assert_eq!(view.summary_line(), None);
-    }
-
-    #[test]
-    fn header_counts_done_over_total() {
-        let mut view = ProgressView::new("Updating…", false);
-        view.apply(update_header(12));
-        insta::assert_snapshot!(frame(&view, 80, 24, 0), @r"Updating 12 sources across 2 domains  [0/12]");
-        let mut sync = ProgressView::new("Syncing…", false);
-        sync.apply(sync_header(1));
-        insta::assert_snapshot!(frame(&sync, 80, 24, 0), @r"Syncing 1 repository  [0/1]");
-    }
-
-    #[test]
-    fn in_flight_lines_show_page_and_repo_counts() {
-        let mut view = ProgressView::new("Updating…", false);
-        view.apply(update_header(2));
-        start(&mut view, 0, "github.com/acme");
-        page(&mut view, 0, 3, 1280);
-        start(&mut view, 1, "acme/foo");
-        view.apply(UiEvent::TaskProgress {
-            id: 1,
-            detail: TaskDetail::Step(Step::Fetching),
-        });
-        start(&mut view, 2, "acme/bar");
-        insta::assert_snapshot!(frame(&view, 80, 24, 1), @r"
-            Updating 2 sources across 2 domains  [0/2]
-              ⠙ github.com/acme  page 3 · 1,280 repos
-              ⠹ acme/foo         fetching…
-              ⠸ acme/bar
-        ");
-    }
-
-    #[test]
-    fn successes_collapse_and_failures_persist() {
-        insta::assert_snapshot!(frame(&example(false), 80, 24, 0), @r"
-            Updating 12 sources across 2 domains  [7/12]
-              ✓ 6 done · 1 failed
-              ✗ ghe.corp.com/infra         HTTP 502 (kept 41 cached repos)
-              ⠋ github.com/acme            page 3 · 280 repos
-              ⠙ github.com/widgets         page 1 · 64 repos
-              ⠹ github.com/@me (personal)  page 2 · 150 repos
-        ");
-    }
-
-    #[test]
-    fn caps_in_flight_lines_to_the_height() {
-        let lines = crowded().lines(80, 8, 0);
-        assert_eq!(lines.len(), 7, "h - 1 rows: {lines:?}");
-        insta::assert_snapshot!(lines.join("\n"), @r"
-            Syncing 20 repositories  [1/20]
-              ✓ 0 done · 1 failed
-              ✗ acme/broken  not a fast-forward
-              ⠋ acme/repo0
-              ⠙ acme/repo1
-              ⠹ acme/repo2
-              … and 7 more
-        ");
-    }
-
-    #[test]
-    fn tiny_heights_never_exceed_h_minus_one_rows() {
-        let view = crowded();
-        for h in 0..=8 {
-            let lines = view.lines(80, h, 0);
-            assert!(
-                lines.len() <= usize::from(h.saturating_sub(1)).max(1),
-                "h={h}: {lines:?}"
-            );
-        }
-        insta::assert_snapshot!(frame(&view, 80, 3, 0), @r"
-            Syncing 20 repositories  [1/20]
-              ✓ 0 done · 1 failed · 10 running
-        ");
-        insta::assert_snapshot!(frame(&view, 80, 4, 0), @r"
-            Syncing 20 repositories  [1/20]
-              ✓ 0 done · 1 failed · 10 running
-              ✗ acme/broken  not a fast-forward
-        ");
-        let mut fresh = ProgressView::new("t", false);
-        start(&mut fresh, 0, "a");
-        start(&mut fresh, 1, "b");
-        insta::assert_snapshot!(frame(&fresh, 80, 3, 0), @r"
-            t
-              … and 2 more
-        ");
-    }
-
-    #[test]
-    fn long_lines_are_truncated_to_the_width() {
-        let lines = example(false).lines(30, 24, 0);
-        assert!(lines.iter().all(|l| display_width(l) <= 29), "{lines:?}");
-        insta::assert_snapshot!(lines.join("\n"), @r"
-            Updating 12 sources across …
-              ✓ 6 done · 1 failed
-              ✗ ghe.corp.com/infra     …
-              ⠋ github.com/acme        …
-              ⠙ github.com/widgets     …
-              ⠹ github.com/@me (persona…
-        ");
-    }
-
-    #[test]
-    fn wide_text_is_measured_in_columns() {
-        let mut view = ProgressView::new("同期しています", false);
-        start(&mut view, 0, "acme/a");
-        fail(&mut view, 0, "致命的: リモートリポジトリが見つかりません");
-        let lines = view.lines(40, 24, 0);
-        assert!(lines.iter().all(|l| display_width(l) <= 39), "{lines:?}");
-        insta::assert_snapshot!(lines.join("\n"), @r"
-            同期しています
-              ✓ 0 done · 1 failed
-              ✗ acme/a  致命的: リモートリポジト…
-        ");
-    }
-
-    #[test]
-    fn control_characters_never_reach_the_display() {
-        let mut view = ProgressView::new("ti\ttle\n", true);
-        start(&mut view, 0, "acme/\ra");
-        fail(&mut view, 0, "fatal: x\nhint: y\r\tz\x1b[2J");
-        start(&mut view, 1, "acme/b\x07\u{2028}\u{202e}");
-        let mut text = view.lines(80, 24, 0).join("\n");
-        text.push_str(&view.summary_line().expect("ran"));
-        for sgr in ["\x1b[1m", "\x1b[31m", "\x1b[32m", "\x1b[36m", "\x1b[0m"] {
-            text = text.replace(sgr, "");
-        }
-        assert_eq!(text.lines().count(), 4, "{text:?}");
-        assert!(
-            !text.chars().any(|c| crate::text::is_unsafe(c) && c != '\n'),
-            "{text:?}"
-        );
-    }
-
-    #[test]
-    fn no_color_output_has_no_escapes_and_color_output_does() {
-        let plain = frame(&example(false), 80, 24, 0);
-        assert!(!plain.contains('\x1b'));
-        assert!(!example(false).summary_line().expect("ran").contains('\x1b'));
-        insta::assert_snapshot!(frame(&example(true), 80, 24, 0).replace('\x1b', "^["), @r"
-            ^[[1mUpdating 12 sources across 2 domains  [7/12]^[[0m
-              ^[[32m✓^[[0m 6 done · 1 failed
-              ^[[31m✗^[[0m ghe.corp.com/infra         HTTP 502 (kept 41 cached repos)
-              ^[[36m⠋^[[0m github.com/acme            page 3 · 280 repos
-              ^[[36m⠙^[[0m github.com/widgets         page 1 · 64 repos
-              ^[[36m⠹^[[0m github.com/@me (personal)  page 2 · 150 repos
-        ");
-    }
-
-    #[test]
-    fn summary_line_totals_tasks_repos_and_failures() {
-        let mut view = example(false);
-        ok(&mut view, 7, Some(1004));
-        ok(&mut view, 8, None);
-        insta::assert_snapshot!(view.summary_line().expect("ran"), @r"✓ 9 sources · 1,604 repos · 1 failed");
-        insta::assert_snapshot!(
-            example(true).summary_line().expect("ran").replace('\x1b', "^["),
-            @r"^[[32m✓^[[0m 7 sources · 600 repos · 1 failed"
-        );
-    }
-
-    #[test]
-    fn summary_line_omits_repos_when_none_were_counted() {
-        let mut view = ProgressView::new("Syncing…", false);
-        view.apply(sync_header(2));
-        start(&mut view, 0, "acme/a");
-        ok(&mut view, 0, None);
-        start(&mut view, 1, "acme/b");
-        fail(&mut view, 1, "dirty");
-        insta::assert_snapshot!(view.summary_line().expect("ran"), @r"✓ 2 repositories · 1 failed");
-    }
-
-    #[test]
-    fn all_failed_summary_without_a_header_uses_a_cross() {
-        let mut view = ProgressView::new("x", false);
-        start(&mut view, 0, "a");
-        fail(&mut view, 0, "boom");
-        insta::assert_snapshot!(view.summary_line().expect("ran"), @r"✗ 1 finished · 1 failed");
-    }
-
-    #[test]
-    fn warnings_and_unknown_ids_do_not_disturb_the_view() {
-        let mut view = ProgressView::new("t", false);
-        view.apply(UiEvent::Warn("w".to_owned()));
-        page(&mut view, 5, 1, 1);
-        assert_eq!(view.lines(80, 24, 0), vec!["t".to_owned()]);
-        ok(&mut view, 5, Some(1));
-        assert_eq!(
-            view.summary_line().as_deref(),
-            Some("✓ 1 finished · 1 repo")
-        );
-    }
-
-    #[test]
-    fn sink_delivers_events_in_order() {
-        let (sink, rx) = ProgressSink::channel();
-        sink.send(UiEvent::Warn("a".to_owned()));
-        sink.warn("b");
-        drop(sink);
-        let got: Vec<UiEvent> = rx.iter().collect();
-        assert_eq!(
-            got,
-            vec![UiEvent::Warn("a".to_owned()), UiEvent::Warn("b".to_owned())]
-        );
-    }
-
-    #[test]
-    fn sink_ignores_a_closed_receiver() {
-        let (sink, rx) = ProgressSink::channel();
-        drop(rx);
-        sink.warn("nobody is listening");
     }
 }
