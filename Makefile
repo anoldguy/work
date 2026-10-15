@@ -18,7 +18,6 @@ test:
 doctest:
 	cargo test --locked --doc
 
-# Definition of done
 check: fmt-check lint test doctest
 
 deny:

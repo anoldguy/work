@@ -1,5 +1,4 @@
-//! The per-repo pipeline (fetch, facts, classify, fast-forward) and the
-//! bounded `sync_all`.
+//! Fetching and fast-forwarding one repo, or many in parallel.
 
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -11,8 +10,7 @@ use crate::pool::run_bounded;
 use crate::progress::{Noun, Step, Tasks, Verb};
 use crate::sync::SyncError;
 
-/// One repo for [`sync_all`]: where it is and the domain git authenticates
-/// for when fetching it.
+/// One repo for [`sync_all`].
 #[derive(Debug)]
 pub struct SyncTarget<'t> {
     /// The repo's path relative to `work_dir`.
@@ -30,10 +28,8 @@ pub struct SyncReport {
     pub outcome: SyncOutcome,
 }
 
-/// Fetches `repo` (authenticating for `domain`), reads its facts,
-/// classifies, and fast-forwards when the plan says so, reporting each step
-/// to `on_step`. Every failure becomes `SyncOutcome::Error` (one line); this
-/// never returns early.
+/// Fetches `repo` and fast-forwards it when safe, reporting each step to
+/// `on_step`; every failure becomes `SyncOutcome::Error`.
 #[must_use]
 pub fn pull_one(
     git: &dyn Git,
@@ -63,7 +59,6 @@ pub fn pull_one(
 }
 
 /// The `SomeFailed` error for `reports`, or `None` when no repo errored.
-/// `failed` holds the relative paths of the errored repos, sorted.
 #[must_use]
 pub fn failures(reports: &[SyncReport]) -> Option<SyncError> {
     let mut failed: Vec<PathBuf> = reports
@@ -81,9 +76,7 @@ pub fn failures(reports: &[SyncReport]) -> Option<SyncError> {
     })
 }
 
-/// Runs [`pull_one`] over `repos` with `jobs` workers, reporting a `Header`
-/// and one task per repo to `tasks`. Each repo is fetched with its own
-/// [`SyncTarget::domain`]. Results are sorted by relative path.
+/// Runs [`pull_one`] over `repos` with `jobs` workers; results are sorted by path.
 #[must_use]
 pub fn sync_all(
     git: &dyn Git,
