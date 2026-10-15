@@ -13,16 +13,11 @@ use crate::domain::{Domain, Org};
 /// Loads and validates `locations.config_file`. A missing file yields the
 /// defaults (no domains).
 ///
-/// Parses once: text into a `toml_edit::DocumentMut`, the unquoted
-/// dotted-domain check on that document, then
-/// `toml_edit::de::from_document(doc)` into a `ConfigFile` (which consumes
-/// the document; nothing here needs it afterwards).
-///
 /// # Errors
 ///
 /// [`ConfigError::Read`], [`ConfigError::Parse`],
-/// [`ConfigError::NestedDomainTable`], or a validation error from
-/// `Config::from_file`.
+/// [`ConfigError::NestedDomainTable`], [`ConfigError::DomainCase`], or a
+/// validation error.
 pub fn load(locations: &Locations) -> Result<Config, ConfigError> {
     let path = &locations.config_file;
     let file = match read_to_string(path)? {
@@ -131,13 +126,8 @@ fn first_subtable(table: &dyn TableLike) -> Option<(&str, &dyn TableLike)> {
 }
 
 /// An editable config document that keeps the user's comments and layout.
-///
-/// Used by `config default`, `favorite` and `setup`. Edits only touch the
-/// keys they name; [`ConfigDoc::save`] writes atomically. It parses the file
-/// itself rather than sharing [`load`]'s document: `load` consumes its
-/// document when deserialising, and an edit must start from the file as it
-/// is on disk now. Domain tables are found by their canonical (lowercase)
-/// name; `load` rejects any other spelling.
+/// Edits touch only the keys they name; domain tables are found by their
+/// lowercase name.
 #[derive(Debug)]
 pub struct ConfigDoc {
     path: PathBuf,
@@ -255,8 +245,7 @@ impl ConfigDoc {
         Ok(())
     }
 
-    /// Writes the document atomically (temp file in the same directory,
-    /// fsync, rename), creating the directory if needed.
+    /// Writes the document atomically, creating the directory if needed.
     ///
     /// # Errors
     ///

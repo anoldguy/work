@@ -1,5 +1,4 @@
-//! The repository cache: model, merge, file store, concurrent fetch, and the
-//! freshness policy that ties them together.
+//! The repository cache.
 
 pub mod fetch;
 pub mod merge;
@@ -15,8 +14,7 @@ use std::path::PathBuf;
 /// A cache failure. Paths render with `{:?}` to stay on one line.
 #[derive(Debug, thiserror::Error)]
 pub enum CacheError {
-    /// No readable cache file (missing or corrupt), in a mode that does not
-    /// refresh (`pull`).
+    /// No readable cache file, in a mode that does not refresh.
     #[error("no usable repository cache (run 'work update')")]
     Missing,
     /// Writing, renaming, or creating the cache directory failed.
@@ -33,8 +31,7 @@ pub enum CacheError {
         /// The `serde_json` error (single-line).
         source: serde_json::Error,
     },
-    /// A refresh failed for every domain; nothing was written. The per-domain
-    /// causes were already printed as warnings.
+    /// A refresh failed for every domain; nothing was written.
     #[error("could not fetch repositories from any domain (see the warnings above)")]
     AllFailed,
 }

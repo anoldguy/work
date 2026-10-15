@@ -1,5 +1,4 @@
-//! The concurrent fetch: domains in parallel, then every listing job in one
-//! bounded pool across all domains, each a `gh api` call.
+//! The concurrent repository fetch through `gh`.
 
 use std::collections::{BTreeMap, HashSet};
 use std::num::NonZeroUsize;
@@ -25,7 +24,7 @@ pub struct FetchPlan<'c> {
     pub include: &'c [Org],
     /// Global `exclude_orgs`.
     pub exclude: &'c [Org],
-    /// `update --all-orgs`.
+    /// Ignore favourite orgs.
     pub all_orgs: bool,
 }
 
@@ -78,16 +77,16 @@ enum Prepared {
 struct Ready {
     viewer: Org,
     orgs: Vec<Org>,
-    /// Owners filtered out (see `DomainOutcome::Fetched::deselected`).
+    /// Owners filtered out.
     deselected: Vec<Org>,
 }
 
 /// What one pool job lists.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum JobKind {
-    /// `user_repos`: owner and collaborator repos.
+    /// The viewer's owner and collaborator repos.
     Personal,
-    /// `org_repos` for this org.
+    /// One org's repos.
     Org(Org),
 }
 
@@ -119,19 +118,12 @@ struct Gathered {
     orgs: Vec<(Org, OrgOutcome)>,
 }
 
-/// Fetches everything in `plan` through `gh`.
+/// Fetches everything in `plan` through `gh`, one outcome per domain in plan
+/// order.
 ///
-/// First the domain phase, with the domains in parallel (up to
-/// [`FETCH_JOBS`] at once, so one unreachable host does not hold up the
-/// others): `viewer`, `member_orgs`, `select_orgs`. A failure there makes
-/// that domain `DomainOutcome::Failed` and warns. Then, when there is at
-/// least one job, sets the header total (every job, the personal ones
-/// included, as `Noun::Sources` defines, across the domains in `plan`), and
-/// runs one personal job per ready domain plus every selected org through
-/// `pool::run_bounded` with [`FETCH_JOBS`] workers. Each job is a task whose
-/// detail is its running repo count. Failed jobs and skipped lines warn.
-///
-/// The outcomes are in plan order.
+/// Domains are prepared in parallel so one unreachable host does not hold up
+/// the others; then every listing job, across all domains, shares one pool of
+/// [`FETCH_JOBS`] workers.
 #[must_use]
 pub fn fetch_all(plan: &FetchPlan<'_>, gh: &dyn Gh, tasks: &Tasks) -> Vec<DomainOutcome> {
     // Each result carries its own domain (cloned to cross the worker
@@ -226,8 +218,8 @@ fn in_selection_order(
     orgs
 }
 
-/// The domain phase for one domain, on a pool worker. It sends nothing; the
-/// caller warns about failures.
+/// The domain phase for one domain, on a pool worker. It reports nothing, so
+/// warnings can be emitted in domain order.
 fn prepare_domain(plan: &FetchPlan<'_>, dp: &DomainPlan<'_>, gh: &dyn Gh) -> Result<Ready, String> {
     let domain = &dp.domain;
     let viewer = gh.viewer(domain).map_err(|e| e.to_string())?;
@@ -254,8 +246,7 @@ fn prepare_domain(plan: &FetchPlan<'_>, dp: &DomainPlan<'_>, gh: &dyn Gh) -> Res
     })
 }
 
-/// Runs one job on a pool worker and returns its result under its key. It
-/// reports only through `tasks`.
+/// Runs one job on a pool worker and returns its result under its key.
 fn run_job(job: &JobKey, gh: &dyn Gh, tasks: &Tasks) -> (JobKey, OrgOutcome) {
     let label = job.label();
     let task = tasks.start(&label);
