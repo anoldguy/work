@@ -1,5 +1,4 @@
-//! `frecency.json`: repo and query frecency. Every change is a
-//! read-modify-write under `frecency.json.lock`.
+//! `frecency.json`: repo and query frecency on disk.
 
 use std::fs;
 use std::io;
@@ -24,7 +23,7 @@ pub const FRECENCY_VERSION: u32 = 1;
 pub const RETENTION: Duration = Duration::from_hours(365 * 24);
 
 /// Repo and query frecency: the contents of `frecency.json` minus its
-/// version. A missing map reads as empty.
+/// version.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct History {
     /// Repo frecency, keyed by slug.
@@ -64,8 +63,7 @@ struct Peek {
 /// render with `{:?}` to stay on one line.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Problem {
-    /// The file has a version this build does not know. It is left alone
-    /// and frecency is read-only.
+    /// The file has a version this build does not know; it is left alone.
     #[error("{path:?} has unknown version {version}; frecency is read-only for this run")]
     UnknownVersion {
         /// The file.
@@ -73,8 +71,7 @@ pub enum Problem {
         /// The version it declares.
         version: u32,
     },
-    /// The file exists but cannot be read (permissions, I/O). It is left
-    /// alone and frecency is read-only.
+    /// The file exists but cannot be read; it is left alone.
     #[error("cannot read {path:?} ({reason}); frecency is read-only for this run")]
     Unreadable {
         /// The file.
@@ -82,9 +79,8 @@ pub enum Problem {
         /// Why (one line).
         reason: String,
     },
-    /// The file is not valid frecency JSON. It was renamed to
-    /// `frecency.json.corrupt` (unless that failed) and history starts
-    /// empty.
+    /// The file is not valid frecency JSON; it was moved aside (best effort)
+    /// and history starts empty.
     #[error(
         "{path:?} is unparsable ({reason}); moved it to {FRECENCY_FILE}.corrupt and started a new history"
     )]
@@ -159,12 +155,9 @@ fn quarantine(path: &Path) {
     let _ = fs::rename(path, &to);
 }
 
-/// The history in `dir`, and the problem to warn about, if any. A missing
-/// file is an empty history. An unknown version or an unreadable file is an
-/// empty history plus [`Problem::UnknownVersion`] or [`Problem::Unreadable`],
-/// and the file is left alone. An unparsable file is renamed to
-/// `frecency.json.corrupt` under the lock (once a re-read confirms it is
-/// still unparsable) and is an empty history plus [`Problem::Corrupt`].
+/// The history in `dir`, and the problem to warn about, if any; any problem
+/// comes with an empty history. An unparsable file is moved aside under the
+/// lock, only once a re-read confirms it is still unparsable.
 #[must_use]
 pub fn load(dir: &Path) -> (History, Option<Problem>) {
     let path = frecency_file(dir);
@@ -216,9 +209,7 @@ fn lock(dir: &Path) -> Option<fs::File> {
 /// each other's accesses.
 ///
 /// A file of unknown version or one that cannot be read is never
-/// overwritten: nothing is written and the result carries
-/// [`Problem::UnknownVersion`] or [`Problem::Unreadable`]. An unparsable
-/// file is quarantined first and the result carries [`Problem::Corrupt`].
+/// overwritten; nothing is written and the problem is returned.
 ///
 /// # Errors
 ///

@@ -10,15 +10,14 @@ use crate::domain::{Domain, Org, Repo, StoredTime};
 pub enum OrgOutcome {
     /// The repos fetched.
     Fetched(Vec<Repo>),
-    /// Why it failed (one line). Previous repos are carried forward.
+    /// Why it failed (one line).
     Failed(String),
 }
 
 /// The result of refreshing one domain.
 #[derive(Debug)]
 pub enum DomainOutcome {
-    /// The domain could not be refreshed at all (no token, `viewer` or org
-    /// listing failed). All its previous repos are carried forward.
+    /// The domain could not be refreshed at all.
     Failed {
         /// The domain.
         domain: Domain,
@@ -33,19 +32,15 @@ pub enum DomainOutcome {
         viewer: Org,
         /// The personal job: owner and collaborator repos.
         personal: OrgOutcome,
-        /// Every selected org and its outcome. Orgs not listed here are
-        /// filtered out and dropped from the cache.
+        /// Every selected org and its outcome.
         orgs: Vec<(Org, OrgOutcome)>,
-        /// Member and extra orgs that were not selected. When the personal
-        /// job fails, their previous repos are not carried forward (nor are
-        /// those of owners the global filters reject; see [`merge`]). The
-        /// viewer's own repos always are.
+        /// Member and extra orgs that were not selected.
         deselected: Vec<Org>,
     },
 }
 
 /// True when `outcomes` is empty, or every domain is `Failed` or `Fetched`
-/// with the personal job and every org failed. Refresh writes nothing then.
+/// with the personal job and every org failed.
 #[must_use]
 pub fn all_failed(outcomes: &[DomainOutcome]) -> bool {
     outcomes.iter().all(|outcome| match outcome {
@@ -72,9 +67,7 @@ enum Carry {
         failed: Vec<Org>,
         /// Orgs fetched successfully.
         fetched: Vec<Org>,
-        /// The personal job failed: previous repos whose owner is the
-        /// viewer, or is in neither `fetched` nor `deselected` and passes
-        /// the global filters, survive.
+        /// The personal job failed.
         personal_failed: bool,
         /// The authenticated login.
         viewer: Org,
@@ -113,15 +106,13 @@ impl Carry {
 /// - A failed org carries forward its previous `(domain, org)` repos.
 /// - A failed personal job carries forward the domain's previous repos whose
 ///   owner is the viewer, or is neither an org fetched successfully in this
-///   run nor a `deselected` owner, and passes the global `filters` (so a
-///   collaborator repo outside `include_orgs` or in `exclude_orgs` is not
-///   kept).
+///   run nor a `deselected` owner, and passes the global `filters`.
 /// - A failed domain carries forward all its previous repos.
 /// - Domains not in `configured` and orgs no longer selected are dropped.
 /// - Repos are de-duplicated by slug; the org-phase copy wins.
 /// - A configured domain with no outcome keeps its previous repos.
 /// - `updated_at` is `now` unless [`all_failed`] holds for `outcomes`; then
-///   the previous timestamp is kept (refresh writes nothing in that case).
+///   the previous timestamp is kept.
 #[must_use]
 pub fn merge(
     prev: Option<Cache>,
@@ -292,7 +283,6 @@ mod tests {
         }
     }
 
-    /// A previous cache holding `slugs`.
     fn prev(slugs: &[&str]) -> Cache {
         Cache::new(slugs.iter().map(|s| repo(s, "old")).collect(), t(BEFORE))
     }
