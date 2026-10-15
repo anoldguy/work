@@ -349,7 +349,6 @@ favorite_orgs = ["my-team", "my-company"]
 [domains."github.enterprise.com"]
 favorite_orgs = ["team-a", "team-b"]
 extra_orgs = ["partner-team", "shared-infra"]
-api_url = "https://ghe.example.com/api/v3"
 "#;
 
     const COMMENTED: &str = r#"# my config
@@ -400,14 +399,6 @@ extra_orgs = ["y"]
         assert_eq!(config.default_domain(), Some(&domain("github.com")));
         assert_eq!(config.domains().len(), 2);
         assert_eq!(config.filters().include_orgs, vec![org("my-team")]);
-        let bases = config.api_bases();
-        assert_eq!(
-            bases
-                .get(&domain("github.enterprise.com"))
-                .map(crate::domain::ApiUrl::as_str),
-            Some("https://ghe.example.com/api/v3")
-        );
-        assert_eq!(bases.len(), 1);
     }
 
     #[test]
@@ -496,14 +487,6 @@ extra_orgs = ["y"]
         let err = load(&locations).expect_err("type");
         assert_matches!(&err, ConfigError::Parse { .. });
         assert!(!err.to_string().contains('\n'), "{err:?}");
-    }
-
-    #[test]
-    fn invalid_api_url_is_rejected() {
-        let (_dir, locations) = setup(Some(
-            "[domains.\"a.com\"]\napi_url = \"http://example.com\"\n",
-        ));
-        assert_matches!(load(&locations), Err(ConfigError::Parse { .. }));
     }
 
     #[test]

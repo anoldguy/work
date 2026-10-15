@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::config::{ConfigError, ExpandedPath, Locations};
-use crate::domain::{ApiUrl, Domain, Org};
+use crate::domain::{Domain, Org};
 
 /// The domain used when none is configured, so `work cd foo` works before
 /// `work setup` has run.
@@ -56,9 +56,6 @@ pub struct DomainConfig {
     /// Orgs fetched in addition to the user's memberships.
     #[serde(default)]
     pub extra_orgs: Vec<Org>,
-    /// REST API base override; computed by `github::api_base` when absent.
-    #[serde(default)]
-    pub api_url: Option<ApiUrl>,
 }
 
 /// The validated configuration.
@@ -172,15 +169,6 @@ impl Config {
     #[must_use]
     pub const fn default_domain(&self) -> Option<&Domain> {
         self.default.as_ref()
-    }
-
-    /// The configured `api_url` overrides, for `HttpGitHub::new`.
-    #[must_use]
-    pub fn api_bases(&self) -> BTreeMap<Domain, ApiUrl> {
-        self.domains
-            .iter()
-            .filter_map(|(domain, cfg)| Some((domain.clone(), cfg.api_url.clone()?)))
-            .collect()
     }
 }
 
@@ -306,14 +294,5 @@ mod tests {
     fn marked_domain_is_the_default() {
         let c = build(with_domains(&[("a.com", false), ("b.com", true)])).expect("config");
         assert_eq!(c.default_domain(), Some(&domain("b.com")));
-    }
-
-    #[test]
-    fn api_bases_lists_only_configured_overrides() {
-        let mut file = with_domains(&[("a.com", false), ("b.com", false)]);
-        let url = ApiUrl::try_from("http://127.0.0.1:9".to_owned()).expect("url");
-        file.domains.get_mut(&domain("b.com")).expect("b").api_url = Some(url.clone());
-        let bases = build(file).expect("config").api_bases();
-        assert_eq!(bases, BTreeMap::from([(domain("b.com"), url)]));
     }
 }

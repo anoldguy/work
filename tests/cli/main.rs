@@ -4,7 +4,6 @@ mod about;
 mod auth;
 mod completions;
 mod config;
-mod github_client;
 mod invariants;
 mod list;
 mod meta;

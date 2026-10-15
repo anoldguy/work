@@ -1,54 +1,41 @@
-//! Wire shapes of the GitHub REST responses `work` reads, and their
-//! validation into domain types.
+//! One line of `gh api --jq '.[] | {name, owner: .owner.login, clone_url,
+//! html_url}'` output, and its validation into a [`Repo`].
 //!
-//! Unknown fields are ignored. Conversion is where an entry that fails
-//! validation is rejected (and counted as skipped by the client).
+//! Unknown fields are ignored. Validation is where an entry is rejected (and
+//! counted as skipped by the caller).
 
 use serde::Deserialize;
 
 use crate::domain::{CloneUrl, Domain, HtmlUrl, NameError, Org, Repo, RepoName, Slug};
 
-/// `GET /user` and the `owner` of a repo.
+/// The `--jq` filter every repo listing uses: one object per line.
+pub const REPO_JQ: &str = ".[] | {name, owner: .owner.login, clone_url, html_url}";
+
+/// One line as gh prints it.
 #[derive(Debug, Deserialize)]
-pub struct UserDto {
-    /// The login.
-    pub login: String,
+struct RepoLine {
+    name: String,
+    owner: String,
+    clone_url: String,
+    html_url: String,
 }
 
-/// One entry of `GET /user/orgs`.
-#[derive(Debug, Deserialize)]
-pub struct OrgDto {
-    /// The org login.
-    pub login: String,
+/// Parses and validates one output line into a [`Repo`] on `domain`. `None`
+/// when the line is not the expected JSON or fails validation.
+#[must_use]
+pub fn parse_repo_line(line: &[u8], domain: &Domain) -> Option<Repo> {
+    let line: RepoLine = serde_json::from_slice(line).ok()?;
+    line.into_repo(domain).ok()
 }
 
-/// One entry of a repo listing.
-#[derive(Debug, Deserialize)]
-pub struct RepoDto {
-    /// Repository name.
-    pub name: String,
-    /// Owner (user or org).
-    pub owner: UserDto,
-    /// HTTPS clone URL.
-    pub clone_url: String,
-    /// Web page.
-    pub html_url: String,
-}
-
-impl RepoDto {
+impl RepoLine {
     /// Validates the entry into a [`Repo`] on `domain`. Stricter than the
     /// domain types: API data must have an `https://` `clone_url` and
     /// `html_url`, both on `domain` (`file://`/`ssh://` clone URLs exist only
     /// for local fixtures, and an API response must not be able to point
     /// `git clone` at a local path).
-    ///
-    /// # Errors
-    ///
-    /// A [`NameError`] when any part is invalid, or either URL is not https on
-    /// `domain` (no explicit port) at `/{owner}/{name}` (`.git` for the
-    /// clone URL).
-    pub fn into_repo(self, domain: &Domain) -> Result<Repo, NameError> {
-        let org = Org::try_from(self.owner.login)?;
+    fn into_repo(self, domain: &Domain) -> Result<Repo, NameError> {
+        let org = Org::try_from(self.owner)?;
         let name = RepoName::try_from(self.name)?;
         let repo_path = format!("/{org}/{name}");
         let clone_url = api_clone_url(self.clone_url, domain, &repo_path)?;
@@ -110,36 +97,35 @@ fn api_clone_url(raw: String, domain: &Domain, repo_path: &str) -> Result<CloneU
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches;
-
-    use super::{RepoDto, UserDto};
-    use crate::domain::{Domain, NameError};
+    use super::parse_repo_line;
+    use crate::domain::Domain;
 
     fn dom() -> Domain {
         "github.com".parse().unwrap()
     }
 
-    fn dto(clone_url: &str, html_url: &str) -> RepoDto {
-        RepoDto {
-            name: "widget".to_owned(),
-            owner: UserDto {
-                login: "Acme".to_owned(),
-            },
-            clone_url: clone_url.to_owned(),
-            html_url: html_url.to_owned(),
-        }
+    fn line(name: &str, owner: &str, clone_url: &str, html_url: &str) -> Vec<u8> {
+        serde_json::json!({
+            "name": name, "owner": owner, "clone_url": clone_url, "html_url": html_url,
+        })
+        .to_string()
+        .into_bytes()
     }
 
-    fn good() -> RepoDto {
-        dto(
-            "https://github.com/Acme/widget.git",
-            "https://github.com/Acme/widget",
-        )
+    fn urls(clone_url: &str, html_url: &str) -> Vec<u8> {
+        line("widget", "Acme", clone_url, html_url)
     }
 
     #[test]
-    fn valid_entry_becomes_a_repo_on_the_domain() {
-        let repo = good().into_repo(&dom()).unwrap();
+    fn valid_line_becomes_a_repo_on_the_domain() {
+        let repo = parse_repo_line(
+            &urls(
+                "https://github.com/Acme/widget.git",
+                "https://github.com/Acme/widget",
+            ),
+            &dom(),
+        )
+        .unwrap();
         assert_eq!(repo.slug.to_string(), "github.com/Acme/widget");
         assert_eq!(
             repo.clone_url.as_str(),
@@ -160,11 +146,8 @@ mod tests {
             "https://tok@github.com/x.git",
             "-oProxyCommand=x",
         ] {
-            assert_matches!(
-                dto(bad, "https://github.com/Acme/widget").into_repo(&dom()),
-                Err(NameError::CloneUrl { .. }),
-                "{bad:?}"
-            );
+            let parsed = parse_repo_line(&urls(bad, "https://github.com/Acme/widget"), &dom());
+            assert!(parsed.is_none(), "{bad:?}");
         }
     }
 
@@ -195,50 +178,41 @@ mod tests {
                 "https://github.com/Acme/widget.git",
                 "https://github.com/Acme/widget/x",
             ),
+            ("https://github.com/Acme/widget.git", "javascript:alert(1)"),
         ];
         for (clone, html) in cases {
-            assert_matches!(
-                dto(clone, html).into_repo(&dom()),
-                Err(NameError::CloneUrl { .. } | NameError::HtmlUrl { .. }),
+            assert!(
+                parse_repo_line(&urls(clone, html), &dom()).is_none(),
                 "{clone:?} {html:?}"
             );
         }
-        let ok = dto(
+        let ok = urls(
             "https://GitHub.com/acme/WIDGET.git",
             "https://github.com/ACME/widget",
         );
-        assert!(ok.into_repo(&dom()).is_ok());
+        assert!(parse_repo_line(&ok, &dom()).is_some());
     }
 
     #[test]
-    fn html_url_must_be_https_on_the_domain() {
-        for bad in [
-            "http://github.com/Acme/widget",
-            "https://evil.com/Acme/widget",
-            "javascript:alert(1)",
-        ] {
-            assert_matches!(
-                dto("https://github.com/Acme/widget.git", bad).into_repo(&dom()),
-                Err(NameError::HtmlUrl { .. }),
-                "{bad:?}"
-            );
+    fn invalid_names_and_malformed_lines_are_rejected() {
+        let url = |o: &str, n: &str| {
+            (
+                format!("https://github.com/{o}/{n}.git"),
+                format!("https://github.com/{o}/{n}"),
+            )
+        };
+        let (c, h) = url("acme", "..");
+        assert!(parse_repo_line(&line("..", "acme", &c, &h), &dom()).is_none());
+        let (c, h) = url("-x", "w");
+        assert!(parse_repo_line(&line("w", "-x", &c, &h), &dom()).is_none());
+        for junk in [&b""[..], b"not json", b"{\"name\":\"w\"}", b"[1,2]"] {
+            assert!(parse_repo_line(junk, &dom()).is_none());
         }
-    }
-
-    #[test]
-    fn invalid_names_are_rejected() {
-        let mut bad = good();
-        bad.name = "../x".to_owned();
-        assert_matches!(bad.into_repo(&dom()), Err(NameError::RepoName { .. }));
-        let mut bad = good();
-        bad.owner.login = "-x".to_owned();
-        assert_matches!(bad.into_repo(&dom()), Err(NameError::Org { .. }));
     }
 
     #[test]
     fn unknown_fields_are_ignored() {
-        let json = r#"{"name":"w","owner":{"login":"a","id":1},"clone_url":"https://github.com/a/w.git","html_url":"https://github.com/a/w","private":true}"#;
-        let dto: RepoDto = serde_json::from_str(json).unwrap();
-        assert!(dto.into_repo(&dom()).is_ok());
+        let json = br#"{"name":"w","owner":"a","clone_url":"https://github.com/a/w.git","html_url":"https://github.com/a/w","private":true}"#;
+        assert!(parse_repo_line(json, &dom()).is_some());
     }
 }

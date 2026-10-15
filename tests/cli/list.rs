@@ -111,7 +111,7 @@ fn complete_without_cache_is_silent() {
 
 #[test]
 fn stale_cache_is_refreshed_before_listing() {
-    use crate::support::{DomainCfg, Response};
+    use crate::support::{DomainCfg, repo_line};
     let env = TestEnv::new();
     env.config()
         .domain(DomainCfg::new("github.com").default_domain())
@@ -120,14 +120,12 @@ fn stale_cache_is_refreshed_before_listing() {
         .repos(&[RepoSeed::new("github.com/acme/old")])
         .stale()
         .write();
-    let api = env.api.host("github.com");
-    api.route("/user", Response::json(r#"{"login":"me"}"#));
-    api.route("/user/orgs", Response::json("[]"));
-    api.route(
-        "/user/repos",
-        Response::json(
-            r#"[{"name":"fresh","owner":{"login":"me"},"clone_url":"https://github.com/me/fresh.git","html_url":"https://github.com/me/fresh","private":false}]"#,
-        ),
+    env.gh.set_api("github.com", "user", &["me".to_owned()]);
+    env.gh.set_api("github.com", "user/orgs", &[]);
+    env.gh.set_api(
+        "github.com",
+        "user/repos",
+        &[repo_line("github.com", "me", "fresh")],
     );
     let out = env.command().arg("list").output().unwrap();
     assert!(
