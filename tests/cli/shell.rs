@@ -1,5 +1,4 @@
-//! The wrapper from `work activate`, loaded the documented way in bash, zsh
-//! and fish, and the one-line stdout protocol it relies on.
+//! The `work activate` wrapper in real bash, zsh and fish.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};

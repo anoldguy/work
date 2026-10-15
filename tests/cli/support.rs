@@ -1,5 +1,4 @@
-//! A hermetic home for one test: real `git`, a fake `gh` on `PATH`, and
-//! logging editor and opener scripts.
+//! A hermetic home for one test.
 //!
 //! ```text
 //! <root>/home          HOME, the command's cwd; work_dir is home/code
@@ -144,7 +143,6 @@ impl TestEnv {
         cmd
     }
 
-    /// Writes `config.toml` verbatim.
     pub fn config(&self, toml: &str) {
         write(&self.config_path(), toml);
     }
@@ -388,7 +386,6 @@ pub fn wait_for<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
     }
 }
 
-/// Every directory under `root`, sorted.
 pub fn dirs_under(root: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut stack = vec![root.to_path_buf()];

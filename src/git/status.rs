@@ -1,4 +1,4 @@
-//! Parser for `git status --porcelain=v2 --branch` (pure).
+//! Parser for `git status --porcelain=v2 --branch`.
 
 use crate::core::sync_outcome::{RepoFacts, Upstream};
 use crate::git::GitError;
@@ -9,7 +9,6 @@ fn bad(detail: &str) -> GitError {
     }
 }
 
-/// Parses `+A -B` from a `# branch.ab` header value.
 fn parse_ab(value: &str) -> Option<(u32, u32)> {
     let (a, b) = value.split_once(' ')?;
     Some((
@@ -18,13 +17,11 @@ fn parse_ab(value: &str) -> Option<(u32, u32)> {
     ))
 }
 
-/// Parses porcelain v2 output: `# branch.head` (a name or `(detached)`),
-/// `# branch.upstream`, and `# branch.ab +A -B`; any entry line (including
-/// `?` untracked) means dirty. A configured upstream that no longer exists
-/// has no `branch.ab` line and is reported as [`Upstream::None`].
+/// Parses porcelain v2 output; any entry line means dirty, and an upstream
+/// that no longer exists (no `branch.ab` line) is [`Upstream::None`].
 ///
-/// Callers must run `git status --porcelain=v2 --branch
-/// --untracked-files=normal` so user config cannot hide untracked files.
+/// Callers must pass `--untracked-files=normal` so user config cannot hide
+/// untracked files.
 ///
 /// # Errors
 ///

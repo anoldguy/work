@@ -1,4 +1,4 @@
-//! One smoke test per spec'd command behaviour nothing else covers.
+//! Smoke tests for individual commands.
 
 use std::fs;
 

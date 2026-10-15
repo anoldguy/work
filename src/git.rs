@@ -1,9 +1,4 @@
-//! The `git` subprocess seam and pure parsers for its output.
-//!
-//! Every git child runs with `LC_ALL=C`, `GIT_TERMINAL_PROMPT=0`,
-//! `GIT_OPTIONAL_LOCKS=0` and `-c protocol.ext.allow=never`; clone and fetch
-//! authenticate through `gh auth git-credential`, scoped to the repo's
-//! domain.
+//! Git access through the `git` CLI, and parsers for its output.
 
 pub mod runner;
 pub mod status;
@@ -16,8 +11,7 @@ use std::path::Path;
 use crate::core::sync_outcome::RepoFacts;
 use crate::domain::{CloneUrl, Domain};
 
-/// What `work` asks of git. `Sync` because sync workers share one
-/// `&dyn Git` across scoped threads.
+/// What `work` asks of git.
 pub trait Git: Sync + Debug {
     /// `git clone <url> <dest>`, authenticating through `gh` for `host`;
     /// `dest`'s parent already exists.
@@ -27,17 +21,14 @@ pub trait Git: Sync + Debug {
     /// Any [`GitError`]; a failed clone leaves no partial `dest` behind.
     fn clone_repo(&self, url: &CloneUrl, dest: &Path, host: &Domain) -> Result<(), GitError>;
 
-    /// `git fetch --quiet` in `repo` (no remote named, so git uses the
-    /// branch's own remote, falling back to `origin`), authenticating
-    /// through `gh` for `host`.
+    /// `git fetch --quiet` in `repo`, authenticating through `gh` for `host`.
     ///
     /// # Errors
     ///
     /// Any [`GitError`].
     fn fetch(&self, repo: &Path, host: &Domain) -> Result<(), GitError>;
 
-    /// One `git status --porcelain=v2 --branch --untracked-files=normal`,
-    /// parsed by [`status::parse_v2`].
+    /// The branch, upstream and dirty state of `repo`.
     ///
     /// # Errors
     ///

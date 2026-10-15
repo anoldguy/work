@@ -1,6 +1,3 @@
-# The terminal has one owner (`ui::Ui`) and every child process is built by
-# `proc::command`. Exemptions are scoped `#[expect(..., reason = "...")]`.
-
 disallowed-macros = [
     { path = "std::print", reason = "write through ui::Ui" },
     { path = "std::println", reason = "write through ui::Ui" },
