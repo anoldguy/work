@@ -17,6 +17,7 @@ use crate::commands::resolve::{Target, ensure_cloned, record_access, resolve_tar
 use crate::env::EnvSnapshot;
 use crate::error::Error;
 use crate::platform::{self, EditorCmd};
+use crate::proc::Interactive;
 use crate::shell::{self, ShellError};
 use crate::ui::Ui;
 
@@ -79,9 +80,7 @@ pub fn on(app: &App, ui: &mut Ui, args: &ResolveArgs, via: Invocation) -> Result
 /// The current directory is unreadable, or the editor fails.
 pub fn sh_editor(env: &EnvSnapshot, ui: &mut Ui) -> Result<ExitCode, Error> {
     let dir = std::env::current_dir().map_err(|source| ShellError::CurrentDir { source })?;
-    // The editor inherits stdout: pending output must land first.
-    ui.flush()?;
-    platform::spawn_editor(&EditorCmd::from_env(env), &dir)?;
+    platform::spawn_editor(&mut Interactive::new(ui)?, &EditorCmd::from_env(env), &dir)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -104,9 +103,11 @@ fn wrapped_target(app: &App, ui: &mut Ui, query: &str, pick: bool) -> Result<Exi
 /// Resolution, clone, editor, or cache failures.
 pub fn edit(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Error> {
     let (cache, target) = prepare(app, ui, args, Local::Clone)?;
-    // The editor inherits stdout: pending output must land first.
-    ui.flush()?;
-    platform::spawn_editor(&EditorCmd::from_env(&app.env), &target.path)?;
+    platform::spawn_editor(
+        &mut Interactive::new(ui)?,
+        &EditorCmd::from_env(&app.env),
+        &target.path,
+    )?;
     record_access(app, ui, &cache, &target);
     Ok(ExitCode::SUCCESS)
 }
@@ -134,7 +135,6 @@ pub fn clone(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Err
 /// Only on a broken [`Target`] invariant (see [`Target::repo`]).
 pub fn browse(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Error> {
     let (cache, target) = prepare(app, ui, args, Local::NotNeeded)?;
-    ui.flush()?;
     platform::open_url(&target.repo(&cache.repos).html_url)?;
     record_access(app, ui, &cache, &target);
     Ok(ExitCode::SUCCESS)
@@ -147,7 +147,6 @@ pub fn browse(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Er
 /// Resolution, clone, opener, or cache failures.
 pub fn open(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Error> {
     let (cache, target) = prepare(app, ui, args, Local::Clone)?;
-    ui.flush()?;
     platform::open_dir(&target.path)?;
     record_access(app, ui, &cache, &target);
     Ok(ExitCode::SUCCESS)

@@ -185,7 +185,7 @@ pub(crate) fn short_name(slug: &Slug, default: Option<&Domain>) -> String {
 ///
 /// # Errors
 ///
-/// [`Error::CreateDir`], a stdout flush failure, or the git failure.
+/// [`Error::CreateDir`] or the git failure.
 ///
 /// # Panics
 ///
@@ -202,8 +202,6 @@ pub fn ensure_cloned(
     }
     let repo = target.repo(&cache.repos);
     let domain = repo.slug.domain();
-    // Pending stdout must land before git (which may inherit it) runs.
-    ui.flush()?;
     let created = match target.path.parent() {
         Some(parent) => {
             let missing = missing_dirs(parent);

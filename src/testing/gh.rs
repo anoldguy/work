@@ -5,6 +5,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::domain::{Domain, Org, Repo};
 use crate::gh::{Gh, GhError};
+use crate::proc::Interactive;
 
 /// One recorded `auth` call.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -273,7 +274,7 @@ impl Gh for FakeGh {
         self.list(host, Endpoint::OrgRepos(org.clone()), repos, on_repo)
     }
 
-    fn auth_status(&self, host: &Domain) -> Result<(), GhError> {
+    fn auth_status(&self, _term: &mut Interactive<'_>, host: &Domain) -> Result<(), GhError> {
         self.record("status", host);
         match lock(&self.tokens).get(host) {
             Some(Ok(_)) => Ok(()),
@@ -286,7 +287,7 @@ impl Gh for FakeGh {
         }
     }
 
-    fn login(&self, host: &Domain) -> Result<(), GhError> {
+    fn login(&self, _term: &mut Interactive<'_>, host: &Domain) -> Result<(), GhError> {
         self.record("login", host);
         if let Some(token) = self.after_login.get(host) {
             lock(&self.tokens).insert(host.clone(), Ok(token.clone()));
@@ -297,7 +298,7 @@ impl Gh for FakeGh {
         Ok(())
     }
 
-    fn logout(&self, host: &Domain) -> Result<(), GhError> {
+    fn logout(&self, _term: &mut Interactive<'_>, host: &Domain) -> Result<(), GhError> {
         self.record("logout", host);
         lock(&self.tokens).remove(host);
         lock(&self.viewers).remove(host);
@@ -328,15 +329,15 @@ impl Gh for std::sync::Arc<FakeGh> {
         (**self).org_repos(host, org, on_repo)
     }
 
-    fn auth_status(&self, host: &Domain) -> Result<(), GhError> {
-        (**self).auth_status(host)
+    fn auth_status(&self, term: &mut Interactive<'_>, host: &Domain) -> Result<(), GhError> {
+        (**self).auth_status(term, host)
     }
 
-    fn login(&self, host: &Domain) -> Result<(), GhError> {
-        (**self).login(host)
+    fn login(&self, term: &mut Interactive<'_>, host: &Domain) -> Result<(), GhError> {
+        (**self).login(term, host)
     }
 
-    fn logout(&self, host: &Domain) -> Result<(), GhError> {
-        (**self).logout(host)
+    fn logout(&self, term: &mut Interactive<'_>, host: &Domain) -> Result<(), GhError> {
+        (**self).logout(term, host)
     }
 }

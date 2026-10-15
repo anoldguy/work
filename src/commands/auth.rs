@@ -6,6 +6,7 @@ use crate::app::App;
 use crate::domain::Domain;
 use crate::error::Error;
 use crate::gh::{Gh, GhError};
+use crate::proc::Interactive;
 use crate::ui::Ui;
 
 /// `auth login`: `gh auth login --hostname <domain>` with stdio inherited.
@@ -15,8 +16,7 @@ use crate::ui::Ui;
 ///
 /// gh failures; a broken pipe.
 pub fn login(gh: &dyn Gh, ui: &mut Ui, domain: &Domain) -> Result<ExitCode, Error> {
-    ui.flush()?;
-    gh.login(domain)?;
+    gh.login(&mut Interactive::new(ui)?, domain)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -27,8 +27,7 @@ pub fn login(gh: &dyn Gh, ui: &mut Ui, domain: &Domain) -> Result<ExitCode, Erro
 ///
 /// gh failures; a broken pipe.
 pub fn logout(gh: &dyn Gh, ui: &mut Ui, domain: &Domain) -> Result<ExitCode, Error> {
-    ui.flush()?;
-    gh.logout(domain)?;
+    gh.logout(&mut Interactive::new(ui)?, domain)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -40,10 +39,10 @@ pub fn logout(gh: &dyn Gh, ui: &mut Ui, domain: &Domain) -> Result<ExitCode, Err
 ///
 /// A missing `gh`; a broken pipe.
 pub fn status(app: &App, ui: &mut Ui) -> Result<ExitCode, Error> {
+    let mut term = Interactive::new(ui)?;
     let mut failed = false;
     for domain in &app.config.effective_domains() {
-        ui.flush()?;
-        match app.gh.auth_status(domain) {
+        match app.gh.auth_status(&mut term, domain) {
             Ok(()) => {}
             Err(GhError::Failed { .. }) => failed = true,
             Err(err) => return Err(err.into()),

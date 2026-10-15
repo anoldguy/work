@@ -16,11 +16,13 @@ pub use terminal::{Screen, TerminalGuard};
 
 use std::fmt;
 use std::io::{self, BufWriter, IsTerminal, Write};
+use std::sync::Arc;
 
 use indicatif::{MultiProgress, ProgressDrawTarget};
 
 use crate::env::EnvSnapshot;
 use crate::progress::Tasks;
+use terminal::{Backend, Crossterm};
 
 /// How stderr is used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,15 +42,23 @@ pub struct Ui {
     /// Live progress: stderr in `Tty` mode, hidden in `Plain` mode.
     progress: MultiProgress,
     interact: Box<dyn Interaction>,
+    backend: Arc<dyn Backend>,
 }
 
 impl Ui {
     /// The real terminal: `Tty` iff stderr is a terminal; colour iff `Tty`
-    /// and not `NO_COLOR`; a [`TtyInteraction`].
+    /// and not `NO_COLOR`; a [`TtyInteraction`], interactive iff `Tty` and
+    /// stdin is a terminal.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the terminal owner holds the process's stdout and stderr"
+    )]
     #[must_use]
     pub fn new(env: &EnvSnapshot) -> Self {
         // `TERM=dumb` terminals (Emacs shell, some CI ptys) cannot redraw.
         let tty = io::stderr().is_terminal() && env.term.as_deref() != Some("dumb");
+        let backend: Arc<dyn Backend> = Arc::new(Crossterm::new(io::stderr()));
+        let interactive = tty && io::stdin().is_terminal();
         Self {
             mode: if tty { Mode::Tty } else { Mode::Plain },
             color: tty && !env.no_color,
@@ -59,7 +69,12 @@ impl Ui {
             } else {
                 ProgressDrawTarget::hidden()
             }),
-            interact: Box::new(TtyInteraction::for_env(env)),
+            interact: Box::new(TtyInteraction::new(
+                Box::new(io::stderr()),
+                interactive,
+                Arc::clone(&backend),
+            )),
+            backend,
         }
     }
 
@@ -93,6 +108,7 @@ impl Ui {
             err,
             progress: MultiProgress::with_draw_target(ProgressDrawTarget::hidden()),
             interact,
+            backend: Arc::new(terminal::fake::FakeBackend::default()),
         }
     }
 
@@ -183,6 +199,11 @@ impl Ui {
         let result = f(ending.tasks);
         drop(ending);
         result
+    }
+
+    /// Runs `f` with any live progress display cleared, redrawing it after.
+    pub(crate) fn suspend_progress<R>(&mut self, f: impl FnOnce() -> R) -> R {
+        self.progress.suspend(f)
     }
 
     /// Sets where live progress draws (tests).

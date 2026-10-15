@@ -14,6 +14,10 @@ use std::io::{self, Write};
 use std::panic;
 use std::process::ExitCode;
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the final error line is written after the Ui is dropped"
+)]
 fn main() -> ExitCode {
     panic::set_hook(Box::new(|info| {
         let payload = info.payload();

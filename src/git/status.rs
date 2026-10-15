@@ -57,14 +57,14 @@ pub fn parse_v2(output: &str) -> Result<RepoFacts, GitError> {
 
 #[cfg(test)]
 mod tests {
+    use crate::proc;
     use std::assert_matches;
     use std::path::Path;
-    use std::process::Command;
 
     use super::*;
 
     fn run_git(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git")
+        let out = proc::command("git")
             .args(args)
             .current_dir(dir)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")

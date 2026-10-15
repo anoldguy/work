@@ -1,7 +1,6 @@
 //! Completion scripts and where `--install` puts them.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::config::Locations;
 use crate::env::EnvSnapshot;
@@ -188,7 +187,10 @@ pub fn homebrew_prefix(env: &EnvSnapshot) -> Option<PathBuf> {
         return Some(prefix.clone());
     }
     let path = env.path.as_ref()?;
-    let out = proc::run_capture(Command::new("brew").arg("--prefix").env("PATH", path))
+    let out = proc::command("brew")
+        .arg("--prefix")
+        .env("PATH", path)
+        .output()
         .ok()
         .filter(|out| out.status.success())?;
     let text = String::from_utf8(out.stdout).ok()?;
