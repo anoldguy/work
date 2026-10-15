@@ -1,11 +1,11 @@
 //! Learned query-to-repo associations and the "do we need to ask?" decision
 //! (pure). See `specs/query-frecency.md` and PLAN §10 Q5.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::frecency::Frecency;
+use crate::core::frecency::{Frecency, FrecencyData};
 use crate::core::resolve::Resolution;
 use crate::domain::{QueryKey, Repo, Slug, StoredTime};
 
@@ -46,10 +46,11 @@ impl QueryFrecency {
         }
     }
 
-    /// Drops slugs not in `live`, then drops queries left with no slugs.
-    pub fn retain_slugs(&mut self, live: &HashSet<&Slug>) {
+    /// Keeps only the entries for which `keep` returns true, then drops
+    /// queries left with no entries.
+    pub fn retain(&mut self, mut keep: impl FnMut(&Slug, &FrecencyData) -> bool) {
         for history in self.0.values_mut() {
-            history.retain_slugs(live);
+            history.retain(&mut keep);
         }
         self.0.retain(|_, history| !history.is_empty());
     }
@@ -296,19 +297,19 @@ mod tests {
     }
 
     #[test]
-    fn gc_removes_dead_slugs_and_empty_queries() {
+    fn retain_removes_entries_and_empty_queries() {
         let mut qf = history(&[("foobar", 1, NOW), ("foobaz", 1, NOW)]);
         let other = QueryKey::new("bar").unwrap();
         qf.record(&other, &repo("foobaz").slug, t(NOW));
         let bar = repo("foobar").slug;
-        qf.retain_slugs(&HashSet::from([&bar]));
+        qf.retain(|s, _| *s == bar);
         assert!(qf.get(&key()).is_some_and(|f| f.get(&bar).is_some()));
         assert_eq!(
             qf.get(&key()).map(|f| f.get(&repo("foobaz").slug)),
             Some(None)
         );
         assert!(qf.get(&other).is_none());
-        qf.retain_slugs(&HashSet::new());
+        qf.retain(|_, _| false);
         assert!(qf.is_empty());
     }
 }

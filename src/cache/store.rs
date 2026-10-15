@@ -121,52 +121,20 @@ pub fn quarantine(dir: &Path) -> Result<(), CacheError> {
     fs::rename(&from, &to).map_err(|source| CacheError::Write { path: from, source })
 }
 
-/// `{dir}/cache.json.lock`: the advisory lock [`update`] holds.
-fn lock_file(dir: &Path) -> PathBuf {
-    dir.join(format!("{CACHE_FILE}.lock"))
-}
-
-/// Takes the exclusive advisory lock on `{dir}/cache.json.lock`; it is
-/// released when the returned file is dropped. Best effort: `None` when the
-/// lock file cannot be created or the filesystem cannot lock, and the caller
-/// proceeds unlocked (the write itself is still atomic).
-fn lock(dir: &Path) -> Option<fs::File> {
-    fs::create_dir_all(dir).ok()?;
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(lock_file(dir))
-        .ok()?;
-    file.lock().ok()?;
-    Some(file)
-}
-
-/// Read-modify-write under the cache lock, so concurrent `work` processes
-/// never lose each other's changes.
-///
-/// Takes the advisory lock, reloads the newest cache from disk (`None` when
-/// it is missing or corrupt), applies `f`, quarantines a corrupt file,
-/// writes the result atomically, releases the lock, and returns what was
-/// written. Keep slow work (network, clones) out of `f`.
+/// Writes a refreshed `cache` to `dir`, replacing whatever is there. A file
+/// that does not load (corrupt, another version, not a file) is first renamed
+/// to `cache.json.corrupt`. No lock: both possible writers hold a complete
+/// listing, so the last one wins.
 ///
 /// # Errors
 ///
 /// [`CacheError::Write`] or [`CacheError::Encode`] (from the quarantine or
 /// the save).
-pub fn update(dir: &Path, f: impl FnOnce(Option<Cache>) -> Cache) -> Result<Cache, CacheError> {
-    let _lock = lock(dir);
-    let (latest, corrupt) = match load(dir) {
-        LoadOutcome::Loaded(cache) => (Some(cache), false),
-        LoadOutcome::Missing => (None, false),
-        LoadOutcome::Corrupt(_) => (None, true),
-    };
-    let cache = f(latest);
-    if corrupt {
+pub fn replace(dir: &Path, cache: &Cache) -> Result<(), CacheError> {
+    if matches!(load(dir), LoadOutcome::Corrupt(_)) {
         quarantine(dir)?;
     }
-    save(dir, &cache)?;
-    Ok(cache)
+    save(dir, cache)
 }
 
 #[cfg(test)]
@@ -247,14 +215,14 @@ mod tests {
     }
 
     #[test]
-    fn other_version_is_corrupt() {
+    fn a_version_1_cache_with_frecency_is_corrupt() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(
             cache_file(dir.path()),
-            r#"{"version":99,"updated_at":"2025-01-01T00:00:00Z","repos":[]}"#,
+            r#"{"version":1,"updated_at":"2025-01-01T00:00:00Z","repos":[],"frecency":{}}"#,
         )
         .unwrap();
-        assert_matches!(load(dir.path()), LoadOutcome::Corrupt(r) if r.contains("99"));
+        assert_matches!(load(dir.path()), LoadOutcome::Corrupt(r) if r.contains("version 1"));
     }
 
     #[test]
@@ -295,8 +263,8 @@ mod tests {
     #[test]
     fn future_version_with_other_shape_reports_version() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(cache_file(dir.path()), r#"{"version":2,"repos":{"x":1}}"#).unwrap();
-        assert_matches!(load(dir.path()), LoadOutcome::Corrupt(r) if r.contains("version 2"));
+        fs::write(cache_file(dir.path()), r#"{"version":3,"repos":{"x":1}}"#).unwrap();
+        assert_matches!(load(dir.path()), LoadOutcome::Corrupt(r) if r.contains("version 3"));
     }
 
     #[test]
@@ -346,89 +314,13 @@ mod tests {
     }
 
     #[test]
-    fn update_sees_the_latest_cache_and_saves_the_result() {
-        let dir = tempfile::tempdir().unwrap();
-        save(dir.path(), &Cache::new(vec![repo("one")], t(1))).unwrap();
-        let written = update(dir.path(), |latest| {
-            let mut cache = latest.expect("loaded");
-            cache.repos.push(repo("two"));
-            cache
-        })
-        .unwrap();
-        assert_eq!(written.repos.len(), 2);
-        assert_matches!(load(dir.path()), LoadOutcome::Loaded(c) if c == written);
-    }
-
-    #[test]
-    fn update_starts_from_none_when_missing() {
-        let dir = tempfile::tempdir().unwrap();
-        let sub = dir.path().join("a");
-        let mut seen = None;
-        update(&sub, |latest| {
-            seen = Some(latest.is_none());
-            Cache::new(vec![], t(1))
-        })
-        .unwrap();
-        assert_eq!(seen, Some(true));
-        assert_matches!(load(&sub), LoadOutcome::Loaded(_));
-    }
-
-    #[test]
-    fn update_quarantines_a_corrupt_file_before_writing() {
+    fn replace_quarantines_a_corrupt_file_before_writing() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(cache_file(dir.path()), "{bad").unwrap();
-        update(dir.path(), |latest| {
-            assert!(latest.is_none());
-            Cache::new(vec![], t(1))
-        })
-        .unwrap();
+        replace(dir.path(), &Cache::new(vec![], t(1))).unwrap();
         let corrupt = dir.path().join("cache.json.corrupt");
         assert_eq!(fs::read_to_string(corrupt).unwrap(), "{bad");
         assert_matches!(load(dir.path()), LoadOutcome::Loaded(_));
-    }
-
-    #[test]
-    fn interleaved_writers_lose_nothing() {
-        const ROUNDS: u32 = 40;
-        let dir = tempfile::tempdir().unwrap();
-        save(dir.path(), &Cache::new(vec![repo("a"), repo("b")], t(1))).unwrap();
-        let slug = |name: &str| repo(name).slug;
-        std::thread::scope(|s| {
-            for name in ["a", "b"] {
-                let path = dir.path();
-                s.spawn(move || {
-                    for _ in 0..ROUNDS {
-                        update(path, |latest| {
-                            let mut cache = latest.expect("loaded");
-                            cache.frecency.record(&slug(name), t(2));
-                            cache
-                        })
-                        .unwrap();
-                    }
-                });
-            }
-        });
-        let LoadOutcome::Loaded(cache) = load(dir.path()) else {
-            panic!("cache should load");
-        };
-        for name in ["a", "b"] {
-            assert_eq!(
-                cache.frecency.get(&slug(name)).map(|d| d.access_count),
-                Some(ROUNDS)
-            );
-        }
-    }
-
-    #[test]
-    fn update_leaves_only_the_cache_and_its_lock() {
-        let dir = tempfile::tempdir().unwrap();
-        update(dir.path(), |_| Cache::new(vec![], t(1))).unwrap();
-        let mut names: Vec<_> = fs::read_dir(dir.path())
-            .unwrap()
-            .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .collect();
-        names.sort();
-        assert_eq!(names, ["cache.json", "cache.json.lock"]);
     }
 
     proptest! {

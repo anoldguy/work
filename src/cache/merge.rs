@@ -1,12 +1,8 @@
 //! Folding fetch results into the previous cache (pure, infallible).
 
-use std::collections::HashSet;
-
 use crate::cache::{CACHE_VERSION, Cache};
 use crate::config::Filters;
-use crate::core::frecency::Frecency;
 use crate::core::org_filter::passes_filters;
-use crate::core::query_frecency::QueryFrecency;
 use crate::domain::{Domain, Org, Repo, StoredTime};
 
 /// The result of fetching one org's repos (or a domain's personal repos).
@@ -124,8 +120,6 @@ impl Carry {
 /// - Domains not in `configured` and orgs no longer selected are dropped.
 /// - Repos are de-duplicated by slug; the org-phase copy wins.
 /// - A configured domain with no outcome keeps its previous repos.
-/// - Frecency and query frecency are moved out of `prev` (no clones) and
-///   garbage-collected against the merged repo list.
 /// - `updated_at` is `now` unless [`all_failed`] holds for `outcomes`; then
 ///   the previous timestamp is kept (refresh writes nothing in that case).
 #[must_use]
@@ -192,20 +186,11 @@ pub fn merge(
         }
     }
 
-    let (prev_repos, mut frecency, mut query_frecency, prev_updated_at) = match prev {
+    let (prev_repos, prev_updated_at) = match prev {
         Some(Cache {
-            repos,
-            frecency,
-            query_frecency,
-            updated_at,
-            ..
-        }) => (repos, frecency, query_frecency, Some(updated_at)),
-        None => (
-            Vec::new(),
-            Frecency::default(),
-            QueryFrecency::default(),
-            None,
-        ),
+            repos, updated_at, ..
+        }) => (repos, Some(updated_at)),
+        None => (Vec::new(), None),
     };
 
     let carried = prev_repos.into_iter().filter(|repo| {
@@ -227,12 +212,6 @@ pub fn merge(
     repos.sort_by(|a, b| a.slug.cmp(&b.slug));
     repos.dedup_by(|later, earlier| later.slug == earlier.slug);
 
-    {
-        let live: HashSet<_> = repos.iter().map(|r| &r.slug).collect();
-        frecency.retain_slugs(&live);
-        query_frecency.retain_slugs(&live);
-    }
-
     let updated_at = match prev_updated_at {
         Some(previous) if !success => previous,
         _ => now,
@@ -241,8 +220,6 @@ pub fn merge(
         version: CACHE_VERSION,
         updated_at,
         repos,
-        frecency,
-        query_frecency,
     }
 }
 
@@ -251,7 +228,7 @@ mod tests {
     use std::assert_matches;
 
     use super::*;
-    use crate::domain::{CloneUrl, HtmlUrl, QueryKey, Slug};
+    use crate::domain::{CloneUrl, HtmlUrl, Slug};
 
     const NOW: i64 = 2_000_000;
     const BEFORE: i64 = 1_000_000;
@@ -315,17 +292,9 @@ mod tests {
         }
     }
 
-    /// A previous cache holding `slugs`, each with repo frecency and query
-    /// history under its own repo name as the query.
+    /// A previous cache holding `slugs`.
     fn prev(slugs: &[&str]) -> Cache {
-        let mut c = Cache::new(slugs.iter().map(|s| repo(s, "old")).collect(), t(BEFORE));
-        for s in slugs {
-            let sl = slug(s);
-            c.frecency.record(&sl, t(BEFORE));
-            c.query_frecency
-                .record(&QueryKey::new(sl.name().as_str()).unwrap(), &sl, t(BEFORE));
-        }
-        c
+        Cache::new(slugs.iter().map(|s| repo(s, "old")).collect(), t(BEFORE))
     }
 
     fn slugs(c: &Cache) -> Vec<String> {
@@ -404,7 +373,6 @@ mod tests {
                 "github.com/me/dots"
             ]
         );
-        assert!(c.frecency.is_empty() && c.query_frecency.is_empty());
     }
 
     #[test]
@@ -423,7 +391,6 @@ mod tests {
             t(NOW),
         );
         assert_eq!(slugs(&c), ["github.com/acme/a"]);
-        assert_matches!(c.frecency.get(&slug("github.com/beta/b")), None);
     }
 
     fn filters(include: &[&str], exclude: &[&str]) -> Filters {
@@ -607,8 +574,6 @@ mod tests {
             slugs(&c),
             ["ghe.example/acme/a", "ghe.example/me/b", "github.com/me/x"]
         );
-        assert_matches!(c.frecency.get(&slug("ghe.example/acme/a")), Some(_));
-        assert_matches!(c.frecency.get(&slug("github.com/acme/old")), None);
     }
 
     #[test]
@@ -626,10 +591,6 @@ mod tests {
             t(NOW),
         );
         assert_eq!(slugs(&c), ["github.com/acme/a"]);
-        assert_matches!(c.frecency.get(&slug("ghe.example/acme/a")), None);
-        let history = c.query_frecency.get(&QueryKey::new("a").unwrap());
-        assert_matches!(history, Some(h) if h.get(&slug("ghe.example/acme/a")).is_none()
-            && h.get(&slug("github.com/acme/a")).is_some());
     }
 
     #[test]
@@ -647,8 +608,6 @@ mod tests {
             t(NOW),
         );
         assert_eq!(slugs(&c), ["github.com/acme/a"]);
-        assert_matches!(c.frecency.get(&slug("github.com/beta/b")), None);
-        assert_matches!(c.query_frecency.get(&QueryKey::new("b").unwrap()), None);
     }
 
     #[test]
@@ -666,56 +625,6 @@ mod tests {
             t(NOW),
         );
         assert_eq!(slugs(&c), ["ghe.example/acme/a", "github.com/me/x"]);
-    }
-
-    #[test]
-    fn frecency_preserved_for_survivors() {
-        let p = prev(&["github.com/acme/a"]);
-        let c = merge(
-            Some(p),
-            vec![domain_ok(
-                "github.com",
-                fetched(&[]),
-                vec![("acme", fetched(&["github.com/acme/a"]))],
-            )],
-            &gh(),
-            &Filters::default(),
-            t(NOW),
-        );
-        let a = slug("github.com/acme/a");
-        assert_matches!(
-            c.frecency.get(&a),
-            Some(d) if d.access_count == 1 && d.last_access == t(BEFORE)
-        );
-        let history = c.query_frecency.get(&QueryKey::new("a").unwrap());
-        assert_matches!(history, Some(h) if h.get(&a).is_some());
-    }
-
-    #[test]
-    fn gc_drops_dead_slugs_and_empty_queries() {
-        let mut p = prev(&["github.com/acme/a", "github.com/acme/gone"]);
-        let shared = QueryKey::new("acme").unwrap();
-        p.query_frecency
-            .record(&shared, &slug("github.com/acme/a"), t(BEFORE));
-        p.query_frecency
-            .record(&shared, &slug("github.com/acme/gone"), t(BEFORE));
-        let c = merge(
-            Some(p),
-            vec![domain_ok(
-                "github.com",
-                fetched(&[]),
-                vec![("acme", fetched(&["github.com/acme/a"]))],
-            )],
-            &gh(),
-            &Filters::default(),
-            t(NOW),
-        );
-        let gone = slug("github.com/acme/gone");
-        assert_matches!(c.frecency.get(&gone), None);
-        assert_matches!(c.query_frecency.get(&QueryKey::new("gone").unwrap()), None);
-        let h = c.query_frecency.get(&shared);
-        assert_matches!(h, Some(h) if h.get(&gone).is_none()
-            && h.get(&slug("github.com/acme/a")).is_some());
     }
 
     #[test]
@@ -773,7 +682,6 @@ mod tests {
         );
         assert_eq!(c.updated_at, t(BEFORE));
         assert_eq!(slugs(&c), ["github.com/acme/a"]);
-        assert_matches!(c.frecency.get(&slug("github.com/acme/a")), Some(_));
     }
 
     #[test]

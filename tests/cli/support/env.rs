@@ -131,6 +131,12 @@ impl TestEnv {
         self.home().join(".local/state/work/cache.json")
     }
 
+    /// `<XDG_STATE_HOME>/work/frecency.json`.
+    #[must_use]
+    pub fn frecency_path(&self) -> PathBuf {
+        self.home().join(".local/state/work/frecency.json")
+    }
+
     /// Where the clone for `slug` (`domain/org/repo`) lives under
     /// `work_dir`: `<work_dir>/<org>/<repo>` for the default domain of the
     /// config last written with [`ConfigSeed::write`], else
@@ -200,7 +206,8 @@ impl TestEnv {
         write_file(&self.config_path(), text);
     }
 
-    /// Starts a cache to seed (repos, staleness, frecency); call `.write()`.
+    /// Starts a cache to seed (repos, staleness, and the frecency in
+    /// `frecency.json`); call `.write()`.
     #[must_use]
     pub fn cache(&self) -> CacheSeed<'_> {
         CacheSeed {
@@ -430,7 +437,8 @@ impl ConfigSeed<'_> {
     }
 }
 
-/// Builder for `cache.json`; created by [`TestEnv::cache`].
+/// Builder for `cache.json` (and `frecency.json` when frecency is seeded);
+/// created by [`TestEnv::cache`].
 #[derive(Debug)]
 pub struct CacheSeed<'e> {
     env: &'e TestEnv,
@@ -496,7 +504,8 @@ impl CacheSeed<'_> {
         self
     }
 
-    /// Writes `cache.json`, creating the state directory.
+    /// Writes `cache.json`, creating the state directory, and
+    /// `frecency.json` when any frecency was seeded.
     pub fn write(&self) {
         let entry = |count: u32, last: &str| json!({ "access_count": count, "last_access": last });
         let repos: Vec<Value> = self
@@ -528,13 +537,19 @@ impl CacheSeed<'_> {
             .clone()
             .unwrap_or_else(|| jiff::Timestamp::now().to_string());
         let cache = json!({
-            "version": 1,
+            "version": 2,
             "updated_at": updated_at,
             "repos": repos,
-            "frecency": frecency,
-            "query_frecency": query_frecency,
         });
         write_file(&self.env.cache_path(), &cache.to_string());
+        if !frecency.is_empty() || !query_frecency.is_empty() {
+            let history = json!({
+                "version": 1,
+                "frecency": frecency,
+                "query_frecency": query_frecency,
+            });
+            write_file(&self.env.frecency_path(), &history.to_string());
+        }
     }
 }
 
@@ -728,7 +743,7 @@ mod tests {
                 .expect("json")
         };
         let cache = read(&env);
-        assert_eq!(cache["version"], 1);
+        assert_eq!(cache["version"], 2);
         assert_eq!(
             cache["repos"][0]["clone_url"],
             "https://github.com/acme/app.git"
@@ -751,6 +766,11 @@ mod tests {
             .write();
         let cache = read(&env);
         assert_eq!(cache["updated_at"], STALE_TIME);
+        assert_eq!(cache.get("frecency"), None);
+        let cache: Value =
+            serde_json::from_str(&fs::read_to_string(env.frecency_path()).expect("frecency"))
+                .expect("json");
+        assert_eq!(cache["version"], 1);
         assert_eq!(cache["frecency"]["github.com/acme/app"]["access_count"], 4);
         assert_eq!(
             cache["frecency"]["github.com/acme/app"]["last_access"],
