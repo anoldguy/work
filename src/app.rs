@@ -12,7 +12,6 @@ use crate::ui::Ui;
 /// borrow `app.ui` mutably while sharing `&*app.gh` with workers.
 ///
 /// `now` is read once here and passed down; nothing else reads the clock.
-/// `Debug` is safe to print (the token redacts itself).
 #[derive(Debug)]
 pub struct App {
     /// The environment snapshot.

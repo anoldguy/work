@@ -16,7 +16,6 @@ use std::io::{self, BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
 use std::thread;
 
-use crate::auth::SecretToken;
 use crate::domain::{Domain, Org, Repo};
 use crate::proc;
 
@@ -24,15 +23,6 @@ use crate::proc;
 /// one `&dyn Gh` across scoped threads; implemented by [`ProcessGh`] and by
 /// test fakes.
 pub trait Gh: Sync + Debug {
-    /// `gh auth token --hostname <host>`. `Ok(None)` when gh has no token
-    /// for the host. Used only by the git paths that still pass a token.
-    ///
-    /// # Errors
-    ///
-    /// [`GhError::NotInstalled`] when `gh` is not on `PATH`, or
-    /// [`GhError::Failed`] for any other failure.
-    fn auth_token(&self, host: &Domain) -> Result<Option<SecretToken>, GhError>;
-
     /// `gh api --hostname <host> user --jq .login`: the authenticated login.
     ///
     /// # Errors
@@ -100,10 +90,6 @@ pub trait Gh: Sync + Debug {
 pub struct ProcessGh;
 
 impl Gh for ProcessGh {
-    fn auth_token(&self, host: &Domain) -> Result<Option<SecretToken>, GhError> {
-        token_via(OsStr::new(GH), host)
-    }
-
     fn viewer(&self, host: &Domain) -> Result<Org, GhError> {
         viewer_via(OsStr::new(GH), host)
     }
@@ -315,36 +301,6 @@ fn repos_via(
     Ok(skipped)
 }
 
-/// Runs `<program> auth token --hostname <host>`.
-fn token_via(program: &OsStr, host: &Domain) -> Result<Option<SecretToken>, GhError> {
-    let mut cmd = gh_command(program, false);
-    cmd.args(["auth", "token", "--hostname", host.as_str()]);
-    let out = proc::run_capture(&mut cmd).map_err(|e| map_spawn(&e))?;
-    if out.status.success() {
-        let text = std::str::from_utf8(&out.stdout).unwrap_or_default();
-        if text.trim().is_empty() {
-            return Ok(None);
-        }
-        return SecretToken::new(text)
-            .map(Some)
-            .ok_or_else(|| GhError::Failed {
-                action: "token",
-                host: host.clone(),
-                detail: "gh printed an unusable token".to_owned(),
-            });
-    }
-    let detail = proc::one_line(&out.stderr);
-    let lower = detail.to_lowercase();
-    if lower.contains("no oauth token") || lower.contains("not logged in") {
-        return Ok(None);
-    }
-    Err(GhError::Failed {
-        action: "token",
-        host: host.clone(),
-        detail,
-    })
-}
-
 /// Runs `<program> auth <action> --hostname <host>` with inherited stdio.
 fn interactive_via(program: &OsStr, action: &'static str, host: &Domain) -> Result<(), GhError> {
     let mut cmd = gh_command(program, true);
@@ -506,23 +462,8 @@ mod tests {
     }
 
     #[test]
-    fn token_is_read_from_stdout_and_trimmed() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let gh = shim(
-            dir.path(),
-            "gh",
-            r#"[ "$1 $2 $3 $4" = "auth token --hostname github.com" ] && echo gho_abc"#,
-        );
-        let token = token_via(gh.as_os_str(), &host())
-            .expect("ok")
-            .expect("some");
-        assert_eq!(token.expose(), "gho_abc");
-    }
-
-    #[test]
     fn missing_gh_is_not_installed() {
         let missing = OsStr::new("/nonexistent/work-no-gh");
-        assert_matches!(token_via(missing, &host()), Err(GhError::NotInstalled));
         assert_matches!(viewer_via(missing, &host()), Err(GhError::NotInstalled));
         assert_matches!(
             interactive_via(missing, "login", &host()),

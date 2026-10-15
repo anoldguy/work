@@ -211,11 +211,11 @@ gh auth login --host github.enterprise.com
 
 Run `gh auth login` once; everything else works.
 
-If `GITHUB_TOKEN` is set, it is used for every domain and `gh` is not consulted. That includes your GitHub Enterprise host, so a token exported for some other tool will be sent there, and an invalid one is a hard error with no fallback to `gh`. Unset it to use your per-host `gh` logins. Check `work auth status` if things seem broken.
+`work` never handles tokens: `gh` makes every API call and answers git's credential requests for each domain. Environment tokens (`GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`) work as `gh` defines them. Check `work auth status` if things seem broken.
 
 ## How It Works
 
-`work` maintains a local JSON cache of repo metadata fetched from the GitHub REST API. `work` makes those HTTPS calls itself; `gh` only supplies the token. When you run `work cd foo`, it:
+`work` maintains a local JSON cache of repo metadata, listed through `gh api`. Usage history (frecency) lives in a separate file next to it. When you run `work cd foo`, it:
 
 1. Fuzzy-matches "foo" against all cached repos
 2. Ranks results by frecency (repos you use often float to the top)

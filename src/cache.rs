@@ -12,8 +12,6 @@ pub use model::{CACHE_FILE, CACHE_VERSION, Cache, STALE_AFTER};
 use std::io;
 use std::path::PathBuf;
 
-use crate::auth::AuthError;
-
 /// A cache failure. Paths render with `{:?}` to stay on one line.
 #[derive(Debug, thiserror::Error)]
 pub enum CacheError {
@@ -39,8 +37,4 @@ pub enum CacheError {
     /// causes were already printed as warnings.
     #[error("could not fetch repositories from any domain (see the warnings above)")]
     AllFailed,
-    /// A needed refresh could not start (an invalid `GITHUB_TOKEN`); nothing
-    /// was fetched or written. Folds into `Error::Auth`.
-    #[error(transparent)]
-    Auth(#[from] AuthError),
 }
