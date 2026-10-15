@@ -34,8 +34,6 @@ Displays a full-screen animated about screen with project branding, version, and
   - `decode`: the logo starts as scrambled glyphs and locks into place column by
     column over 1.6s, then a bright diagonal shimmer sweeps across it every 3s.
     The footer types itself in after the lock completes.
-  - `plasma`: a full-screen sine-field plasma cycling through the hue wheel,
-    with the logo drawn over it in white on a dark box.
   - `dropin`: each logo column falls in from above on a spring, staggered left
     to right, overshoots once and settles; the footer then springs up from below.
 - Every style is time-based rather than frame-counted, so a dropped frame skips

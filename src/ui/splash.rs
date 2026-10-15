@@ -10,7 +10,6 @@ pub mod decode;
 pub mod dropin;
 pub mod frame;
 pub mod logo;
-pub mod plasma;
 pub mod renderer;
 pub mod rng;
 mod run;
@@ -36,12 +35,7 @@ pub trait StyleRun {
 }
 
 /// Every style, in registry order.
-pub static STYLES: &[&dyn Style] = &[
-    &classic::Classic,
-    &decode::Decode,
-    &plasma::Plasma,
-    &dropin::Dropin,
-];
+pub static STYLES: &[&dyn Style] = &[&classic::Classic, &decode::Decode, &dropin::Dropin];
 
 /// The style called `name`, if any.
 #[must_use]
@@ -82,11 +76,6 @@ mod tests {
     #[test]
     fn decode_renders() {
         renders_without_panicking("decode");
-    }
-
-    #[test]
-    fn plasma_renders() {
-        renders_without_panicking("plasma");
     }
 
     #[test]
