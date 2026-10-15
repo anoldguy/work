@@ -1,43 +1,33 @@
 # Authentication
 
-The `work` CLI requires GitHub API tokens to interact with repository data. It does not manage credentials directly — it delegates all credential storage to the GitHub CLI (`gh`).
+The GitHub CLI (`gh`) owns authentication. `work` never reads, stores, or forwards a token.
 
 ## Prerequisites
 
-- The GitHub CLI (`gh`) must be installed and available in `PATH`.
-- The user must have run `gh auth login` for each GitHub domain they want to use, or we will run it for them, wrapping the invocation.
+- `gh` is installed and available in `PATH`.
+- The user is logged in to each GitHub domain they use, through `gh auth login` or `work auth login`.
 
-## Token Resolution
+## How Credentials Are Used
 
-When a token is needed for a given domain, it is resolved in this order:
-
-1. **`GITHUB_TOKEN` environment variable** — If set and non-empty, this token is used for all domains unconditionally.
-2. **GitHub CLI** — The tool runs `gh auth token --hostname <domain>` to retrieve the token for the specific domain.
-
-If `GITHUB_TOKEN` is set but can't be used as a token (it contains whitespace or control characters), the operation fails with an error naming the variable; it does not fall back to `gh`. If neither source provides a token, the operation fails.
-
-## Session Caching
-
-Once a token is successfully resolved for a domain, the result is cached in memory for the lifetime of the process. Subsequent operations against the same domain reuse the cached token without invoking `gh` again.
+- **API calls.** Every GitHub API request is a `gh api --hostname <domain>` call. `gh` picks the credential for that host.
+- **git.** Clones and fetches use `gh auth git-credential` as git's credential helper, scoped to the repository's domain. git asks `gh` for a credential only for that host.
+- **Environment tokens.** `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and `GITHUB_ENTERPRISE_TOKEN` work as `gh` defines them. A github.com token is never sent to an Enterprise host.
 
 ## Auth Commands
 
 ### `work auth login [--domain <domain>]`
 
-Shells out to `gh auth login --hostname <domain>`, letting `gh` handle the interactive authentication flow. Domain defaults to `github.com`.
+Runs `gh auth login --hostname <domain>` with the terminal attached, so `gh` handles the interactive flow. The domain defaults to `github.com`.
 
 ### `work auth logout [--domain <domain>]`
 
-Shells out to `gh auth logout --hostname <domain>`, letting `gh` handle the logout. Domain defaults to `github.com`.
+Runs `gh auth logout --hostname <domain>` with the terminal attached. The domain defaults to `github.com`.
 
 ### `work auth status`
 
-Displays authentication status for every configured domain. For each domain, reports:
-
-- Whether a valid token is available.
-- The token source (`GITHUB_TOKEN` env var or `gh` CLI).
+Runs `gh auth status --hostname <domain>` for every configured domain and shows its output. Exits non-zero if any domain is not logged in.
 
 ## Error Behavior
 
-- **No token available** — Operations requiring the GitHub API (e.g., cache updates) fail with a clear message directing the user to run `gh auth login --hostname <domain>`.
-- **`gh` not installed** — The error message indicates that the GitHub CLI is required and must be installed.
+- **Not logged in, or missing access.** The operation fails with `gh`'s own message, reduced to one line. It names the domain and how to fix it.
+- **`gh` not installed.** The error says the GitHub CLI is required and must be installed.

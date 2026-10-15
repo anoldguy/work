@@ -14,6 +14,6 @@ A CLI tool that organizes and navigates GitHub repositories by mirroring the `do
 
 - No daemon or background process
 - No cloud sync
-- No database — just a flat cache file and config
-- No custom auth — delegates to GitHub CLI (`gh`)
+- No database — flat files only: the config, the repository cache, and the frecency history
+- No credential handling — the GitHub CLI (`gh`) makes every GitHub API call and supplies git's credentials; `work` never sees a token
 - No git library — shells out to `git` for all operations

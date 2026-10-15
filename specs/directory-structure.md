@@ -36,4 +36,4 @@ When cloning a repository, any missing parent directories in the computed path a
 
 ## Repository Detection
 
-A directory is considered a cloned repository if it contains a `.git` subdirectory.
+A directory is a cloned repository if it contains `.git` (a directory, or a file for worktrees and submodules).

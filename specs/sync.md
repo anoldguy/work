@@ -24,6 +24,8 @@ Sync ALL locally-cloned repositories.
 
 - Syncs every repository that is both in the cache and cloned in the work directory (its expected path contains `.git`). Directories under the work directory that are not in the cache are ignored, as are cached repos that aren't cloned.
 - Requires the cache. With no cache, it fails and suggests `work update`.
+- Runs up to 8 repositories at once (`--jobs N` changes this), showing live progress on stderr. Result lines go to stdout, sorted by path.
+- Exits non-zero when any repository errored, after printing every result, and lists the failed repositories.
 - Performs the same fetch + conditional fast-forward on each
 - Reports status for each repository:
   - "pulled (N commits)" — fast-forwarded successfully ("pulled (1 commit)" when N is 1)
@@ -51,8 +53,4 @@ For each repository, the outcome is one of:
 
 ## Authentication
 
-Sync operations use the same auth token resolution as other operations. Tokens are passed to git via HTTP authorization headers for fetching from private repositories.
-
-- `pull`: resolves the token from the repo's domain (known from the cache).
-- `sync`: resolves each repo's token from its domain (known from the cache), the same as `pull`.
-- The token is scoped to `https://<domain>`, so git never sends it to another host, even if `origin` points elsewhere. If no token is available, the fetch proceeds without authentication (may still work for public repos, ssh remotes, or when git has stored credentials).
+git authenticates through `gh` (see [authentication.md](authentication.md)). Each fetch uses `gh auth git-credential` as its credential helper, scoped to the repository's domain from the cache, so git never asks `gh` for another host's credential. A remote that needs no credential (a public repo or an ssh remote) works without one.

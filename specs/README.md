@@ -13,14 +13,16 @@ language-agnostic and implementation-agnostic.
 | [GOAL.md](GOAL.md) | Project purpose and scope |
 | [directory-structure.md](directory-structure.md) | Where repos live on disk, multi-domain paths, default domain |
 | [configuration.md](configuration.md) | Config file, domains, filters, favorites, setup, config commands |
-| [authentication.md](authentication.md) | Token resolution, gh CLI integration, auth commands |
-| [repository-cache.md](repository-cache.md) | Cache contents, staleness, update from GitHub API |
-| [search-resolution.md](search-resolution.md) | Repo queries, fuzzy search, frecency, disambiguation |
+| [authentication.md](authentication.md) | How `gh` provides API access and git credentials, auth commands |
+| [repository-cache.md](repository-cache.md) | Cache contents, staleness, refresh through `gh` |
+| [search-resolution.md](search-resolution.md) | Repo queries, fuzzy search, frecency and its storage, disambiguation |
+| [interactive-selection.md](interactive-selection.md) | The selector for ambiguous queries, and the non-interactive error |
 | [query-frecency.md](query-frecency.md) | Query-level frecency: learned query-to-repo associations for ambiguous queries |
 | [navigation.md](navigation.md) | cd, on, edit, clone, browse, open |
 | [sync.md](sync.md) | pull, sync (fetch + safe fast-forward) |
-| [shell-integration.md](shell-integration.md) | Activation scripts, completions, shell detection |
+| [shell-integration.md](shell-integration.md) | Wrapper function, hidden wrapper commands, completions, shell detection |
 | [self-management.md](self-management.md) | Version, about |
+| [about-easter-egg.md](about-easter-egg.md) | The animated `about` screen |
 
 ## Key Concepts
 
