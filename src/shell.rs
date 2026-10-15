@@ -1,10 +1,5 @@
 //! Shell integration: detection, the `sh-*` path line, activation, and
 //! completions.
-//!
-//! The wrapper scripts in `shell/` are the contract and are embedded
-//! unchanged. `sh-cd`/`sh-on` print data (one absolute path), never shell
-//! code, so they need no shell detection; detection is for `activate`,
-//! `completions` and hints only.
 
 pub mod activate;
 pub mod completions;
@@ -18,14 +13,13 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// The line `sh-cd`/`sh-on` print for `path`: the path made absolute
-/// (against the current directory, without touching the file system).
+/// The line `sh-cd`/`sh-on` print for `path`: the path made absolute.
 ///
 /// # Errors
 ///
 /// [`ShellError::NonUtf8Path`] or [`ShellError::NewlineInPath`], since the
 /// wrapper reads exactly one line of text; [`ShellError::Absolute`] when
-/// the current directory is needed and unavailable.
+/// the current directory is unavailable.
 pub fn path_line(path: &Path) -> Result<String, ShellError> {
     let absolute = std::path::absolute(path).map_err(|source| ShellError::Absolute {
         path: path.to_path_buf(),
@@ -134,8 +128,7 @@ pub enum ShellError {
         /// The I/O error.
         source: io::Error,
     },
-    /// `about --style` with an unknown name. A list error: `valid` is printed
-    /// as `  - <name>` lines after the summary.
+    /// `about --style` with an unknown name.
     #[error("unknown style {given:?} (valid styles are listed below)")]
     UnknownStyle {
         /// The name given.

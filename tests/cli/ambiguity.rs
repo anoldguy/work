@@ -1,5 +1,4 @@
-//! Ambiguous queries: the error without a terminal, `--pick`, and query
-//! frecency settling the answer.
+//! Ambiguous queries.
 
 use std::fs;
 

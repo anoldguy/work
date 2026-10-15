@@ -1,5 +1,4 @@
-//! `frecency.json`: it outlives the listing, and a file `work` cannot use
-//! is never lost.
+//! `frecency.json` outlives the listing and is never lost.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

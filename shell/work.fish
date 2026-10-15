@@ -1,8 +1,5 @@
 # work shell integration for fish: work activate fish | source
-#
-# `work sh-cd` and `work sh-on` print one line, the absolute path of the
-# target directory. The wrapper captures it first and acts on it second, so
-# a failed resolution returns its status and the directory does not change.
+# Capture the path first so a failed lookup returns its status without changing directory.
 function work
     switch "$argv[1]"
         case cd

@@ -23,8 +23,6 @@ complete -c work -n '__fish_work_using_subcommand completions' -f -a 'bash zsh f
     )
 }
 
-/// The bash wrapper: repo names for the first positional of a resolving
-/// command (flags before it are skipped), otherwise clap's `_work`.
 fn bash_hook() -> String {
     format!(
         r#"# Repo names from the cache for commands that resolve a repo.
@@ -53,8 +51,6 @@ _work_with_repos() {{
     )
 }
 
-/// The zsh `_work`: repo names for the first positional of a resolving
-/// command, otherwise clap's function (renamed `_work_clap`).
 fn zsh_hook() -> String {
     format!(
         r#"# Repo names from the cache for commands that resolve a repo.
@@ -102,9 +98,8 @@ fn visible(cmd: &clap::Command) -> clap::Command {
     out
 }
 
-/// The clap-generated script for `shell` plus the repo-name hook
-/// (`work list --complete` in the argument slot of resolving commands).
-/// Hidden subcommands and flags are left out. `cmd` is `Cli::command()`.
+/// The completion script for `shell`, completing repo names for commands
+/// that resolve a repo.
 #[must_use]
 pub fn completion_script(shell: Shell, cmd: &mut clap::Command) -> String {
     let mut buf = Vec::new();
@@ -123,8 +118,6 @@ pub fn completion_script(shell: Shell, cmd: &mut clap::Command) -> String {
     }
 }
 
-/// Inserts the wrapper before clap's `complete` registration and points the
-/// registration at it.
 fn bash_with_hook(base: &str) -> String {
     const REGISTER: &str = "if [[ \"${BASH_VERSINFO[0]}\" -eq 4";
     let hook = bash_hook();
@@ -140,10 +133,8 @@ fn bash_with_hook(base: &str) -> String {
     )
 }
 
-/// Renames clap's `_work` to `_work_clap` and defines the hook as `_work`,
-/// leaving clap's trailing block untouched. That works when sourced
-/// (`compdef _work work`) and when autoloaded from `fpath`, where compsys
-/// keeps calling `_work` after the first run, which is now the hook.
+/// The hook takes the name `_work` because compsys keeps calling `_work`
+/// after an autoloaded first run, so clap's function becomes `_work_clap`.
 fn zsh_with_hook(base: &str) -> String {
     const TRAILER: &str = "if [ \"$funcstack[1]\" = \"_work\" ]; then";
     let renamed = base.replacen("\n_work() {\n", "\n_work_clap() {\n", 1);
@@ -157,9 +148,7 @@ fn zsh_with_hook(base: &str) -> String {
     }
 }
 
-/// The completion file `--install` writes for `shell` (PLAN §10 Q4): fish
-/// under `locations.config_home`; bash/zsh under `homebrew_prefix` when
-/// given, else under `locations.data_home`.
+/// The completion file `--install` writes for `shell`.
 #[must_use]
 pub fn install_path(
     shell: Shell,
@@ -175,9 +164,8 @@ pub fn install_path(
     }
 }
 
-/// macOS only: `$HOMEBREW_PREFIX`, else the output of `brew --prefix` when
-/// `brew` is on `env.path`, else `None`. Always `None` elsewhere, because
-/// distro bash-completion does not read Linuxbrew's directories.
+/// The Homebrew prefix on macOS. Always `None` elsewhere, because distro
+/// bash-completion does not read Linuxbrew's directories.
 #[must_use]
 pub fn homebrew_prefix(env: &EnvSnapshot) -> Option<PathBuf> {
     if !cfg!(target_os = "macos") {

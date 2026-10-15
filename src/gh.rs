@@ -1,10 +1,4 @@
-//! The `gh` subprocess seam: every GitHub API call, plus `auth status`,
-//! `login` and `logout`.
-//!
-//! API calls are `gh api --hostname <domain> …` children whose stdout is
-//! read line by line as it arrives (`--paginate --jq` prints each page as
-//! soon as gh has it). gh owns credentials, pagination and rate limits; a
-//! non-zero exit is reported with gh's own stderr, reduced to one line.
+//! GitHub access through the `gh` CLI.
 
 pub mod repo_line;
 
@@ -21,9 +15,7 @@ use crate::domain::{Domain, Org, Repo};
 use crate::proc::{self, Interactive};
 use crate::text;
 
-/// What `work` asks of the GitHub CLI. `Sync` because fetch workers share
-/// one `&dyn Gh` across scoped threads; implemented by [`ProcessGh`] and by
-/// test fakes.
+/// What `work` asks of the GitHub CLI.
 pub trait Gh: Sync + Debug {
     /// `gh api --hostname <host> user --jq .login`: the authenticated login.
     ///
@@ -128,19 +120,15 @@ impl Gh for ProcessGh {
 
 const GH: &str = "gh";
 
-/// The personal listing: repos the viewer owns or collaborates on.
 fn user_repos_path() -> String {
     "user/repos?affiliation=owner,collaborator&per_page=100".to_owned()
 }
 
-/// Every repo of `org` (`Org` is a validated login, safe in a path).
 fn org_repos_path(org: &Org) -> String {
     format!("orgs/{org}/repos?type=all&per_page=100")
 }
 
-/// A `gh` command with the environment every child gets: no update notice,
-/// no pager, no colour. Captured children also get `GH_PROMPT_DISABLED`;
-/// interactive ones (`auth login` needs its prompts) do not.
+/// Interactive children keep gh's prompts, which `auth login` needs.
 fn gh_command(program: &OsStr, interactive: bool) -> Command {
     let mut cmd = proc::command(program);
     cmd.env("GH_NO_UPDATE_NOTIFIER", "1")
@@ -162,9 +150,7 @@ fn map_spawn(err: &io::Error) -> GhError {
     }
 }
 
-/// Runs `<program> api --hostname <host> <args>`, calling `on_line` with
-/// each stdout line (newline removed) as it arrives. stderr is drained on a
-/// second thread so a chatty child can never block on it.
+/// stderr is drained on a second thread so a chatty child can never block on it.
 fn api_lines(
     program: &OsStr,
     host: &Domain,
@@ -228,7 +214,6 @@ fn api_lines(
     })
 }
 
-/// Feeds every line of `out` to `on_line` without its line ending.
 fn read_lines(out: impl Read, on_line: &mut dyn FnMut(&[u8])) -> io::Result<()> {
     let mut reader = BufReader::new(out);
     let mut line = Vec::new();
@@ -273,7 +258,6 @@ fn member_orgs_via(program: &OsStr, host: &Domain) -> Result<Vec<Org>, GhError> 
     Ok(orgs)
 }
 
-/// Streams a repo listing at `path`; returns the number of skipped lines.
 fn repos_via(
     program: &OsStr,
     host: &Domain,
@@ -298,7 +282,6 @@ fn repos_via(
     Ok(skipped)
 }
 
-/// Runs `<program> auth <action> --hostname <host>` on `term`.
 fn interactive_via(
     term: &mut Interactive<'_>,
     program: &OsStr,
@@ -319,7 +302,7 @@ fn interactive_via(
     }
 }
 
-/// A failure running `gh`. `Clone` so test fakes can script it.
+/// A failure running `gh`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum GhError {
     /// `gh` is not on `PATH`.
@@ -341,9 +324,7 @@ pub enum GhError {
         /// The exit status (gh printed its own message on the terminal).
         detail: String,
     },
-    /// `gh api` exited non-zero (or printed something unusable). The
-    /// message is gh's own, which names the host and the fix; `work` adds
-    /// nothing to it.
+    /// `gh api` exited non-zero or printed something unusable.
     #[error("{detail}")]
     Api {
         /// The host it ran against.
