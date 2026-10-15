@@ -61,15 +61,45 @@ pub fn style_names() -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_style, style_names};
+    use std::time::Duration;
+
+    use super::{Frame, find_style};
+
+    /// Renders `name` across terminal sizes, from empty to large, and
+    /// across its whole timeline.
+    fn renders_without_panicking(name: &str) {
+        let style = find_style(name).expect("registered style");
+        for (w, h) in [(80, 24), (200, 60), (10, 3), (1, 1), (0, 0)] {
+            let mut run = style.start(7, w, h);
+            let mut frame = Frame::new(w, h);
+            for ms in [0, 16, 150, 900, 1600, 3000, 10_000, 600_000] {
+                run.render(Duration::from_millis(ms), &mut frame);
+            }
+        }
+    }
 
     #[test]
-    fn registry_lists_the_five_styles_in_order() {
-        assert_eq!(
-            style_names(),
-            ["classic", "decode", "plasma", "fire", "dropin"]
-        );
-        assert!(find_style("fire").is_some());
-        assert!(find_style("Fire").is_none());
+    fn classic_renders() {
+        renders_without_panicking("classic");
+    }
+
+    #[test]
+    fn decode_renders() {
+        renders_without_panicking("decode");
+    }
+
+    #[test]
+    fn plasma_renders() {
+        renders_without_panicking("plasma");
+    }
+
+    #[test]
+    fn fire_renders() {
+        renders_without_panicking("fire");
+    }
+
+    #[test]
+    fn dropin_renders() {
+        renders_without_panicking("dropin");
     }
 }

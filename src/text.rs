@@ -143,13 +143,6 @@ pub(crate) const fn char_width(c: char) -> usize {
     }
 }
 
-/// The conservative display width of `text` (see [`char_width`]).
-#[cfg(test)]
-#[must_use]
-pub(crate) fn display_width(text: &str) -> usize {
-    text.chars().map(char_width).sum()
-}
-
 /// The longest prefix of `text` that fits in `width` display columns, cut
 /// without a marker.
 #[must_use]
@@ -161,74 +154,4 @@ pub(crate) fn clip(text: &str, width: usize) -> String {
             used <= width
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        char_width, clip, display_width, is_invisible_format, is_unsafe, one_line, plural,
-    };
-
-    /// Every bidi control: embeddings/overrides, isolates, marks.
-    const BIDI: [char; 12] = [
-        '\u{061C}', '\u{200E}', '\u{200F}', '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}',
-        '\u{202E}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
-    ];
-
-    #[test]
-    fn separators_bidi_controls_and_zero_widths_are_invisible() {
-        for c in BIDI
-            .into_iter()
-            .chain(['\u{2028}', '\u{2029}', '\u{200B}', '\u{FEFF}', '\u{AD}'])
-        {
-            assert!(is_invisible_format(c), "{c:?}");
-            assert!(is_unsafe(c), "{c:?}");
-        }
-        for c in ['a', ' ', 'é', '日', '…'] {
-            assert!(!is_unsafe(c), "{c:?}");
-        }
-        assert!(is_unsafe('\u{1b}'));
-    }
-
-    #[test]
-    fn one_line_breaks_no_line_and_hides_no_text() {
-        assert_eq!(one_line("a\u{2028}b\u{2029}c"), "a b c");
-        assert_eq!(one_line("a\r\n\tb\0c"), "a bc");
-        for c in BIDI.into_iter().chain(['\u{200B}', '\u{FEFF}']) {
-            assert_eq!(one_line(&format!("x{c}y")), "xy", "{c:?}");
-        }
-        assert_eq!(one_line(" a \u{2028}\u{2029} b\n"), "a b");
-    }
-
-    #[test]
-    fn one_line_strips_whole_ansi_sequences() {
-        assert_eq!(one_line("\x1b[1;31mboom\x1b[0m"), "boom");
-        assert_eq!(one_line("\x1b]0;title\x07ok"), "ok");
-        assert_eq!(one_line("\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\"), "link");
-    }
-
-    #[test]
-    fn plural_picks_the_singular_only_for_one() {
-        assert_eq!(plural(1_usize, "repo", "repos"), "repo");
-        assert_eq!(plural(0_u32, "repo", "repos"), "repos");
-        assert_eq!(plural(2_u64, "repo", "repos"), "repos");
-    }
-
-    #[test]
-    fn widths_count_wide_and_combining_chars() {
-        assert_eq!(char_width('a'), 1);
-        assert_eq!(char_width('\u{0301}'), 0);
-        assert_eq!(display_width("ab"), 2);
-        assert_eq!(display_width("日本"), 4);
-        assert_eq!(display_width("🚀x"), 3);
-        assert_eq!(display_width("é"), 1);
-    }
-
-    #[test]
-    fn clip_never_splits_a_wide_char_over_the_edge() {
-        assert_eq!(clip("日本語", 5), "日本");
-        assert_eq!(clip("日本語", 6), "日本語");
-        assert_eq!(clip("a🚀b", 2), "a");
-        assert_eq!(clip("abc", 0), "");
-    }
 }

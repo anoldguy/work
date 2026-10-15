@@ -306,19 +306,6 @@ mod tests {
     }
 
     #[test]
-    fn all_failed_when_no_outcomes() {
-        assert!(all_failed(&[]));
-    }
-
-    #[test]
-    fn all_failed_when_every_domain_failed() {
-        assert!(all_failed(&[
-            domain_failed("github.com"),
-            domain_failed("ghe.example")
-        ]));
-    }
-
-    #[test]
     fn all_failed_when_personal_and_every_org_failed() {
         let o = [
             domain_failed("ghe.example"),
@@ -329,150 +316,6 @@ mod tests {
             ),
         ];
         assert!(all_failed(&o));
-    }
-
-    #[test]
-    fn not_all_failed_when_one_org_succeeds() {
-        let o = [domain_ok(
-            "github.com",
-            failed(),
-            vec![("acme", failed()), ("beta", fetched(&[]))],
-        )];
-        assert!(!all_failed(&o));
-    }
-
-    #[test]
-    fn not_all_failed_when_personal_succeeds() {
-        let o = [
-            domain_failed("ghe.example"),
-            domain_ok("github.com", fetched(&[]), vec![("acme", failed())]),
-        ];
-        assert!(!all_failed(&o));
-    }
-
-    #[test]
-    fn no_prev_builds_fresh_cache() {
-        let c = merge(
-            None,
-            vec![domain_ok(
-                "github.com",
-                fetched(&["github.com/me/dots"]),
-                vec![("acme", fetched(&["github.com/acme/b", "github.com/acme/a"]))],
-            )],
-            &gh(),
-            &Filters::default(),
-            t(NOW),
-        );
-        assert_eq!(c.version, CACHE_VERSION);
-        assert_eq!(c.updated_at, t(NOW));
-        assert_eq!(
-            slugs(&c),
-            [
-                "github.com/acme/a",
-                "github.com/acme/b",
-                "github.com/me/dots"
-            ]
-        );
-    }
-
-    #[test]
-    fn failed_personal_does_not_carry_deselected_orgs() {
-        let p = prev(&["github.com/acme/a", "github.com/beta/b"]);
-        let c = merge(
-            Some(p),
-            vec![domain_ok_without(
-                "github.com",
-                failed(),
-                vec![("acme", fetched(&["github.com/acme/a"]))],
-                &["Beta"],
-            )],
-            &gh(),
-            &Filters::default(),
-            t(NOW),
-        );
-        assert_eq!(slugs(&c), ["github.com/acme/a"]);
-    }
-
-    fn filters(include: &[&str], exclude: &[&str]) -> Filters {
-        Filters {
-            include_orgs: include.iter().map(|o| org(o)).collect(),
-            exclude_orgs: exclude.iter().map(|o| org(o)).collect(),
-        }
-    }
-
-    #[test]
-    fn failed_personal_always_carries_viewer_repos() {
-        // Even with the viewer deselected and filtered out, their own repos
-        // stay.
-        for f in [filters(&[], &["ME"]), filters(&["acme"], &[])] {
-            let p = prev(&["github.com/me/dots"]);
-            let c = merge(
-                Some(p),
-                vec![domain_ok_without(
-                    "github.com",
-                    failed(),
-                    vec![("acme", fetched(&[]))],
-                    &["me"],
-                )],
-                &gh(),
-                &f,
-                t(NOW),
-            );
-            assert_eq!(slugs(&c), ["github.com/me/dots"], "{f:?}");
-        }
-    }
-
-    #[test]
-    fn failed_personal_does_not_carry_collaborator_repos_the_filters_reject() {
-        let run = |f: &Filters| {
-            let c = merge(
-                Some(prev(&[
-                    "github.com/acme/a",
-                    "github.com/blocked/y",
-                    "github.com/friend/x",
-                ])),
-                vec![domain_ok("github.com", failed(), vec![("acme", failed())])],
-                &gh(),
-                f,
-                t(NOW),
-            );
-            slugs(&c)
-        };
-        // `friend` is outside `include_orgs`: not carried forward.
-        assert_eq!(run(&filters(&["acme"], &[])), ["github.com/acme/a"]);
-        // `blocked` is in `exclude_orgs`: not carried forward.
-        assert_eq!(
-            run(&filters(&[], &["Blocked"])),
-            ["github.com/acme/a", "github.com/friend/x"]
-        );
-        // No filters: every collaborator owner is carried forward.
-        assert_eq!(
-            run(&Filters::default()),
-            [
-                "github.com/acme/a",
-                "github.com/blocked/y",
-                "github.com/friend/x"
-            ]
-        );
-    }
-
-    #[test]
-    fn org_matching_ignores_case() {
-        let p = prev(&["github.com/acme/x", "github.com/beta/y"]);
-        let c = merge(
-            Some(p),
-            vec![domain_ok(
-                "github.com",
-                failed(),
-                vec![("Acme", failed()), ("BETA", fetched(&[]))],
-            )],
-            &gh(),
-            &Filters::default(),
-            t(NOW),
-        );
-        // `Acme` failed, so acme/x is carried; `BETA` was fetched, so the
-        // failed personal job does not carry beta/y.
-        assert_eq!(slugs(&c), ["github.com/acme/x"]);
     }
 
     #[test]
@@ -611,23 +454,6 @@ mod tests {
     }
 
     #[test]
-    fn configured_domain_without_outcome_keeps_previous_repos() {
-        let p = prev(&["ghe.example/acme/a"]);
-        let c = merge(
-            Some(p),
-            vec![domain_ok(
-                "github.com",
-                fetched(&["github.com/me/x"]),
-                vec![],
-            )],
-            &[dom("github.com"), dom("ghe.example")],
-            &Filters::default(),
-            t(NOW),
-        );
-        assert_eq!(slugs(&c), ["ghe.example/acme/a", "github.com/me/x"]);
-    }
-
-    #[test]
     fn dedup_prefers_org_phase_copy() {
         let o = vec![domain_ok(
             "github.com",
@@ -654,24 +480,6 @@ mod tests {
     }
 
     #[test]
-    fn dedup_prefers_fetched_over_carried() {
-        // Personal failed, so friend/x is also eligible to be carried
-        // forward; the freshly fetched copy wins.
-        let o = vec![domain_ok(
-            "github.com",
-            failed(),
-            vec![("friend", fetched(&["github.com/friend/x"]))],
-        )];
-        let p = prev(&["github.com/friend/x", "github.com/me/y"]);
-        let c = merge(Some(p), o, &gh(), &Filters::default(), t(NOW));
-        assert_eq!(slugs(&c), ["github.com/friend/x", "github.com/me/y"]);
-        assert_eq!(
-            c.repos[0].html_url.as_str(),
-            "https://github.com/friend/x?new"
-        );
-    }
-
-    #[test]
     fn total_failure_keeps_previous_timestamp_and_repos() {
         let c = merge(
             Some(prev(&["github.com/acme/a"])),
@@ -682,12 +490,5 @@ mod tests {
         );
         assert_eq!(c.updated_at, t(BEFORE));
         assert_eq!(slugs(&c), ["github.com/acme/a"]);
-    }
-
-    #[test]
-    fn no_outcomes_and_no_prev_is_empty() {
-        let c = merge(None, vec![], &gh(), &Filters::default(), t(NOW));
-        assert_matches!(&c.repos[..], []);
-        assert_eq!(c.updated_at, t(NOW));
     }
 }

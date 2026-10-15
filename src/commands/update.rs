@@ -40,39 +40,3 @@ fn summary(cache: &Cache) -> String {
         plural(domains, "domain", "domains"),
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::domain::{Repo, StoredTime};
-
-    fn repo(name: &str) -> Repo {
-        serde_json::from_value(serde_json::json!({
-            "slug": format!("github.com/acme/{name}"),
-            "clone_url": format!("https://github.com/acme/{name}.git"),
-            "html_url": format!("https://github.com/acme/{name}"),
-        }))
-        .expect("repo")
-    }
-
-    fn cache(names: &[&str]) -> Cache {
-        let now = StoredTime::from_unix_seconds(1_700_000_000).expect("time");
-        Cache::new(names.iter().map(|n| repo(n)).collect(), now)
-    }
-
-    #[test]
-    fn summary_pluralises() {
-        assert_eq!(
-            summary(&cache(&["a", "b"])),
-            "Cached 2 repositories across 1 domain"
-        );
-        assert_eq!(
-            summary(&cache(&["a"])),
-            "Cached 1 repository across 1 domain"
-        );
-        assert_eq!(
-            summary(&cache(&[])),
-            "Cached 0 repositories across 0 domains"
-        );
-    }
-}

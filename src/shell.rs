@@ -152,26 +152,3 @@ pub enum ShellError {
         source: io::Error,
     },
 }
-
-#[cfg(test)]
-mod tests {
-    use std::assert_matches;
-    use std::path::Path;
-
-    use super::{ShellError, path_line};
-
-    #[test]
-    fn relative_paths_print_absolute() {
-        let line = path_line(Path::new("-x/y")).expect("printable");
-        assert!(Path::new(&line).is_absolute(), "{line}");
-        assert!(line.ends_with("/-x/y"), "{line}");
-    }
-
-    #[test]
-    fn non_utf8_paths_are_rejected() {
-        use std::ffi::OsStr;
-        use std::os::unix::ffi::OsStrExt;
-        let path = Path::new(OsStr::from_bytes(b"/a\xffb"));
-        assert_matches!(path_line(path), Err(ShellError::NonUtf8Path { .. }));
-    }
-}

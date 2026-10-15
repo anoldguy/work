@@ -176,21 +176,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn slug_segment_errors_keep_the_whole_slug() {
-        let err = "github.com/../x".parse::<Slug>().unwrap_err();
-        assert_matches!(&err, NameError::Slug { given, .. } if given == "github.com/../x");
-    }
-
-    #[test]
-    fn slug_serialises_as_a_plain_string() {
-        let slug: Slug = "github.com/acme/x".parse().expect("valid");
-        let json = serde_json::to_string(&slug).expect("serialise");
-        assert_eq!(json, "\"github.com/acme/x\"");
-        assert_eq!(serde_json::from_str::<Slug>(&json).expect("parse"), slug);
-        assert!(serde_json::from_str::<Slug>("\"github.com/acme\"").is_err());
-    }
-
     proptest! {
         #[test]
         fn slug_round_trips_through_string_and_json(

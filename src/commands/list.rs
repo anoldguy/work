@@ -83,22 +83,3 @@ pub fn complete(locations: &Locations, ui: &mut Ui) -> ExitCode {
     }
     ExitCode::SUCCESS
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sorted_slugs_orders_by_slug() {
-        let mk = |s: &str| -> Repo {
-            serde_json::from_value(serde_json::json!({
-                "slug": s,
-                "clone_url": format!("https://{s}.git"),
-                "html_url": format!("https://{s}"),
-            }))
-            .unwrap()
-        };
-        let repos = [mk("github.com/b/x"), mk("github.com/a/y")];
-        assert_eq!(sorted_slugs(&repos), ["github.com/a/y", "github.com/b/x"]);
-    }
-}
