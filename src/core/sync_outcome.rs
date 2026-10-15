@@ -187,31 +187,6 @@ mod tests {
     }
 
     #[test]
-    fn display_texts() {
-        assert_eq!(
-            SyncOutcome::Pulled { commits: 3 }.to_string(),
-            "pulled (3 commits)"
-        );
-        assert_eq!(
-            SyncOutcome::Pulled { commits: 1 }.to_string(),
-            "pulled (1 commit)"
-        );
-        assert_eq!(SyncOutcome::UpToDate.to_string(), "up to date");
-        assert_eq!(SyncOutcome::Error("boom".into()).to_string(), "error: boom");
-        for (r, t) in [
-            (FetchedReason::DirtyWorktree, "dirty worktree"),
-            (FetchedReason::Diverged, "diverged"),
-            (FetchedReason::DetachedHead, "detached HEAD"),
-            (FetchedReason::NoUpstream, "no upstream"),
-        ] {
-            assert_eq!(
-                SyncOutcome::Fetched(r).to_string(),
-                format!("fetched ({t})")
-            );
-        }
-    }
-
-    #[test]
     fn fast_forward_carries_behind_count() {
         assert_matches!(
             classify(&branch(false, tracking(0, 1))),

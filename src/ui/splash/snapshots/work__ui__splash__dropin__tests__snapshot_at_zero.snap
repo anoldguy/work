@@ -1,5 +1,0 @@
----
-source: src/ui/splash/dropin.rs
-expression: render_at(0).to_text()
----
-

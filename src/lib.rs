@@ -30,8 +30,6 @@ pub mod proc;
 pub mod progress;
 pub mod shell;
 pub mod sync;
-#[cfg(test)]
-pub mod testing;
 pub mod text;
 pub mod ui;
 

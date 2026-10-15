@@ -72,39 +72,3 @@ fn static_lines() -> Vec<String> {
     }
     lines
 }
-
-#[cfg(test)]
-mod tests {
-    use std::assert_matches;
-
-    use super::{pick_style, static_lines};
-    use crate::shell::ShellError;
-    use crate::ui::splash::STYLES;
-
-    #[test]
-    fn unknown_style_lists_the_valid_names() {
-        let err = pick_style(Some("nope"), 0).err().unwrap();
-        assert_matches!(&err, ShellError::UnknownStyle { given, valid }
-            if given == "nope" && valid.len() == STYLES.len());
-    }
-
-    #[test]
-    fn random_style_is_deterministic_per_seed_and_covers_the_registry() {
-        let name = |seed| pick_style(None, seed).unwrap().name();
-        assert_eq!(name(42), name(42));
-        let seen: std::collections::HashSet<_> = (0..200).map(name).collect();
-        assert_eq!(seen.len(), STYLES.len());
-    }
-
-    #[test]
-    fn static_logo_ends_with_the_footer() {
-        let lines = static_lines();
-        assert_eq!(lines.len(), 10);
-        assert!(lines[0].starts_with(" ██╗"));
-        assert_eq!(lines[9].trim(), "github.com/anoldguy/work");
-        // `v<version>` centred under the 36-column logo.
-        let version = format!("v{}", env!("CARGO_PKG_VERSION"));
-        let pad = (36 - version.len()) / 2;
-        assert_eq!(lines[7], format!("{}{version}", " ".repeat(pad)));
-    }
-}

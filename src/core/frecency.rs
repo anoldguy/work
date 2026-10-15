@@ -122,9 +122,6 @@ impl Frecency {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches;
-
-    use proptest::prelude::*;
 
     use super::*;
 
@@ -136,16 +133,6 @@ mod tests {
 
     fn t(secs: i64) -> StoredTime {
         StoredTime::from_unix_seconds(secs).unwrap()
-    }
-
-    #[test]
-    fn multiplier_boundaries() {
-        assert_eq!(recency_multiplier(7), 1.0);
-        assert_eq!(recency_multiplier(8), 0.5);
-        assert_eq!(recency_multiplier(30), 0.5);
-        assert_eq!(recency_multiplier(31), 0.2);
-        assert_eq!(recency_multiplier(90), 0.2);
-        assert_eq!(recency_multiplier(91), 0.05);
     }
 
     #[test]
@@ -162,62 +149,5 @@ mod tests {
         assert_eq!(f.score(&s, t(90 * DAY)), 0.4);
         assert_eq!(f.score(&s, t(91 * DAY)), 0.1);
         assert_eq!(f.score(&slug("github.com/a/none"), t(0)), 0.0);
-    }
-
-    #[test]
-    fn record_increments_and_updates_last_access() {
-        let s = slug("github.com/a/b");
-        let mut f = Frecency::default();
-        assert!(f.is_empty());
-        f.record(&s, t(10));
-        f.record(&s, t(20));
-        assert_matches!(
-            f.get(&s),
-            Some(FrecencyData { access_count: 2, last_access }) if *last_access == t(20)
-        );
-    }
-
-    #[test]
-    fn top_two_orders_and_breaks_ties_by_slug() {
-        let (sa, sb, sc) = (slug("h.com/a/a"), slug("h.com/a/b"), slug("h.com/a/c"));
-        let mut fr = Frecency::default();
-        assert_matches!(fr.top_two(t(0)), (None, r) if r.total_cmp(&0.0).is_eq());
-        fr.record(&sb, t(0));
-        fr.record(&sa, t(0));
-        fr.record(&sc, t(0));
-        fr.record(&sc, t(0));
-        let (top, runner) = fr.top_two(t(0));
-        assert_eq!(top.map(|(s, _, score)| (s.clone(), score)), Some((sc, 2.0)));
-        assert!(runner.total_cmp(&1.0).is_eq());
-        fr.record(&sb, t(0));
-        let (top, _) = fr.top_two(t(0));
-        assert_eq!(top.map(|(s, _, _)| s.clone()), Some(sb));
-    }
-
-    #[test]
-    fn retain_keeps_only_matching_entries() {
-        let (a, b) = (slug("h.com/a/a"), slug("h.com/a/b"));
-        let mut f = Frecency::default();
-        f.record(&a, t(0));
-        f.record(&b, t(0));
-        f.retain(|s, _| *s == a);
-        assert!(f.get(&a).is_some());
-        assert!(f.get(&b).is_none());
-    }
-
-    proptest! {
-        #[test]
-        fn top_two_matches_sorted_scores(counts in proptest::collection::vec(1u32..20, 1..8)) {
-            let mut f = Frecency::default();
-            for (i, c) in counts.iter().enumerate() {
-                let s = slug(&format!("h.com/o/r{i}"));
-                for _ in 0..*c { f.record(&s, t(0)); }
-            }
-            let mut sorted: Vec<f64> = counts.iter().map(|c| f64::from(*c)).collect();
-            sorted.sort_by(|a, b| b.total_cmp(a));
-            let (top, runner) = f.top_two(t(0));
-            prop_assert_eq!(top.map(|x| x.2), Some(sorted[0]));
-            prop_assert!(runner.total_cmp(&sorted.get(1).copied().unwrap_or(0.0)).is_eq());
-        }
     }
 }

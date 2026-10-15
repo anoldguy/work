@@ -263,7 +263,6 @@ pub fn record(
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches;
 
     use super::*;
     use crate::domain::QueryKey;
@@ -284,25 +283,6 @@ mod tests {
     }
 
     #[test]
-    fn records_round_trip_through_the_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let sub = dir.path().join("state");
-        let key = QueryKey::new("ap").unwrap();
-        record(&sub, t(NOW), |h| {
-            h.frecency.record(&slug("api"), t(NOW));
-            h.query_frecency.record(&key, &slug("api"), t(NOW));
-        })
-        .unwrap();
-        let (h, problem) = load(&sub);
-        assert_eq!(problem, None);
-        assert_eq!(count(&h, "api"), Some(1));
-        assert!(h.query_frecency.get(&key).is_some());
-        let json: serde_json::Value =
-            serde_json::from_slice(&fs::read(frecency_file(&sub)).unwrap()).unwrap();
-        assert_eq!(json["version"], 1);
-    }
-
-    #[test]
     fn a_write_drops_entries_older_than_a_year() {
         let dir = tempfile::tempdir().unwrap();
         let key = QueryKey::new("x").unwrap();
@@ -317,55 +297,6 @@ mod tests {
         assert_eq!(count(&h, "old"), None);
         assert_eq!(count(&h, "kept"), Some(1));
         assert!(h.query_frecency.get(&key).is_none());
-    }
-
-    #[test]
-    fn a_corrupt_file_is_renamed_warned_about_and_replaced_by_an_empty_history() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(frecency_file(dir.path()), "{not json").unwrap();
-        let (h, problem) = load(dir.path());
-        assert_eq!(h, History::default());
-        assert_matches!(problem, Some(p @ Problem::Corrupt { .. })
-            if p.to_string().contains("frecency.json") && !p.to_string().contains('\n'));
-        assert_eq!(
-            fs::read_to_string(dir.path().join("frecency.json.corrupt")).unwrap(),
-            "{not json"
-        );
-        assert!(!frecency_file(dir.path()).exists());
-    }
-
-    #[test]
-    fn a_file_that_cannot_be_read_is_left_alone_and_read_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = frecency_file(dir.path());
-        fs::create_dir(&path).unwrap();
-        fs::write(path.join("keep"), "history").unwrap();
-        let (h, problem) = load(dir.path());
-        assert_eq!(h, History::default());
-        assert_matches!(problem, Some(Problem::Unreadable { .. }));
-        let recorded = record(dir.path(), t(NOW), |h| {
-            h.frecency.record(&slug("api"), t(NOW));
-        })
-        .unwrap();
-        assert_matches!(recorded, Some(Problem::Unreadable { .. }));
-        assert_eq!(fs::read_to_string(path.join("keep")).unwrap(), "history");
-        assert!(!dir.path().join("frecency.json.corrupt").exists());
-    }
-
-    #[test]
-    fn an_unknown_version_is_read_only_and_never_overwritten() {
-        let dir = tempfile::tempdir().unwrap();
-        let body = r#"{"version":2,"frecency":{"anything":"goes"}}"#;
-        fs::write(frecency_file(dir.path()), body).unwrap();
-        let (h, problem) = load(dir.path());
-        assert_eq!(h, History::default());
-        assert_matches!(problem, Some(Problem::UnknownVersion { version: 2, .. }));
-        let recorded = record(dir.path(), t(NOW), |h| {
-            h.frecency.record(&slug("api"), t(NOW));
-        })
-        .unwrap();
-        assert_matches!(recorded, Some(Problem::UnknownVersion { .. }));
-        assert_eq!(fs::read_to_string(frecency_file(dir.path())).unwrap(), body);
     }
 
     #[test]

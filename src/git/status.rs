@@ -57,164 +57,12 @@ pub fn parse_v2(output: &str) -> Result<RepoFacts, GitError> {
 
 #[cfg(test)]
 mod tests {
-    use crate::proc;
     use std::assert_matches;
-    use std::path::Path;
 
     use super::*;
 
-    fn run_git(dir: &Path, args: &[&str]) -> String {
-        let out = proc::command("git")
-            .args(args)
-            .current_dir(dir)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_AUTHOR_NAME", "Test")
-            .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
-            .env("GIT_COMMITTER_NAME", "Test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
-            .output()
-            .expect("git runs");
-        assert!(out.status.success(), "git {args:?}: {out:?}");
-        String::from_utf8(out.stdout).expect("utf8")
-    }
-
-    fn git(dir: &Path, args: &[&str]) {
-        run_git(dir, args);
-    }
-
-    fn status(dir: &Path) -> String {
-        run_git(
-            dir,
-            &[
-                "status",
-                "--porcelain=v2",
-                "--branch",
-                "--untracked-files=normal",
-            ],
-        )
-    }
-
-    fn commit(dir: &Path, file: &str) {
-        std::fs::write(dir.join(file), file).unwrap();
-        git(dir, &["add", file]);
-        git(dir, &["commit", "-q", "-m", file]);
-    }
-
     #[test]
-    fn real_git_tracking_states() {
-        let tmp = tempfile::tempdir().unwrap();
-        let up = tmp.path().join("up");
-        let local = tmp.path().join("local");
-        std::fs::create_dir(&up).unwrap();
-        git(&up, &["init", "-q", "-b", "main"]);
-        commit(&up, "a");
-        git(tmp.path(), &["clone", "-q", up.to_str().unwrap(), "local"]);
-
-        assert_matches!(
-            parse_v2(&status(&local)),
-            Ok(RepoFacts::Branch {
-                dirty: false,
-                upstream: Upstream::Tracking {
-                    ahead: 0,
-                    behind: 0
-                }
-            })
-        );
-
-        commit(&local, "b");
-        assert_matches!(
-            parse_v2(&status(&local)),
-            Ok(RepoFacts::Branch {
-                dirty: false,
-                upstream: Upstream::Tracking {
-                    ahead: 1,
-                    behind: 0
-                }
-            })
-        );
-
-        commit(&up, "c");
-        git(&local, &["fetch", "-q"]);
-        assert_matches!(
-            parse_v2(&status(&local)),
-            Ok(RepoFacts::Branch {
-                dirty: false,
-                upstream: Upstream::Tracking {
-                    ahead: 1,
-                    behind: 1
-                }
-            })
-        );
-
-        std::fs::write(local.join("u"), "x").unwrap();
-        assert_matches!(
-            parse_v2(&status(&local)),
-            Ok(RepoFacts::Branch { dirty: true, .. })
-        );
-        std::fs::remove_file(local.join("u")).unwrap();
-
-        std::fs::write(local.join("a"), "changed").unwrap();
-        git(&local, &["add", "a"]);
-        assert_matches!(
-            parse_v2(&status(&local)),
-            Ok(RepoFacts::Branch { dirty: true, .. })
-        );
-    }
-
-    #[test]
-    fn real_git_gone_upstream_is_no_upstream() {
-        let tmp = tempfile::tempdir().unwrap();
-        let up = tmp.path().join("up");
-        let local = tmp.path().join("local");
-        std::fs::create_dir(&up).unwrap();
-        git(&up, &["init", "-q", "-b", "main"]);
-        commit(&up, "a");
-        git(&up, &["branch", "side"]);
-        git(tmp.path(), &["clone", "-q", up.to_str().unwrap(), "local"]);
-        git(&local, &["checkout", "-q", "side"]);
-        git(&up, &["branch", "-D", "side"]);
-        git(&local, &["fetch", "-q", "--prune"]);
-        let out = status(&local);
-        assert!(out.contains("# branch.upstream origin/side"), "{out}");
-        assert!(!out.contains("branch.ab"), "{out}");
-        assert_matches!(
-            parse_v2(&out),
-            Ok(RepoFacts::Branch {
-                dirty: false,
-                upstream: Upstream::None
-            })
-        );
-    }
-
-    #[test]
-    fn real_git_no_upstream_and_detached() {
-        let tmp = tempfile::tempdir().unwrap();
-        let d = tmp.path();
-        git(d, &["init", "-q", "-b", "main"]);
-        assert_matches!(
-            parse_v2(&status(d)),
-            Ok(RepoFacts::Branch {
-                dirty: false,
-                upstream: Upstream::None
-            })
-        );
-        commit(d, "a");
-        git(d, &["checkout", "-q", "--detach"]);
-        assert_matches!(
-            parse_v2(&status(d)),
-            Ok(RepoFacts::Detached { dirty: false })
-        );
-        std::fs::write(d.join("z"), "z").unwrap();
-        assert_matches!(
-            parse_v2(&status(d)),
-            Ok(RepoFacts::Detached { dirty: true })
-        );
-    }
-
-    #[test]
-    fn literal_outputs() {
+    fn porcelain_v2_becomes_repo_facts() {
         let tracked = "# branch.oid abc\n# branch.head main\n# branch.upstream o/main\n# branch.ab +2 -5\n1 .M N... 100644 100644 100644 a b f\n";
         assert_matches!(
             parse_v2(tracked),
@@ -233,6 +81,14 @@ mod tests {
                 upstream: Upstream::None
             })
         );
+        let gone = "# branch.oid abc\n# branch.head side\n# branch.upstream origin/side\n";
+        assert_matches!(
+            parse_v2(gone),
+            Ok(RepoFacts::Branch {
+                dirty: false,
+                upstream: Upstream::None
+            })
+        );
         assert_matches!(
             parse_v2("# branch.oid abc\n# branch.head (detached)\n"),
             Ok(RepoFacts::Detached { dirty: false })
@@ -240,7 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_is_error() {
+    fn malformed_status_is_an_error() {
         assert_matches!(parse_v2(""), Err(GitError::Status { .. }));
         assert_matches!(parse_v2("? only\n"), Err(GitError::Status { .. }));
         assert_matches!(

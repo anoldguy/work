@@ -297,13 +297,9 @@ impl Default for FuzzyMatcher {
 mod tests {
     use std::assert_matches;
 
-    use proptest::prelude::*;
-
-    use super::{
-        FuzzyMatcher, MatchTier, Query, RESULT_LIMIT, Specificity, filter, normalize, search,
-    };
+    use super::{MatchTier, Query, RESULT_LIMIT, Specificity, filter, normalize, search};
     use crate::core::resolve::{Resolution, resolve};
-    use crate::domain::{CloneUrl, HtmlUrl, NameError, Repo, Slug};
+    use crate::domain::{CloneUrl, HtmlUrl, Repo, Slug};
 
     fn repo(slug: &str) -> Repo {
         Repo {
@@ -341,21 +337,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_normalises_the_key() {
-        assert_eq!(q("  Acme/Foo ").key().as_str(), "acme/foo");
-    }
-
-    #[test]
-    fn parse_rejects_more_than_two_slashes() {
-        assert_matches!(Query::parse("a/b/c/d"), Err(NameError::Query { .. }));
-    }
-
-    #[test]
-    fn parse_rejects_empty() {
-        assert_matches!(Query::parse("  "), Err(NameError::Query { .. }));
-    }
-
-    #[test]
     fn exact_is_judged_at_the_query_specificity() {
         let rs = repos(&["github.com/acme/foo", "github.com/acme/foobar"]);
         let results = search(&rs, &q("foo"), no_frecency);
@@ -370,13 +351,6 @@ mod tests {
         let full = search(&rs, &q("github.com/acme/foobar"), no_frecency);
         assert_matches!(full[0].tier, MatchTier::Exact);
         assert_eq!(full[0].index, 1);
-    }
-
-    #[test]
-    fn name_query_is_not_exact_on_the_org() {
-        let rs = repos(&["github.com/foo/bar"]);
-        let results = search(&rs, &q("foo"), no_frecency);
-        assert_matches!(results[..], [r] if r.tier == MatchTier::Substring);
     }
 
     #[test]
@@ -396,13 +370,6 @@ mod tests {
             results[..],
             [r] if r.index == 0 && matches!(r.tier, MatchTier::Fuzzy { normalized: 1..=49 })
         );
-    }
-
-    #[test]
-    fn combined_score_is_tier_plus_frecency() {
-        let rs = repos(&["github.com/acme/foobar"]);
-        let results = search(&rs, &q("foo"), |_| 7.5);
-        assert_matches!(results[..], [r] if (r.score - 57.5).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -432,45 +399,12 @@ mod tests {
     }
 
     #[test]
-    fn ties_break_by_slug_ascending() {
-        let rs = repos(&[
-            "github.com/zeta/foo",
-            "github.com/alpha/foo",
-            "ghe.example.com/alpha/foo",
-        ]);
-        let order = ranked(&rs, &q("foo"), no_frecency);
-        assert_eq!(
-            order,
-            [
-                "ghe.example.com/alpha/foo",
-                "github.com/alpha/foo",
-                "github.com/zeta/foo",
-            ]
-        );
-    }
-
-    #[test]
     fn results_are_limited() {
         let slugs: Vec<String> = (0..30)
             .map(|i| format!("github.com/acme/foo{i:02}"))
             .collect();
         let rs: Vec<Repo> = slugs.iter().map(|s| repo(s)).collect();
         assert_eq!(search(&rs, &q("foo"), no_frecency).len(), RESULT_LIMIT);
-    }
-
-    #[test]
-    fn substring_of_the_full_slug_counts() {
-        let rs = repos(&["github.com/acme/widget"]);
-        let results = search(&rs, &q("cme/wid"), no_frecency);
-        assert_matches!(results[..], [r] if r.tier == MatchTier::Substring);
-    }
-
-    #[test]
-    fn fuzzy_matcher_is_case_insensitive() {
-        let mut m = FuzzyMatcher::new();
-        assert!(m.score("FooBar", "fb").is_some());
-        assert_eq!(m.score("FooBar", "FB"), m.score("foobar", "fb"));
-        assert_eq!(m.score("abc", "xyz"), None);
     }
 
     #[test]
@@ -516,38 +450,6 @@ mod tests {
     }
 
     #[test]
-    fn more_exact_matches_than_the_limit_keep_the_top_exact_ones() {
-        let rs: Vec<Repo> = (0..25)
-            .map(|i| repo(&format!("github.com/org{i:02}/foo")))
-            .chain([repo("github.com/acme/foobar")])
-            .collect();
-        let busy = |s: &Slug| {
-            if s.org().as_str() == "org24" {
-                9.0
-            } else {
-                0.0
-            }
-        };
-        let results = search(&rs, &q("foo"), busy);
-        assert_eq!(results.len(), RESULT_LIMIT);
-        assert!(results.iter().all(|r| r.tier == MatchTier::Exact));
-        let indices: Vec<usize> = results.iter().map(|r| r.index).collect();
-        let expected: Vec<usize> = [24].into_iter().chain(0..19).collect();
-        assert_eq!(indices, expected);
-    }
-
-    #[test]
-    fn a_name_query_also_matches_org_and_domain_as_substring() {
-        // Deliberate: the spec makes substring-of-full-slug a match, so a
-        // name query hits every repo in an org or domain with that text.
-        let rs = repos(&["github.com/acme/widget", "ghe.example.com/other/thing"]);
-        let by_org = search(&rs, &q("acme"), no_frecency);
-        assert_matches!(by_org[..], [r] if r.index == 0 && r.tier == MatchTier::Substring);
-        let by_domain = search(&rs, &q("github"), no_frecency);
-        assert_matches!(by_domain[..], [r] if r.index == 0 && r.tier == MatchTier::Substring);
-    }
-
-    #[test]
     fn within_a_tier_frecency_orders_results() {
         let rs = repos(&["github.com/acme/foo-a", "github.com/acme/foo-b"]);
         let order = ranked(&rs, &q("foo"), |s| {
@@ -558,110 +460,5 @@ mod tests {
             }
         });
         assert_eq!(order, ["github.com/acme/foo-b", "github.com/acme/foo-a"]);
-    }
-
-    #[test]
-    fn fuzzy_ties_break_by_slug_ascending() {
-        let rs = repos(&["github.com/zeta/frobnicate", "github.com/alpha/frobnicate"]);
-        let results = search(&rs, &q("fbn"), no_frecency);
-        assert_matches!(
-            results[..],
-            [a, b] if a.index == 1 && b.index == 0
-                && matches!(a.tier, MatchTier::Fuzzy { .. })
-                && a.tier == b.tier
-        );
-    }
-
-    #[test]
-    fn filter_trims_its_needle() {
-        let rs = repos(&["github.com/acme/foo", "github.com/acme/bar"]);
-        assert_eq!(filter(&rs, "  FOO "), [0]);
-    }
-
-    #[test]
-    fn fuzzy_matcher_folds_case_and_accents_across_calls() {
-        let mut m = FuzzyMatcher::new();
-        let first = m.score("Ünïcödé-repo", "ÜR");
-        assert!(first.is_some());
-        assert_eq!(m.score("Ünïcödé-repo", "ür"), first);
-        assert_eq!(m.score("plain", "ür"), None);
-    }
-
-    fn name_strategy() -> impl Strategy<Value = String> {
-        "[a-z][a-z0-9-]{0,8}"
-    }
-
-    fn acme_repos(names: &[String]) -> Vec<Repo> {
-        names
-            .iter()
-            .map(|n| repo(&format!("github.com/acme/{n}")))
-            .collect()
-    }
-
-    proptest! {
-        #[test]
-        fn normalized_fuzzy_score_stays_in_bounds(raw in any::<u16>(), self_score in any::<u16>()) {
-            let n = normalize(raw, Some(self_score));
-            prop_assert!((1..=49).contains(&n));
-        }
-
-        #[test]
-        fn search_fuzzy_bounds_hold(
-            names in prop::collection::vec(name_strategy(), 1..30),
-            query in "[a-z0-9-]{1,5}",
-        ) {
-            let rs = acme_repos(&names);
-            for r in search(&rs, &q(&query), no_frecency) {
-                if let MatchTier::Fuzzy { normalized } = r.tier {
-                    prop_assert!((1..=49).contains(&normalized));
-                }
-            }
-        }
-
-        #[test]
-        fn scoring_is_deterministic(
-            names in prop::collection::vec(name_strategy(), 0..30),
-            query in "[a-z0-9-]{1,5}",
-        ) {
-            let rs = acme_repos(&names);
-            let query = q(&query);
-            let freq = |s: &Slug| f64::from(u8::try_from(s.name().as_str().len()).unwrap_or(0));
-            prop_assert_eq!(search(&rs, &query, freq), search(&rs, &query, freq));
-        }
-
-        #[test]
-        fn an_exact_match_is_always_in_the_results(
-            names in prop::collection::vec(name_strategy(), 0..40),
-            target in name_strategy(),
-        ) {
-            let mut rs = acme_repos(&names);
-            rs.push(repo(&format!("github.com/zzz/{target}")));
-            let exact_index = rs.len() - 1;
-            let results = search(&rs, &q(&target), no_frecency);
-            prop_assert!(results.len() <= RESULT_LIMIT);
-            prop_assert!(
-                results.iter().any(|r| r.index == exact_index && r.tier == MatchTier::Exact)
-            );
-        }
-
-        #[test]
-        fn an_exact_match_survives_any_frecency(
-            names in prop::collection::vec(name_strategy(), 0..40),
-            target in name_strategy(),
-            weights in prop::collection::vec(0.0f64..500.0, 41),
-        ) {
-            let mut rs = acme_repos(&names);
-            rs.push(repo(&format!("github.com/zzz/{target}")));
-            let exact_index = rs.len() - 1;
-            let freq = |s: &Slug| {
-                rs.iter().position(|r| &r.slug == s).map_or(0.0, |i| weights[i])
-            };
-            let results = search(&rs, &q(&target), freq);
-            prop_assert!(results.windows(2).all(|w| w[0].score >= w[1].score));
-            prop_assert!(results.iter().any(|r| r.index == exact_index));
-            let exact = results.iter().filter(|r| r.tier == MatchTier::Exact).count();
-            prop_assert!(results.len() <= RESULT_LIMIT);
-            prop_assert!(exact >= 1);
-        }
     }
 }

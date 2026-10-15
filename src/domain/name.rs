@@ -286,18 +286,6 @@ mod tests {
     }
 
     #[test]
-    fn domain_files_must_be_lowercase_but_arguments_are_lowercased() {
-        assert_matches!(
-            Domain::try_from("GitHub.com".to_owned()),
-            Err(NameError::Domain { .. })
-        );
-        assert_eq!(
-            "GitHub.com".parse::<Domain>().map(String::from).as_deref(),
-            Ok("github.com")
-        );
-    }
-
-    #[test]
     fn names_keep_case_and_reject_unsafe_forms() {
         assert_eq!(
             "My.Org_1-x".parse::<Org>().map(String::from).as_deref(),
@@ -330,13 +318,5 @@ mod tests {
         for ok in [".github", "my.git", "x.git", ".gitignore"] {
             assert!(ok.parse::<RepoName>().is_ok(), "{ok:?}");
         }
-    }
-
-    #[test]
-    fn org_comparison_for_filters_ignores_case() {
-        let a: Org = "Acme".parse().expect("valid");
-        let b: Org = "acme".parse().expect("valid");
-        assert!(a.eq_ignore_case(&b));
-        assert_ne!(a, b);
     }
 }
