@@ -16,6 +16,8 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 use tempfile::TempDir;
@@ -25,7 +27,7 @@ use tempfile::TempDir;
 /// logout --hostname <host>` exits with the code in `auth-<host>`, if any.
 const FAKE_GH: &str = r#"#!/bin/sh
 root=${0%/*}/..
-printf '%s\n' "$*" >> "$root/gh.log"
+printf '%s\n' "$*" >> "$root/gh.log" || exit 1
 emit() { while IFS= read -r l || [ -n "$l" ]; do printf '%s\n' "$l"; done < "$1"; }
 case "$1 $2" in
   "api --hostname")
@@ -50,9 +52,12 @@ printf 'fake gh: unsupported: %s\n' "$*" >&2
 exit 1
 "#;
 
-/// Logs its physical cwd and argv to `<root>/<own name>.log`.
+/// Records its pid, then its physical cwd and argv, in `<root>/<own name>.pid`
+/// and `.log`. Each write is one append that exits if the directory is gone.
 const LOGGER: &str = r#"#!/bin/sh
-printf '%s\t%s\n' "$(pwd -P)" "$*" >> "${0%/*}/../${0##*/}.log"
+log="${0%/*}/../${0##*/}"
+printf '%s\n' "$$" >> "$log.pid" || exit 0
+printf '%s\t%s\n' "$(pwd -P)" "$*" >> "$log.log" || exit 0
 "#;
 
 const OPENER: &str = if cfg!(target_os = "macos") {
@@ -283,6 +288,14 @@ impl TestEnv {
             .unwrap_or_default()
     }
 
+    /// The pids the editor or opener script recorded.
+    pub fn pids(&self, name: &str) -> Vec<u32> {
+        let name = if name == "opener" { OPENER } else { name };
+        fs::read_to_string(self.root().join(format!("{name}.pid")))
+            .map(|text| text.lines().filter_map(|l| l.parse().ok()).collect())
+            .unwrap_or_default()
+    }
+
     fn fixture(&self, host: &str, path: &str, ext: &str) -> PathBuf {
         self.root().join(format!("fixtures/{host}/{path}.{ext}"))
     }
@@ -359,6 +372,28 @@ pub fn text(bytes: &[u8]) -> String {
 /// The path as `work` prints it: absolute, UTF-8, one line.
 pub fn line(path: &Path) -> String {
     format!("{}\n", path.to_str().expect("utf-8 path"))
+}
+
+/// Polls `probe` until it returns `Some`, for a detached child that may
+/// still be starting; fails the test after a few seconds.
+pub fn wait_for<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(found) = probe() {
+            return found;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        thread::yield_now();
+    }
+}
+
+/// Whether process `pid` is still running.
+pub fn is_running(pid: u32) -> bool {
+    Command::new("/bin/sh")
+        .args(["-c", &format!("kill -0 {pid} 2>/dev/null")])
+        .status()
+        .expect("run kill")
+        .success()
 }
 
 /// Every directory under `root`, sorted.

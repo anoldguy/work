@@ -1,9 +1,8 @@
 //! One smoke test per spec'd command behaviour nothing else covers.
 
 use std::fs;
-use std::thread;
 
-use crate::support::{TestEnv, text};
+use crate::support::{TestEnv, is_running, text, wait_for};
 
 #[test]
 fn list_shows_the_cache_and_filters_by_substring() {
@@ -33,17 +32,27 @@ fn browse_opens_the_web_url_without_cloning() {
 
     let out = env.command().args(["browse", "app"]).output().expect("run");
     assert!(out.status.success(), "{}", text(&out.stderr));
-    // The opener runs detached, so it may still be starting when work exits.
-    let mut calls = env.calls("opener");
-    while calls.is_empty() {
-        thread::yield_now();
-        calls = env.calls("opener");
-    }
+    let calls = wait_for("the opener", || {
+        Some(env.calls("opener")).filter(|calls| !calls.is_empty())
+    });
     assert!(
         calls[0].ends_with("\thttps://github.com/acme/app"),
         "{calls:?}"
     );
     assert!(!env.work_dir().join("acme").exists());
+}
+
+#[test]
+fn a_detached_opener_exits_after_its_test_is_gone() {
+    let env = TestEnv::new();
+    env.config_domains(&["github.com"]);
+    env.seed_cache(&["github.com/acme/app"], false);
+
+    let out = env.command().args(["browse", "app"]).output().expect("run");
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let pid = wait_for("the opener's pid", || env.pids("opener").first().copied());
+    drop(env);
+    wait_for("the opener to exit", || (!is_running(pid)).then_some(()));
 }
 
 #[test]
