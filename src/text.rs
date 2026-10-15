@@ -5,8 +5,8 @@
 //! measured or clipped with these cannot wrap.
 //!
 //! [`is_invisible_format`] is the crate's one list of invisible Unicode
-//! format characters; every check and sanitiser that keeps text on one
-//! visible line goes through it (via [`is_unsafe`] or [`sanitize`]).
+//! format characters, and [`one_line`] the one sanitiser; every check and
+//! sanitiser that keeps text on one visible line goes through them.
 
 /// Bidi controls (including the Arabic letter mark), zero-width characters,
 /// the soft hyphen, the byte-order mark, and the line and paragraph
@@ -49,42 +49,65 @@ pub fn is_unsafe(c: char) -> bool {
     c.is_control() || is_invisible_format(c)
 }
 
-/// `text` made safe for one visible line: control characters and the line
-/// and paragraph separators become spaces, other invisible format
-/// characters are dropped. Nothing else changes (no trimming).
-///
-/// ```
-/// use work::text::sanitize;
-///
-/// assert_eq!(sanitize("a\nb\u{2028}c"), "a b c");
-/// assert_eq!(sanitize("evil\u{202E}txt.exe"), "eviltxt.exe");
-/// ```
-#[must_use]
-pub fn sanitize(text: &str) -> String {
-    text.chars()
-        .filter_map(|c| match c {
-            '\u{2028}' | '\u{2029}' => Some(' '),
-            c if c.is_control() => Some(' '),
-            c if is_invisible_format(c) => None,
-            c => Some(c),
-        })
-        .collect()
-}
-
-/// [`sanitize`]d, with runs of whitespace collapsed to one space and the
-/// ends trimmed.
+/// `text` made safe for one visible line: ANSI escape sequences are
+/// removed, line breaks and other whitespace collapse to single spaces,
+/// the remaining [unsafe](is_unsafe) characters (controls, bidi and
+/// zero-width characters) are dropped, and the ends are trimmed.
 ///
 /// ```
 /// use work::text::one_line;
 ///
 /// assert_eq!(one_line("  bad\n\tvalue\u{2029} here "), "bad value here");
+/// assert_eq!(one_line("\x1b[31mevil\u{202E}txt\0.exe\x1b[0m"), "eviltxt.exe");
 /// ```
 #[must_use]
 pub fn one_line(text: &str) -> String {
-    sanitize(text)
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    let visible: String = strip_escapes(text)
+        .chars()
+        .filter_map(|c| match c {
+            c if c.is_whitespace() => Some(' '),
+            c if is_unsafe(c) => None,
+            c => Some(c),
+        })
+        .collect();
+    visible.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Removes ANSI escape sequences: CSI (`ESC [ ... final`), OSC
+/// (`ESC ] ... BEL|ST`) and two-byte escapes.
+fn strip_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                for n in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&n) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                while let Some(n) = chars.next() {
+                    if n == '\x07' || n == '\u{9c}' {
+                        break;
+                    }
+                    if n == '\x1b' {
+                        if chars.peek() == Some(&'\\') {
+                            chars.next();
+                        }
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// `one` when `n` is 1, otherwise `many`: `plural(2, "repo", "repos")`.
@@ -143,7 +166,7 @@ pub(crate) fn clip(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        char_width, clip, display_width, is_invisible_format, is_unsafe, one_line, plural, sanitize,
+        char_width, clip, display_width, is_invisible_format, is_unsafe, one_line, plural,
     };
 
     /// Every bidi control: embeddings/overrides, isolates, marks.
@@ -168,13 +191,20 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_breaks_no_line_and_hides_no_text() {
-        assert_eq!(sanitize("a\u{2028}b\u{2029}c"), "a b c");
-        assert_eq!(sanitize("a\r\n\tb"), "a   b");
-        for c in BIDI {
-            assert_eq!(sanitize(&format!("x{c}y")), "xy", "{c:?}");
+    fn one_line_breaks_no_line_and_hides_no_text() {
+        assert_eq!(one_line("a\u{2028}b\u{2029}c"), "a b c");
+        assert_eq!(one_line("a\r\n\tb\0c"), "a bc");
+        for c in BIDI.into_iter().chain(['\u{200B}', '\u{FEFF}']) {
+            assert_eq!(one_line(&format!("x{c}y")), "xy", "{c:?}");
         }
         assert_eq!(one_line(" a \u{2028}\u{2029} b\n"), "a b");
+    }
+
+    #[test]
+    fn one_line_strips_whole_ansi_sequences() {
+        assert_eq!(one_line("\x1b[1;31mboom\x1b[0m"), "boom");
+        assert_eq!(one_line("\x1b]0;title\x07ok"), "ok");
+        assert_eq!(one_line("\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\"), "link");
     }
 
     #[test]

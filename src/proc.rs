@@ -59,83 +59,40 @@ impl<'ui> Interactive<'ui> {
     }
 }
 
-/// Reduces a child's stderr to one line: lossy UTF-8, the last non-empty
-/// line (git puts the real error last), with `fatal: `/`error: ` prefixes
-/// and control characters removed.
+/// A child's stderr reduced to one line. Each line (lossy UTF-8) keeps only
+/// its last `\r`-separated state, so progress redraws collapse, and is made
+/// safe by [`text::one_line`]. The last `fatal: `/`error: ` line wins, with
+/// that prefix removed (git puts the real error last); without one, every
+/// line that is not a `hint:` is joined with spaces (gh splits one message
+/// over several lines).
 #[must_use]
-pub fn one_line(stderr: &[u8]) -> String {
-    let text = strip_escapes(&String::from_utf8_lossy(stderr));
-    // `\r` also separates lines so progress redraws yield their final state,
-    // and so do the Unicode line and paragraph separators.
+pub fn stderr_summary(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
     let lines: Vec<String> = text
-        .split(['\n', '\r', '\u{2028}', '\u{2029}'])
-        .map(clean)
-        .filter(|l| !l.is_empty())
-        .collect();
-    let is_err = |l: &&String| l.starts_with("fatal: ") || l.starts_with("error: ");
-    let line = lines
-        .iter()
-        .rfind(is_err)
-        .or_else(|| lines.iter().rfind(|l| !l.starts_with("hint:")))
-        .or_else(|| lines.last())
-        .cloned()
-        .unwrap_or_default();
-    line.strip_prefix("fatal: ")
-        .or_else(|| line.strip_prefix("error: "))
-        .unwrap_or(&line)
-        .trim()
-        .to_owned()
-}
-
-/// Removes ANSI escape sequences: CSI (`ESC [ ... final`), OSC
-/// (`ESC ] ... BEL|ST`) and two-byte escapes.
-fn strip_escapes(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '\x1b' {
-            out.push(c);
-            continue;
-        }
-        match chars.next() {
-            Some('[') => {
-                for n in chars.by_ref() {
-                    if ('\u{40}'..='\u{7e}').contains(&n) {
-                        break;
-                    }
-                }
-            }
-            Some(']') => {
-                while let Some(n) = chars.next() {
-                    if n == '\x07' || n == '\u{9c}' {
-                        break;
-                    }
-                    if n == '\x1b' {
-                        if chars.peek() == Some(&'\\') {
-                            chars.next();
-                        }
-                        break;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
-/// Maps tabs to spaces, drops control and invisible format characters
-/// ([`text::is_unsafe`]), and trims.
-fn clean(line: &str) -> String {
-    line.chars()
-        .filter_map(|c| match c {
-            '\t' => Some(' '),
-            c if text::is_unsafe(c) => None,
-            c => Some(c),
+        .split(['\n', '\u{2028}', '\u{2029}'])
+        .filter_map(|line| {
+            line.split('\r')
+                .map(text::one_line)
+                .rfind(|state| !state.is_empty())
         })
-        .collect::<String>()
-        .trim()
-        .to_owned()
+        .collect();
+    let error = lines.iter().rev().find_map(|line| {
+        line.strip_prefix("fatal: ")
+            .or_else(|| line.strip_prefix("error: "))
+    });
+    if let Some(error) = error {
+        return error.trim().to_owned();
+    }
+    let told: Vec<&str> = lines
+        .iter()
+        .map(String::as_str)
+        .filter(|line| !line.starts_with("hint:"))
+        .collect();
+    if told.is_empty() {
+        lines.join(" ")
+    } else {
+        told.join(" ")
+    }
 }
 
 #[cfg(test)]
@@ -160,64 +117,43 @@ mod tests {
     }
 
     #[test]
-    fn one_line_takes_last_nonempty_line_and_strips_prefix() {
+    fn stderr_summary_keeps_the_last_error_without_its_prefix() {
         assert_eq!(
-            one_line(b"hint: x\nfatal: not a repo\n\n  \n"),
+            stderr_summary(b"hint: x\nfatal: not a repo\n\n  \n"),
             "not a repo"
         );
-        assert_eq!(one_line(b"error: boom"), "boom");
-    }
-
-    #[test]
-    fn one_line_removes_control_chars_and_handles_cr() {
-        assert_eq!(one_line(b"a\rprogress 50%\rdone\x1b[0m\x07"), "done");
-        assert_eq!(one_line(b"x\ty\0z\n"), "x yz");
-    }
-
-    #[test]
-    fn one_line_prefers_error_over_trailing_hint() {
+        assert_eq!(stderr_summary(b"error: boom"), "boom");
         assert_eq!(
-            one_line(b"error: red\nhint: use --foo to override\n"),
+            stderr_summary(b"error: red\nhint: use --foo to override\n"),
             "red"
         );
-        assert_eq!(one_line(b"warning: w\nhint: h\n"), "warning: w");
-        assert_eq!(one_line(b"hint: only\n"), "hint: only");
-    }
-
-    #[test]
-    fn one_line_strips_whole_ansi_sequences() {
-        assert_eq!(one_line(b"\x1b[1;31mboom\x1b[0m"), "boom");
-        assert_eq!(one_line(b"\x1b]0;title\x07ok"), "ok");
         assert_eq!(
-            one_line(b"\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\"),
-            "link"
+            stderr_summary("first\u{2028}fatal: last".as_bytes()),
+            "last"
         );
     }
 
     #[test]
-    fn one_line_drops_bidi_overrides() {
-        assert_eq!(one_line("a\u{202e}b\u{200b}c".as_bytes()), "abc");
-        for c in [
-            '\u{061c}', '\u{200e}', '\u{202a}', '\u{2066}', '\u{2069}', '\u{206f}',
-        ] {
-            assert_eq!(one_line(format!("x{c}y").as_bytes()), "xy", "{c:?}");
-        }
+    fn stderr_summary_joins_a_message_without_an_error_line() {
+        assert_eq!(
+            stderr_summary(b"not logged in\nrun gh auth login\n"),
+            "not logged in run gh auth login"
+        );
+        assert_eq!(stderr_summary(b"warning: w\nhint: h\n"), "warning: w");
+        assert_eq!(stderr_summary(b"hint: only\n"), "hint: only");
     }
 
     #[test]
-    fn one_line_treats_line_and_paragraph_separators_as_line_breaks() {
-        assert_eq!(one_line("first\u{2028}fatal: last".as_bytes()), "last");
-        assert_eq!(one_line("a\u{2029}b".as_bytes()), "b");
-        assert_eq!(one_line("x\u{2028}\u{2029}".as_bytes()), "x");
-        let line = one_line("fatal: a\u{2028}b\u{2029}c".as_bytes());
-        assert!(!line.contains(['\u{2028}', '\u{2029}']), "{line:?}");
-    }
-
-    #[test]
-    fn one_line_handles_empty_and_invalid_utf8() {
-        assert_eq!(one_line(b""), "");
-        assert_eq!(one_line(b"\n\r\n"), "");
-        assert_eq!(one_line(b"bad \xff byte"), "bad \u{fffd} byte");
+    fn stderr_summary_keeps_the_final_progress_state_and_no_controls() {
+        assert_eq!(
+            stderr_summary(b"a\rprogress 50%\rdone\x1b[0m\x07\r"),
+            "done"
+        );
+        assert_eq!(stderr_summary(b"\x1b[1;31mboom\x1b[0m"), "boom");
+        assert_eq!(stderr_summary("a\u{202e}b\u{200b}c".as_bytes()), "abc");
+        assert_eq!(stderr_summary(b""), "");
+        assert_eq!(stderr_summary(b"\n\r\n"), "");
+        assert_eq!(stderr_summary(b"bad \xff byte"), "bad \u{fffd} byte");
     }
 
     #[test]

@@ -20,6 +20,7 @@ use crate::git::GitError;
 use crate::platform::PlatformError;
 use crate::shell::ShellError;
 use crate::sync::SyncError;
+use crate::text::one_line;
 use crate::ui::UiError;
 
 /// Every failure a command can return. Each module's error folds in through
@@ -74,7 +75,7 @@ pub enum Error {
 impl Error {
     /// Reduces a clap usage error to [`Error::Usage`]: one line built from
     /// clap's structured context (so a newline inside an argument cannot cut
-    /// it short), with control characters escaped (clap echoes argv), the
+    /// it short), made safe by [`one_line`] (clap echoes argv), the
     /// valid values or suggestion when clap has one, and
     /// `(see 'work --help')`. Not for `DisplayHelp`/
     /// `DisplayVersion`, which `lib::run` prints normally.
@@ -114,7 +115,7 @@ impl Error {
             }
             _ => first_line(&err.to_string()),
         };
-        summary = escape_controls(summary.trim_end_matches(':'));
+        summary = one_line(summary.trim_end_matches(':'));
 
         let mut hints = Vec::new();
         if let Some(valid) = context(err, ContextKind::ValidValue) {
@@ -127,41 +128,41 @@ impl Error {
             hints.push(format!("did you mean '{similar}'?"));
         }
         if !hints.is_empty() {
-            summary = format!("{summary} ({})", escape_controls(&hints.join("; ")));
+            summary = format!("{summary} ({})", one_line(&hints.join("; ")));
         }
         Self::Usage(format!(
             "{summary} (see '{} --help')",
-            escape_controls(command_path)
+            one_line(command_path)
         ))
     }
 
     /// Items to print as `  - <item>` lines after the summary; empty for
-    /// ordinary errors. Each item is one line: control characters (from
-    /// untrusted paths) are escaped.
+    /// ordinary errors. Each item (from untrusted paths) goes through
+    /// [`one_line`].
     #[must_use]
     pub fn list_items(&self) -> Vec<String> {
         match self {
             Self::Resolve(ResolveError::Ambiguous { candidates, .. }) => candidates
                 .iter()
-                .map(|slug| escape_controls(&slug.to_string()))
+                .map(|slug| one_line(&slug.to_string()))
                 .collect(),
             Self::Sync(SyncError::SomeFailed { failed, .. }) => failed
                 .iter()
-                .map(|path| escape_controls(&path.to_string_lossy()))
+                .map(|path| one_line(&path.to_string_lossy()))
                 .collect(),
             Self::Shell(ShellError::UnknownStyle { valid, .. }) => {
-                valid.iter().map(|name| escape_controls(name)).collect()
+                valid.iter().map(|name| one_line(name)).collect()
             }
             _ => Vec::new(),
         }
     }
 
-    /// The one-line summary `main` prints after `work: `: `to_string()` with
-    /// control characters escaped, so a message that embeds untrusted text
-    /// can never span lines whatever its variant.
+    /// The one-line summary `main` prints after `work: `: `to_string()`
+    /// through [`one_line`], so a message that embeds untrusted text can
+    /// never span lines whatever its variant.
     #[must_use]
     pub fn summary(&self) -> String {
-        escape_controls(&self.to_string())
+        one_line(&self.to_string())
     }
 
     /// The process exit code: 0 for a broken stdout pipe, 2 for usage
@@ -212,21 +213,6 @@ fn first_line(rendered: &str) -> String {
     line.strip_prefix("error: ").unwrap_or(line).to_owned()
 }
 
-/// `s` with every control and invisible format character
-/// ([`crate::text::is_unsafe`]) replaced by its `\u{..}`/`\n` escape, so it
-/// cannot break a line or hide text.
-fn escape_controls(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if crate::text::is_unsafe(c) {
-                c.escape_default().to_string()
-            } else {
-                c.to_string()
-            }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -244,7 +230,7 @@ mod tests {
             total: 40,
         });
         assert_eq!(err.to_string(), "2 of 40 repositories failed to sync");
-        assert_eq!(err.list_items(), ["acme/foo", "corp/bar\\nbaz"]);
+        assert_eq!(err.list_items(), ["acme/foo", "corp/bar baz"]);
 
         let err = Error::from(ShellError::UnknownStyle {
             given: "x\ny".to_owned(),
@@ -270,11 +256,10 @@ mod tests {
     }
 
     #[test]
-    fn clap_errors_escape_line_separators_and_bidi_controls() {
+    fn clap_errors_drop_line_separators_and_bidi_controls() {
         let text = usage_text(&["work", "--a\u{2028}b\u{202e}c"]);
         assert!(!text.contains(['\u{2028}', '\u{202e}']), "{text:?}");
-        assert!(text.contains(r"\u{2028}"), "{text}");
-        assert!(text.contains(r"\u{202e}"), "{text}");
+        assert!(text.contains("--a bc"), "{text}");
     }
 
     #[test]
@@ -306,9 +291,9 @@ mod tests {
     #[test]
     fn newlines_in_arguments_do_not_cut_the_message() {
         let text = usage_text(&["work", "fr\nob"]);
-        assert!(text.contains("fr\\nob"), "{text}");
+        assert!(text.contains("fr ob"), "{text}");
         let text = usage_text(&["work", "auth", "login", "--domain", "a\nb"]);
-        assert!(text.contains("a\\nb"), "{text}");
+        assert!(text.contains("a b"), "{text}");
     }
 
     #[test]
@@ -328,9 +313,9 @@ mod tests {
     }
 
     #[test]
-    fn summary_escapes_whatever_a_variant_embeds() {
-        let err = Error::Usage("a\nb".to_owned());
-        assert_eq!(err.summary(), "a\\nb");
+    fn summary_is_one_line_whatever_a_variant_embeds() {
+        let err = Error::Usage("a\nb\x1b[31m".to_owned());
+        assert_eq!(err.summary(), "a b");
     }
 
     #[test]
