@@ -67,3 +67,41 @@ fn every_domain_failing_is_an_error_and_leaves_the_cache_untouched() {
     assert!(!out.status.success());
     assert_eq!(fs::read(env.cache_path()).expect("cache"), before);
 }
+
+#[test]
+fn favorites_narrow_the_listing_unless_all_orgs_and_excludes_always_apply() {
+    let env = TestEnv::new();
+    let work_dir = toml_edit::Value::from(env.work_dir().to_str().expect("utf-8"));
+    env.config(&format!(
+        "work_dir = {work_dir}\n\
+         [filters]\nexclude_orgs = [\"junk\"]\n\
+         [domains.\"github.com\"]\nis_default = true\nfavorite_orgs = [\"acme\", \"junk\"]\n"
+    ));
+    env.gh_domain(
+        "github.com",
+        &["acme", "beta", "junk"],
+        &["acme/app", "beta/lib", "junk/old", "me/dots"],
+    );
+
+    let out = env.command().arg("update").output().expect("run");
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(
+        cached_slugs(&env),
+        ["github.com/acme/app", "github.com/me/dots"]
+    );
+
+    let out = env
+        .command()
+        .args(["update", "--all-orgs"])
+        .output()
+        .expect("run");
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(
+        cached_slugs(&env),
+        [
+            "github.com/acme/app",
+            "github.com/beta/lib",
+            "github.com/me/dots"
+        ]
+    );
+}

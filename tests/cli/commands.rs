@@ -126,4 +126,15 @@ fn about_without_a_terminal_prints_the_static_logo() {
         "{stderr}"
     );
     assert!(stderr.contains("github.com/anoldguy/work"), "{stderr}");
+
+    let out = env
+        .command()
+        .args(["about", "--style", "nope"])
+        .output()
+        .expect("run");
+    assert!(!out.status.success());
+    let stderr = text(&out.stderr);
+    for style in ["classic", "decode", "plasma", "fire", "dropin"] {
+        assert!(stderr.contains(style), "{stderr}");
+    }
 }
