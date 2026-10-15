@@ -41,7 +41,7 @@ pub fn pull_one(
     domain: &Domain,
     on_step: &dyn Fn(Step),
 ) -> SyncOutcome {
-    let fail = |err: &GitError| SyncOutcome::Error(crate::text::sanitize(&err.to_string()));
+    let fail = |err: &GitError| SyncOutcome::Error(crate::text::one_line(&err.to_string()));
     on_step(Step::Fetching);
     if let Err(err) = git.fetch(repo, domain) {
         return fail(&err);

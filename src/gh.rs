@@ -19,6 +19,7 @@ use std::thread;
 
 use crate::domain::{Domain, Org, Repo};
 use crate::proc::{self, Interactive};
+use crate::text;
 
 /// What `work` asks of the GitHub CLI. `Sync` because fetch workers share
 /// one `&dyn Gh` across scoped threads; implemented by [`ProcessGh`] and by
@@ -156,21 +157,9 @@ fn map_spawn(err: &io::Error) -> GhError {
         GhError::NotInstalled
     } else {
         GhError::Spawn {
-            detail: proc::one_line(err.to_string().as_bytes()),
+            detail: text::one_line(&err.to_string()),
         }
     }
-}
-
-/// gh's stderr as one line: each line sanitised by [`proc::one_line`], then
-/// joined with spaces, so a two-line message ("not logged in … run gh auth
-/// login") keeps its hint.
-fn stderr_summary(stderr: &[u8]) -> String {
-    stderr
-        .split(|&b| b == b'\n')
-        .map(proc::one_line)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 /// Runs `<program> api --hostname <host> <args>`, calling `on_line` with
@@ -221,14 +210,14 @@ fn api_lines(
             host: host.clone(),
             detail: format!(
                 "reading gh output failed: {}",
-                proc::one_line(err.to_string().as_bytes())
+                text::one_line(&err.to_string())
             ),
         });
     }
     if status.success() {
         return Ok(());
     }
-    let summary = stderr_summary(&stderr);
+    let summary = proc::stderr_summary(&stderr);
     Err(GhError::Api {
         host: host.clone(),
         detail: if summary.is_empty() {
@@ -349,8 +338,7 @@ pub enum GhError {
         action: &'static str,
         /// The host it ran against.
         host: Domain,
-        /// gh's stderr through `proc::one_line`, or the exit status for
-        /// inherited-stdio runs.
+        /// The exit status (gh printed its own message on the terminal).
         detail: String,
     },
     /// `gh api` exited non-zero (or printed something unusable). The

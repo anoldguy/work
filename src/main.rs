@@ -26,7 +26,7 @@ fn main() -> ExitCode {
             .copied()
             .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
             .unwrap_or("unknown panic");
-        let message = work::text::sanitize(message);
+        let message = work::text::one_line(message);
         let _ = writeln!(
             io::stderr().lock(),
             "work: internal error: {message} (please report this)"

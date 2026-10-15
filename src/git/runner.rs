@@ -9,6 +9,7 @@ use crate::core::sync_outcome::RepoFacts;
 use crate::domain::{CloneUrl, Domain};
 use crate::git::{Git, GitError, status};
 use crate::proc;
+use crate::text;
 
 /// Variables that would point git at a different repository than `-C`.
 const REPO_VARS: &[&str] = &[
@@ -133,14 +134,14 @@ fn spawn_error(err: &io::Error) -> GitError {
         GitError::NotInstalled
     } else {
         GitError::Spawn {
-            detail: proc::one_line(err.to_string().as_bytes()),
+            detail: text::one_line(&err.to_string()),
         }
     }
 }
 
 /// A failed run, with git's stderr reduced to one line.
 fn failed(action: &'static str, out: &Output) -> GitError {
-    let line = proc::one_line(&out.stderr);
+    let line = proc::stderr_summary(&out.stderr);
     GitError::Failed {
         action,
         detail: if line.is_empty() {

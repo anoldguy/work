@@ -64,7 +64,7 @@ fn a_newline_in_an_argument_stays_on_one_line() {
     let assert = work().arg("fr\nob").assert().code(2).stdout("");
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8");
     assert_eq!(stderr.lines().count(), 1, "{stderr:?}");
-    assert!(stderr.contains("fr\\nob"), "{stderr}");
+    assert!(stderr.contains("fr ob"), "{stderr}");
 }
 
 #[test]
