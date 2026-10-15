@@ -1,4 +1,4 @@
-//! `work sync` over every outcome at once, with real git.
+//! `work pull` and `work sync` with real git.
 
 use std::fs;
 
@@ -99,4 +99,59 @@ fn sync_reports_every_outcome_and_fails_listing_the_errors() {
     let failed: Vec<&str> = stderr.lines().filter(|l| l.starts_with("  - ")).collect();
     assert_eq!(failed.len(), 1, "{stderr}");
     assert!(failed[0].contains("acme/broken"), "{stderr}");
+}
+
+#[test]
+fn sync_succeeds_when_every_repo_is_up_to_date() {
+    let env = TestEnv::new();
+    env.config_domains(&["github.com"]);
+    env.seed_cache(&["github.com/acme/a", "github.com/acme/b"], false);
+    for name in ["a", "b"] {
+        env.remote(&format!("github.com/acme/{name}"))
+            .clone_to(&env.work_dir().join("acme").join(name));
+    }
+
+    let out = env.command().arg("sync").output().expect("run");
+    let stdout = text(&out.stdout);
+    assert!(out.status.success(), "{stdout}{}", text(&out.stderr));
+    assert_eq!(stdout.lines().count(), 2, "{stdout}");
+    assert!(
+        stdout.lines().all(|l| l.ends_with("up to date")),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn pull_fast_forwards_one_cloned_repo() {
+    let env = TestEnv::new();
+    env.config_domains(&["github.com"]);
+    env.seed_cache(&["github.com/acme/app"], false);
+    let remote = env.remote("github.com/acme/app");
+    let path = remote.clone_to(&env.work_dir().join("acme/app"));
+    let head = remote.commit("a.txt", "a\n");
+
+    let out = env.command().args(["pull", "app"]).output().expect("run");
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout), "acme/app: pulled (1 commit)\n");
+    assert_eq!(env.git(&path, &["rev-parse", "HEAD"]), head);
+}
+
+#[test]
+fn pull_on_a_repo_that_is_not_cloned_fails_without_running_git() {
+    let env = TestEnv::new();
+    env.config_domains(&["github.com"]);
+    env.seed_cache(&["github.com/acme/app"], false);
+    env.remote("github.com/acme/app");
+    fs::create_dir_all(env.work_dir().join("acme/app")).expect("empty dir");
+
+    let out = env.command().args(["pull", "app"]).output().expect("run");
+    assert!(!out.status.success());
+    assert_eq!(text(&out.stdout), "");
+    assert_eq!(
+        text(&out.stderr).lines().count(),
+        1,
+        "{}",
+        text(&out.stderr)
+    );
+    assert_eq!(env.calls("git"), Vec::<String>::new());
 }
