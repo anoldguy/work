@@ -1,7 +1,4 @@
 //! `config [--edit] [path | default [domain]]`.
-//!
-//! `path` and `--edit` take only `Locations`, so they work (and `--edit` can
-//! repair the file) when the config is broken.
 
 use std::fs;
 use std::path::Path;
@@ -16,7 +13,8 @@ use crate::platform::{self, EditorCmd};
 use crate::proc::Interactive;
 use crate::ui::{Ui, UiError};
 
-/// `config path`: prints the config file's path and whether it exists.
+/// Prints the config file's path and whether it exists. Works even when the
+/// config is broken.
 ///
 /// # Errors
 ///
@@ -29,14 +27,12 @@ pub fn path(locations: &Locations, ui: &mut Ui) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// `exists` or `missing`.
 fn file_state(file: &Path) -> &'static str {
     if file.exists() { "exists" } else { "missing" }
 }
 
-/// `config --edit`: creates the config directory if needed and opens the
-/// file in the editor chain (`$WORK_EDITOR`, `$EDITOR`, `vi`) with stdio
-/// inherited.
+/// Opens the config file in the editor, creating its directory if needed.
+/// Works even when the config is broken, so it can repair the file.
 ///
 /// # Errors
 ///
@@ -53,7 +49,7 @@ pub fn edit(env: &EnvSnapshot, locations: &Locations, ui: &mut Ui) -> Result<Exi
     Ok(ExitCode::SUCCESS)
 }
 
-/// `config`: prints a summary of the effective configuration.
+/// Prints a summary of the effective configuration.
 ///
 /// # Errors
 ///
@@ -98,8 +94,8 @@ pub fn show(app: &App, ui: &mut Ui) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// `config default [domain]`: makes `domain` (or the one picked from the
-/// configured domains) the default, keeping the file's comments.
+/// Makes `domain` (or the one picked from the configured domains) the
+/// default, keeping the file's comments.
 ///
 /// # Errors
 ///
@@ -130,12 +126,11 @@ pub fn set_default(app: &App, ui: &mut Ui, domain: Option<Domain>) -> Result<Exi
 }
 
 /// Asks which configured domain to use, under `prompt`; `None` when
-/// cancelled. Shared by `config default` and `favorite`.
+/// cancelled.
 ///
 /// # Errors
 ///
-/// [`ConfigError::NoDomains`] when no domain is configured (the picker
-/// would have nothing to offer), [`UiError::NotInteractive`] naming `what`
+/// [`ConfigError::NoDomains`], [`UiError::NotInteractive`] naming `what`
 /// without a TTY, or picker failures.
 pub(crate) fn pick_domain(
     config: &Config,
@@ -158,7 +153,6 @@ pub(crate) fn pick_domain(
         .map(|d| (*d).clone()))
 }
 
-/// `a, b, c`, or `(none)`.
 fn org_list(orgs: &[Org]) -> String {
     if orgs.is_empty() {
         "(none)".to_owned()

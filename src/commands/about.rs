@@ -1,4 +1,4 @@
-//! `about [--style name]` (no config needed).
+//! `about [--style name]`.
 
 use std::num::NonZeroU32;
 use std::process::ExitCode;
@@ -16,13 +16,12 @@ use crate::ui::{Mode, Ui};
 /// correlated with the chosen style's own first draws from the same seed.
 const STYLE_SALT: u64 = 0xA076_1D64_78BD_642F;
 
-/// Runs the splash at 60 fps in the alternate screen until a key is pressed,
-/// using `--style` or a random style seeded from time XOR pid. Without a TTY,
-/// writes the static logo and footer to stderr.
+/// Shows the splash until a key is pressed, using `--style` or a random
+/// style. Without a TTY, writes the static logo and footer to stderr.
 ///
 /// # Errors
 ///
-/// `ShellError::UnknownStyle` (a list error), or terminal failures.
+/// `ShellError::UnknownStyle`, or terminal failures.
 pub fn run(ui: &mut Ui, args: &AboutArgs) -> Result<ExitCode, Error> {
     let AboutArgs { style } = args;
     let seed = entropy_seed();
@@ -45,7 +44,6 @@ fn entropy_seed() -> u64 {
     nanos ^ u64::from(std::process::id())
 }
 
-/// The named style, or a random one from `seed` when `name` is `None`.
 fn pick_style(name: Option<&str>, seed: u64) -> Result<&'static dyn Style, ShellError> {
     if let Some(given) = name {
         return find_style(given).ok_or_else(|| ShellError::UnknownStyle {
@@ -62,8 +60,6 @@ fn pick_style(name: Option<&str>, seed: u64) -> Result<&'static dyn Style, Shell
         .unwrap_or(&crate::ui::splash::classic::Classic))
 }
 
-/// The logo, a blank line and the footer (centred under the logo), for
-/// stderr without a terminal.
 fn static_lines() -> Vec<String> {
     let mut lines: Vec<String> = LOGO.iter().map(|l| (*l).to_owned()).collect();
     lines.push(String::new());

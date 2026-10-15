@@ -24,8 +24,7 @@ pub fn run(app: &App, ui: &mut Ui, args: &UpdateArgs) -> Result<ExitCode, Error>
     Ok(ExitCode::SUCCESS)
 }
 
-/// `Cached N repositories across D domains` (D counts domains that have
-/// cached repositories), with singular nouns for 1.
+/// `D` counts only domains that have cached repositories.
 fn summary(cache: &Cache) -> String {
     let repos = cache.repos.len();
     let domains = cache

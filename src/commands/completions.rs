@@ -1,4 +1,4 @@
-//! `completions [shell] [--install]` (no config needed).
+//! `completions [shell] [--install]`.
 
 use std::fs;
 use std::process::ExitCode;

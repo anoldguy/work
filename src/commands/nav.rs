@@ -1,10 +1,8 @@
 //! `cd`, `on`, `edit`, `clone`, `browse`, `open`, their `sh-*` forms, and
 //! `sh-editor`.
 //!
-//! Every command that names a repo runs the shared pipeline: load the cache
-//! (refreshing it when stale), resolve the query, clone when the command
-//! needs a local copy, perform the action, and only then record the access
-//! (so a failed clone, editor or opener records nothing).
+//! Access is recorded only after the action succeeds, so a failed clone,
+//! editor or opener records nothing.
 
 use std::fs;
 use std::process::ExitCode;
@@ -35,7 +33,7 @@ pub enum Invocation {
 enum Local {
     /// Clone it first when `.git` is missing.
     Clone,
-    /// Never clone (`browse`).
+    /// Never clone.
     NotNeeded,
 }
 
@@ -61,8 +59,8 @@ pub fn cd(app: &App, ui: &mut Ui, args: &CdArgs, via: Invocation) -> Result<Exit
     wrapped_target(app, ui, query, args.pick)
 }
 
-/// `on <query>`: prints the repo's absolute path, like [`cd`]; the wrapper
-/// changes to it and then runs `sh-editor` (see [`sh_editor`]).
+/// `on <query>`: prints the repo's absolute path for the wrapper to `cd` to
+/// and open in the editor.
 ///
 /// # Errors
 ///
@@ -73,7 +71,7 @@ pub fn on(app: &App, ui: &mut Ui, args: &ResolveArgs, via: Invocation) -> Result
 }
 
 /// `sh-editor`: runs the editor on the current directory with the terminal
-/// attached. Resolves nothing and records nothing, so it needs no config.
+/// attached.
 ///
 /// # Errors
 ///
@@ -84,8 +82,6 @@ pub fn sh_editor(env: &EnvSnapshot, ui: &mut Ui) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Resolves `query`, clones it when missing, records the access, and prints
-/// the target's absolute path.
 fn wrapped_target(app: &App, ui: &mut Ui, query: &str, pick: bool) -> Result<ExitCode, Error> {
     let (cache, target) = resolve(app, ui, query, pick)?;
     // Check the path can be printed before cloning anything.
@@ -132,7 +128,7 @@ pub fn clone(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Err
 ///
 /// # Panics
 ///
-/// Only on a broken [`Target`] invariant (see [`Target::repo`]).
+/// Only on a broken [`Target`] invariant.
 pub fn browse(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Error> {
     let (cache, target) = prepare(app, ui, args, Local::NotNeeded)?;
     platform::open_url(&target.repo(&cache.repos).html_url)?;
@@ -152,8 +148,7 @@ pub fn open(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Erro
     Ok(ExitCode::SUCCESS)
 }
 
-/// Fails plain `cd`/`on` with a hint for the detected shell, before any
-/// cache or resolution work.
+/// Runs before any cache or resolution work, so plain `cd`/`on` fail fast.
 fn require_wrapper(app: &App, via: Invocation) -> Result<(), ShellError> {
     match via {
         Invocation::Wrapped => Ok(()),
@@ -163,16 +158,12 @@ fn require_wrapper(app: &App, via: Invocation) -> Result<(), ShellError> {
     }
 }
 
-/// Loads the cache (refreshing it when needed) and resolves `query`.
-/// Nothing is cloned or recorded yet.
 fn resolve(app: &App, ui: &mut Ui, query: &str, pick: bool) -> Result<(Cache, Target), Error> {
     let cache = load_or_refresh(app, ui, Freshness::AutoUpdate)?;
     let target = resolve_target(app, ui, &cache, query, pick)?;
     Ok((cache, target))
 }
 
-/// [`resolve`], then clones the result when `local` asks for it. Nothing is
-/// recorded yet.
 fn prepare(
     app: &App,
     ui: &mut Ui,

@@ -7,9 +7,7 @@ use crate::error::Error;
 use crate::gh::{Gh, ProcessGh};
 use crate::git::{Git, ProcessGit};
 
-/// Immutable process-wide context. Commands take `&mut Ui` next to it.
-///
-/// `now` is read once here and passed down; nothing else reads the clock.
+/// Immutable process-wide context.
 #[derive(Debug)]
 pub struct App {
     /// The environment snapshot.
@@ -20,25 +18,24 @@ pub struct App {
     pub config: Config,
     /// The git seam.
     pub git: Box<dyn Git>,
-    /// The gh seam: every GitHub API call and `gh auth`.
+    /// The gh seam.
     pub gh: Box<dyn Gh>,
-    /// "Now" for this process.
+    /// "Now" for this process, read once.
     pub now: StoredTime,
 }
 
-/// The external seams, grouped so [`App::with_parts`] stays readable.
+/// The external seams an [`App`] runs with.
 #[derive(Debug)]
 pub struct Adapters {
     /// The git seam.
     pub git: Box<dyn Git>,
-    /// The gh seam: every GitHub API call and `gh auth`.
+    /// The gh seam.
     pub gh: Box<dyn Gh>,
 }
 
 impl App {
-    /// Builds the real context: `Locations` from `env`, the config at
-    /// `locations.config_file` (implicit `github.com` when none),
-    /// `ProcessGit`, `ProcessGh`, and `StoredTime::now()`.
+    /// Builds the real context from `env`: the config on disk, real `git`
+    /// and `gh`, and the current time.
     ///
     /// # Errors
     ///
@@ -60,7 +57,7 @@ impl App {
         ))
     }
 
-    /// Assembles a context from parts (tests, and `load` itself).
+    /// Assembles a context from parts.
     #[must_use]
     pub fn with_parts(
         env: EnvSnapshot,
