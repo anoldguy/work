@@ -1,8 +1,4 @@
 //! A snapshot of the process environment, read once at startup.
-//!
-//! Nothing else in the crate calls `std::env::var*`; everything reads this
-//! struct instead, which keeps XDG and token logic testable without
-//! `set_var` (which is `unsafe` in edition 2024 and so forbidden here).
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -21,32 +17,29 @@ pub struct EnvSnapshot {
     pub xdg_state_home: Option<PathBuf>,
     /// `XDG_DATA_HOME`.
     pub xdg_data_home: Option<PathBuf>,
-    /// `SHELL`, used only by `activate`, `completions`, and the
-    /// "shell integration is not active" hint.
+    /// `SHELL`.
     pub shell: Option<String>,
-    /// `WORK_EDITOR`, the first choice for the editor.
+    /// `WORK_EDITOR`.
     pub work_editor: Option<String>,
-    /// `EDITOR`, the second choice for the editor.
+    /// `EDITOR`.
     pub editor: Option<String>,
-    /// `TERM`; `dumb` disables live progress.
+    /// `TERM`.
     pub term: Option<String>,
-    /// `HOMEBREW_PREFIX`, for completion install paths.
+    /// `HOMEBREW_PREFIX`.
     pub homebrew_prefix: Option<PathBuf>,
-    /// `PATH`, for locating `brew` when `HOMEBREW_PREFIX` is unset.
+    /// `PATH`.
     pub path: Option<OsString>,
     /// `NO_COLOR` is set to a non-empty value.
     pub no_color: bool,
 }
 
 impl EnvSnapshot {
-    /// Reads the process environment. The only place that does.
+    /// Reads the process environment.
     #[must_use]
     pub fn capture() -> Self {
         Self::from_vars(std::env::vars_os())
     }
 
-    /// Builds a snapshot from `vars`; `capture` feeds it the process
-    /// environment and tests feed it fixed pairs.
     fn from_vars(vars: impl IntoIterator<Item = (OsString, OsString)>) -> Self {
         let mut env = Self::default();
         for (name, value) in vars {

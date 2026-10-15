@@ -1,4 +1,4 @@
-//! `version` and `activate` (no config needed).
+//! `version` and `activate`.
 
 use std::process::ExitCode;
 
@@ -8,7 +8,7 @@ use crate::error::Error;
 use crate::shell::{activation_script, detect};
 use crate::ui::Ui;
 
-/// Prints `CARGO_PKG_VERSION`.
+/// Prints the version.
 ///
 /// # Errors
 ///
@@ -18,13 +18,11 @@ pub fn version(ui: &mut Ui) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// `activate [shell]`: prints the embedded wrapper for the given or detected
-/// shell.
+/// Prints the shell integration script for the given or detected shell.
 ///
 /// # Errors
 ///
-/// A broken pipe. An unknown shell name is rejected by the argument parser
-/// before this runs.
+/// A broken pipe.
 pub fn activate(
     env: &EnvSnapshot,
     ui: &mut Ui,

@@ -12,7 +12,6 @@ use crate::text::plural;
 use crate::ui::Ui;
 use crate::ui::{Interaction, UiError};
 
-/// Shown by the progress display while the orgs are fetched.
 const PROGRESS_TITLE: &str = "Fetching organizations";
 
 /// What the picker produced.
@@ -20,14 +19,13 @@ const PROGRESS_TITLE: &str = "Fetching organizations";
 enum Choice {
     /// Nothing to pick from.
     NoOrgs,
-    /// The user cancelled; the config stays as it is.
+    /// The user cancelled.
     Cancelled,
     /// The new favourites (empty clears them).
     Selected(Vec<Org>),
 }
 
-/// Picks the domain (the only one, or a picker), fetches member and extra
-/// orgs under a progress title, runs `pick_many` with current favourites
+/// Lets the user pick a domain's favourite orgs, with the current ones
 /// preselected, and saves them (empty clears).
 ///
 /// # Errors
@@ -112,9 +110,8 @@ fn select_domain(
     }
 }
 
-/// Runs the multi-picker over the sorted union of `orgs` and `current`
-/// (so a favourite the API no longer lists is not silently dropped), with
-/// `current` preselected.
+/// Picks over the union of `orgs` and `current`, so a favourite the API no
+/// longer lists is not silently dropped.
 fn choose_favorites(
     interact: &mut dyn Interaction,
     domain: &Domain,

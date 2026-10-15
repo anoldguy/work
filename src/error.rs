@@ -1,9 +1,4 @@
 //! The top-level error and how it is rendered.
-//!
-//! `to_string()` is always one summary line. A list error (ambiguous query,
-//! failed sync repos, unknown style) also carries items, printed by `main`
-//! as `  - <item>` lines after `work: <summary>`; those items come from data,
-//! never from `\n` in a message.
 
 use std::io;
 use std::path::PathBuf;
@@ -23,8 +18,7 @@ use crate::sync::SyncError;
 use crate::text::one_line;
 use crate::ui::UiError;
 
-/// Every failure a command can return. Each module's error folds in through
-/// `From`.
+/// Every failure a command can return.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// An invalid value.
@@ -57,12 +51,10 @@ pub enum Error {
     /// External programs.
     #[error(transparent)]
     Platform(#[from] PlatformError),
-    /// A command-line usage error: clap's first line plus
-    /// `(see 'work --help')`. Exit code 2.
+    /// A command-line usage error; exits 2.
     #[error("{0}")]
     Usage(String),
-    /// Creating a directory (the work directory, or a clone's parent)
-    /// failed.
+    /// Creating a directory failed.
     #[error("cannot create directory {path:?}: {source}")]
     CreateDir {
         /// The directory.
@@ -73,24 +65,20 @@ pub enum Error {
 }
 
 impl Error {
-    /// Reduces a clap usage error to [`Error::Usage`]: one line built from
-    /// clap's structured context (so a newline inside an argument cannot cut
-    /// it short), made safe by [`one_line`] (clap echoes argv), the
-    /// valid values or suggestion when clap has one, and
-    /// `(see 'work --help')`. Not for `DisplayHelp`/
-    /// `DisplayVersion`, which `lib::run` prints normally.
+    /// Reduces a clap usage error to a one-line [`Error::Usage`]. Not for
+    /// `DisplayHelp`/`DisplayVersion`.
     #[must_use]
     pub fn from_clap(err: &clap::Error) -> Self {
         Self::from_clap_in(err, "work")
     }
 
-    /// [`Error::from_clap`] with the help hint pointing at `command_path`
-    /// (`work` or e.g. `work completions`, the deepest subcommand the
-    /// arguments reached).
+    /// [`Error::from_clap`] with the help hint naming `command_path`.
     #[must_use]
     pub fn from_clap_in(err: &clap::Error, command_path: &str) -> Self {
         let arg = || context(err, ContextKind::InvalidArg).unwrap_or_default();
         let value = || context(err, ContextKind::InvalidValue).unwrap_or_default();
+        // Built from clap's structured context rather than its rendering, so
+        // a newline inside an argument cannot cut the summary short.
         let mut summary = match err.kind() {
             ErrorKind::UnknownArgument => format!("unexpected argument '{}' found", arg()),
             ErrorKind::InvalidSubcommand => format!(
@@ -136,9 +124,8 @@ impl Error {
         ))
     }
 
-    /// Items to print as `  - <item>` lines after the summary; empty for
-    /// ordinary errors. Each item (from untrusted paths) goes through
-    /// [`one_line`].
+    /// Items to print one per line after the summary; empty for ordinary
+    /// errors.
     #[must_use]
     pub fn list_items(&self) -> Vec<String> {
         match self {
@@ -157,9 +144,7 @@ impl Error {
         }
     }
 
-    /// The one-line summary `main` prints after `work: `: `to_string()`
-    /// through [`one_line`], so a message that embeds untrusted text can
-    /// never span lines whatever its variant.
+    /// The message as one line, even when it embeds untrusted text.
     #[must_use]
     pub fn summary(&self) -> String {
         one_line(&self.to_string())
@@ -184,7 +169,6 @@ impl Error {
     }
 }
 
-/// The text of one clap context entry, values joined with `, `.
 fn context(err: &clap::Error, kind: ContextKind) -> Option<String> {
     match err.get(kind)? {
         ContextValue::String(text) => Some(text.clone()),
@@ -203,7 +187,6 @@ fn context(err: &clap::Error, kind: ContextKind) -> Option<String> {
     }
 }
 
-/// First non-empty line of clap's rendering, without the `error: ` prefix.
 fn first_line(rendered: &str) -> String {
     let line = rendered
         .lines()

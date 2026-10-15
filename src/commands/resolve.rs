@@ -1,5 +1,5 @@
-//! The shared pipeline behind `cd`, `on`, `edit`, `clone`, `browse`, `open`
-//! and `pull`: resolve a query, clone if needed, record the access.
+//! Resolving a query to a repo, cloning it if needed, and recording the
+//! access.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -16,7 +16,6 @@ use crate::frecency::{self, History, Problem};
 use crate::ui::Ui;
 use crate::ui::UiError;
 
-/// The picker's prompt for an ambiguous query.
 const PICK_PROMPT: &str = "Select a repository";
 
 /// A resolved repository.
@@ -26,14 +25,13 @@ pub struct Target {
     pub index: usize,
     /// Where it lives (or will live) on disk.
     pub path: PathBuf,
-    /// The query whose pick [`record_access`] saves to query frecency: set
-    /// after an automatic answer or a picker choice, `None` for a unique
+    /// The query whose pick is saved to query frecency; `None` for a unique
     /// match.
     pub picked_for: Option<QueryKey>,
 }
 
 impl Target {
-    /// The resolved repo in `repos` (the cache's `repos`).
+    /// The resolved repo in the cache's `repos`.
     ///
     /// # Panics
     ///
@@ -54,17 +52,14 @@ pub enum CloneStatus {
     Cloned,
 }
 
-/// Resolves `query` against `cache` (search, `decide`, then the picker on a
-/// TTY, always when `pick` and several repos match), ranking with the
-/// frecency in `frecency.json`. Entries for slugs not in `cache` are
-/// ignored. A problem with that file is one warning; nothing is written
-/// here.
+/// Resolves `query` against `cache`, ranking by frecency and showing the
+/// picker on a TTY when needed (always when `pick` and several repos match).
 ///
 /// # Errors
 ///
 /// An invalid query; [`ResolveError::NotFound`]; [`ResolveError::Ambiguous`]
 /// without a TTY or when the picker is cancelled; `UiError::NotInteractive`
-/// for `--pick` without a TTY when several repos match; `UiError::Interrupted` on Ctrl-C.
+/// for `--pick` without a TTY; `UiError::Interrupted` on Ctrl-C.
 pub fn resolve_target(
     app: &App,
     ui: &mut Ui,
@@ -103,9 +98,8 @@ pub fn resolve_target(
     Ok(target)
 }
 
-/// The frecency history (warning once about a problem with the file),
-/// restricted to the slugs `cache` lists. The file keeps the other entries;
-/// they count again when their repo returns.
+/// The frecency history restricted to the slugs `cache` lists. The file
+/// keeps the other entries; they count again when their repo returns.
 pub(crate) fn listed_history(app: &App, ui: &mut Ui, cache: &Cache) -> History {
     let (mut history, problem) = frecency::load(app.config.cache_dir());
     if let Some(problem) = problem {
@@ -117,13 +111,6 @@ pub(crate) fn listed_history(app: &App, ui: &mut Ui, cache: &Cache) -> History {
     history
 }
 
-/// Shows the picker over `candidates` (repo indices, rank order) and returns
-/// the chosen repo index.
-///
-/// # Errors
-///
-/// [`ResolveError::Ambiguous`] without a terminal or when cancelled; the
-/// picker's own failure (e.g. `UiError::Interrupted`).
 fn ask(
     ui: &mut Ui,
     cache: &Cache,
@@ -150,7 +137,6 @@ fn ask(
     }
 }
 
-/// The [`Target`] for repo `index`: where it lives under the work directory.
 fn target_for(app: &App, cache: &Cache, index: usize) -> Target {
     let slug = &cache.repos[index].slug;
     let path = repo_path(app.config.work_dir(), app.config.default_domain(), slug);
@@ -161,9 +147,7 @@ fn target_for(app: &App, cache: &Cache, index: usize) -> Target {
     }
 }
 
-/// Whether the repo directory at `path` is a clone: it contains `.git` (a
-/// directory, or a file as in a worktree). The one check `clone`, `pull`
-/// and `sync` share.
+/// Whether `path` contains `.git`: a directory, or a file as in a worktree.
 #[must_use]
 pub(crate) fn is_cloned(path: &Path) -> bool {
     path.join(".git").exists()
@@ -178,10 +162,8 @@ pub(crate) fn short_name(slug: &Slug, default: Option<&Domain>) -> String {
     }
 }
 
-/// Clones the target unless `.git` exists: creates the parent directories
-/// and runs `git clone` under a progress title, with git authenticating
-/// through `gh` for the repo's domain. When the clone fails, the parent
-/// directories it created are removed again (if still empty).
+/// Clones the target unless `.git` exists. When the clone fails, the parent
+/// directories it created are removed again if still empty.
 ///
 /// # Errors
 ///
@@ -189,8 +171,7 @@ pub(crate) fn short_name(slug: &Slug, default: Option<&Domain>) -> String {
 ///
 /// # Panics
 ///
-/// If `target.index` is not an index into `cache.repos` (a [`Target`] from
-/// [`resolve_target`] against the same cache always is).
+/// If `target` was not resolved against `cache`.
 pub fn ensure_cloned(
     app: &App,
     ui: &mut Ui,
@@ -239,17 +220,12 @@ fn missing_dirs(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Records the access to the target (and its query pick, if any) in
-/// `frecency.json`. Called once the command's action has succeeded. The
-/// file is reloaded under its lock, so accesses another process recorded
-/// meanwhile are kept. A file of unknown version is left alone (the load in
-/// [`resolve_target`] already warned); any other problem, including a
-/// failed write, is a warning: the command itself has already succeeded.
+/// Records the access to the target, and its query pick if any. Failures
+/// are warnings, since the command itself has already succeeded.
 ///
 /// # Panics
 ///
-/// If `target.index` is not an index into `cache.repos` (a [`Target`] from
-/// [`resolve_target`] against the same cache always is).
+/// If `target` was not resolved against `cache`.
 pub fn record_access(app: &App, ui: &mut Ui, cache: &Cache, target: &Target) {
     let now = app.now;
     let slug = &target.repo(&cache.repos).slug;
@@ -259,6 +235,7 @@ pub fn record_access(app: &App, ui: &mut Ui, cache: &Cache, target: &Target) {
             history.query_frecency.record(key, slug, now);
         }
     });
+    // Loading for resolution already warned about these.
     match recorded {
         Ok(None | Some(Problem::UnknownVersion { .. } | Problem::Unreadable { .. })) => {}
         Ok(Some(problem)) => ui.warn(&problem.to_string()),
@@ -275,13 +252,12 @@ pub enum ResolveError {
         /// The normalised query.
         query: QueryKey,
     },
-    /// Several repos matched and nobody picked. A list error: `candidates`
-    /// are printed as `  - <slug>` lines after the summary.
+    /// Several repos matched and nobody picked.
     #[error("ambiguous query '{query}' (use a more specific query, or run in a terminal to pick)")]
     Ambiguous {
         /// The normalised query.
         query: QueryKey,
-        /// Every candidate (at most `RESULT_LIMIT`), in rank order.
+        /// Every candidate, in rank order.
         candidates: Vec<Slug>,
     },
     /// `pull` on a repo that has not been cloned.
