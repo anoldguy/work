@@ -17,7 +17,7 @@ pub enum LoadOutcome {
     /// No cache file.
     Missing,
     /// Unreadable, unparsable, or another version; the string says why (one
-    /// line). The caller quarantines it and rebuilds.
+    /// line).
     Corrupt(String),
 }
 
@@ -59,8 +59,7 @@ pub fn load(dir: &Path) -> LoadOutcome {
     }
 }
 
-/// Writes `cache` to `dir` atomically: a temporary file in `dir`, fsync,
-/// then rename. Creates `dir` if needed. Concurrent writers: last one wins.
+/// Atomically writes `cache` to `dir`, creating `dir` if needed.
 ///
 /// # Errors
 ///
@@ -99,9 +98,9 @@ fn remove_old_temp_files(dir: &Path) {
     }
 }
 
-/// Renames a corrupt `cache.json` (a file, or anything else at that path)
-/// to `cache.json.corrupt` before a rebuild, first removing an earlier
-/// `cache.json.corrupt` of any kind so the rename cannot trip over it.
+/// Renames whatever is at `cache.json` to `cache.json.corrupt`, first
+/// removing an earlier `cache.json.corrupt` of any kind so the rename cannot
+/// trip over it.
 ///
 /// # Errors
 ///
@@ -121,15 +120,13 @@ pub fn quarantine(dir: &Path) -> Result<(), CacheError> {
     fs::rename(&from, &to).map_err(|source| CacheError::Write { path: from, source })
 }
 
-/// Writes a refreshed `cache` to `dir`, replacing whatever is there. A file
-/// that does not load (corrupt, another version, not a file) is first renamed
-/// to `cache.json.corrupt`. No lock: both possible writers hold a complete
-/// listing, so the last one wins.
+/// Writes `cache` to `dir`, first renaming a file that does not load to
+/// `cache.json.corrupt`. No lock: every writer holds a complete listing, so
+/// the last one wins.
 ///
 /// # Errors
 ///
-/// [`CacheError::Write`] or [`CacheError::Encode`] (from the quarantine or
-/// the save).
+/// [`CacheError::Write`] or [`CacheError::Encode`].
 pub fn replace(dir: &Path, cache: &Cache) -> Result<(), CacheError> {
     if matches!(load(dir), LoadOutcome::Corrupt(_)) {
         quarantine(dir)?;

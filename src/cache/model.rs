@@ -6,11 +6,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::{Repo, StoredTime};
 
-/// Version written to new caches. A file with any other version is treated
-/// as corrupt (renamed and rebuilt).
+/// Version written to new caches; a file with any other version is corrupt.
 pub const CACHE_VERSION: u32 = 2;
 
-/// A cache older than this is refreshed by `Freshness::AutoUpdate`.
+/// Age after which a cache is stale.
 pub const STALE_AFTER: Duration = Duration::from_hours(24);
 
 /// How far in the future `updated_at` may be before the cache counts as stale.
@@ -19,8 +18,7 @@ pub const CLOCK_SKEW: Duration = Duration::from_mins(5);
 /// File name inside the cache directory.
 pub const CACHE_FILE: &str = "cache.json";
 
-/// Everything in `cache.json`: the repository listing, no usage history
-/// (frecency lives in `frecency.json`). Unknown fields are ignored.
+/// The contents of `cache.json`. Unknown fields are ignored.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Cache {
     /// Always [`CACHE_VERSION`] when written by this build.
@@ -32,7 +30,7 @@ pub struct Cache {
 }
 
 impl Cache {
-    /// A cache of `repos` updated at `now` (tests).
+    /// A cache of `repos` updated at `now`.
     #[cfg(test)]
     #[must_use]
     pub fn new(repos: Vec<Repo>, now: StoredTime) -> Self {
@@ -44,8 +42,8 @@ impl Cache {
     }
 
     /// True when `updated_at` is more than [`STALE_AFTER`] before `now`, or
-    /// more than [`CLOCK_SKEW`] after it (a wrong clock or a restored file),
-    /// so such a cache is refreshed instead of staying "fresh" forever.
+    /// more than [`CLOCK_SKEW`] after it, so a future timestamp cannot keep a
+    /// cache fresh forever.
     #[must_use]
     pub fn is_stale(&self, now: StoredTime) -> bool {
         now.age_at(self.updated_at) > CLOCK_SKEW || self.updated_at.age_at(now) > STALE_AFTER

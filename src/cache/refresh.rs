@@ -11,35 +11,25 @@ use crate::domain::{Domain, StoredTime};
 use crate::text::plural;
 use crate::ui::Ui;
 
-/// Shown by the progress display until the fetch sends its header.
 const PROGRESS_TITLE: &str = "Updating repositories";
 
 /// How hard [`load_or_refresh`] tries to get fresh data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Freshness {
-    /// Navigation, `list`, `favorite`: refresh when missing, corrupt, or
-    /// stale. If every domain fails and a stale cache exists, warn and use
-    /// it.
+    /// Refresh when missing, corrupt, or stale; if every domain fails, warn
+    /// and fall back to the stale cache.
     AutoUpdate,
-    /// `pull` and `sync`: load only; a missing or corrupt cache is
-    /// [`CacheError::Missing`].
+    /// Load only; a missing or corrupt cache is [`CacheError::Missing`].
     NoUpdate,
-    /// `update`: always refresh; on total failure, error and keep the
-    /// existing file.
+    /// Always refresh; on total failure, error and keep the existing file.
     Force {
-        /// `--all-orgs`: ignore favourites.
+        /// Ignore favourite orgs.
         all_orgs: bool,
     },
 }
 
-/// Returns an owned cache. Fetching runs under `ui.with_progress`.
-///
-/// The merge starts from the copy read before the fetch and is written with
-/// [`store::replace`]; a concurrent refresh's copy is simply overwritten
-/// (both hold a complete listing). Frecency is never read or written here.
-/// A corrupt file is renamed to `cache.json.corrupt` only once a refresh has
-/// succeeded, immediately before the new cache is written, so a failed
-/// refresh never touches the disk.
+/// Loads the cache, refreshing it as `freshness` requires. A failed refresh
+/// leaves the file on disk untouched.
 ///
 /// # Errors
 ///
@@ -63,7 +53,6 @@ pub fn load_or_refresh(app: &App, ui: &mut Ui, freshness: Freshness) -> Result<C
     }
 }
 
-/// Fetches every effective domain, then merges and saves, or falls back.
 fn refresh(
     app: &App,
     ui: &mut Ui,

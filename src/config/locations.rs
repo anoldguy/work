@@ -42,8 +42,7 @@ impl ExpandedPath {
         }
     }
 
-    /// Wraps a path that is already absolute (for defaults and tests).
-    /// Returns `None` for a relative path.
+    /// Wraps a path that is already absolute; `None` for a relative path.
     #[must_use]
     pub fn from_absolute(path: PathBuf) -> Option<Self> {
         path.is_absolute().then_some(Self(path))
@@ -66,14 +65,14 @@ impl AsRef<Path> for ExpandedPath {
 ///
 /// XDG variables win when set (and non-empty), else the `~`-based defaults.
 /// On macOS `XDG_CONFIG_HOME` is ignored: the config file is fixed at
-/// `~/.config/work/config.toml`, per `specs/configuration.md`.
+/// `~/.config/work/config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Locations {
     /// `$HOME`.
     pub home: PathBuf,
-    /// `$XDG_CONFIG_HOME` (not on macOS), else `~/.config` (fish completions live under it).
+    /// `$XDG_CONFIG_HOME` (not on macOS), else `~/.config`.
     pub config_home: PathBuf,
-    /// `$XDG_DATA_HOME`, else `~/.local/share` (bash/zsh completions).
+    /// `$XDG_DATA_HOME`, else `~/.local/share`.
     pub data_home: PathBuf,
     /// `{config_home}/work/config.toml`.
     pub config_file: PathBuf,
