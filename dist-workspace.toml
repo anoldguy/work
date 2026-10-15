@@ -13,3 +13,8 @@ installers = ["shell"]
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
 # Run the CI workflow (tests, clippy, supply chain) before any release builds
 plan-jobs = ["./ci"]
+# Release CI runs only for version tags, never for pull requests
+pr-run-mode = "skip"
+
+[dist.github-action-commits]
+"actions/checkout" = "v7"
