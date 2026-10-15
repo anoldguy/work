@@ -292,8 +292,7 @@ fn sync_fetches_each_repo_with_gh_as_the_credential_helper_for_its_cached_domain
     ]);
     let foo_path = env.clone_into_work_dir(&foo, SLUG);
     let bar_path = env.clone_into_work_dir(&bar, "ghe.example.com/acme/bar");
-    // `origin` points at neither domain: the cache, not the remote, decides.
-    git(&bar_path, &["remote", "set-url", "origin", &foo.url()]);
+    // Both remotes are `file://` URLs, on neither domain: the cache decides.
     let log = env.record_git_args();
     sync(&env).success().stdout(
         "acme/foo: up to date\n\

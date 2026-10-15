@@ -1,10 +1,5 @@
-//! `frecency.json`: repo and query frecency, stored apart from the
-//! repository cache.
-//!
-//! Only navigation commands write it, always as a read-modify-write under
-//! `frecency.json.lock` ([`record`]). A cache refresh never reads or writes
-//! it. Scoring lives in [`crate::core::frecency`] and
-//! [`crate::core::query_frecency`].
+//! `frecency.json`: repo and query frecency. Every change is a
+//! read-modify-write under `frecency.json.lock`.
 
 use std::fs;
 use std::io;
@@ -78,11 +73,20 @@ pub enum Problem {
         /// The version it declares.
         version: u32,
     },
-    /// The file could not be read or parsed. It was renamed to
+    /// The file exists but cannot be read (permissions, I/O). It is left
+    /// alone and frecency is read-only.
+    #[error("cannot read {path:?} ({reason}); frecency is read-only for this run")]
+    Unreadable {
+        /// The file.
+        path: PathBuf,
+        /// Why (one line).
+        reason: String,
+    },
+    /// The file is not valid frecency JSON. It was renamed to
     /// `frecency.json.corrupt` (unless that failed) and history starts
     /// empty.
     #[error(
-        "{path:?} is unreadable ({reason}); moved it to {FRECENCY_FILE}.corrupt and started a new history"
+        "{path:?} is unparsable ({reason}); moved it to {FRECENCY_FILE}.corrupt and started a new history"
     )]
     Corrupt {
         /// The file.
@@ -117,6 +121,7 @@ enum Read {
     Missing,
     Loaded(History),
     UnknownVersion(u32),
+    Unreadable(String),
     Corrupt(String),
 }
 
@@ -130,7 +135,7 @@ fn read(path: &Path) -> Read {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Read::Missing,
-        Err(e) => return Read::Corrupt(one_line(&format!("cannot read file: {e}"))),
+        Err(e) => return Read::Unreadable(one_line(&e.to_string())),
     };
     let parsed = serde_json::from_slice::<Peek>(&bytes).and_then(|Peek { version }| {
         if version == FRECENCY_VERSION {
@@ -155,23 +160,38 @@ fn quarantine(path: &Path) {
 }
 
 /// The history in `dir`, and the problem to warn about, if any. A missing
-/// file is an empty history; an unknown version is an empty history and
-/// [`Problem::UnknownVersion`]; an unreadable file is renamed to
-/// `frecency.json.corrupt` and is an empty history and [`Problem::Corrupt`].
+/// file is an empty history. An unknown version or an unreadable file is an
+/// empty history plus [`Problem::UnknownVersion`] or [`Problem::Unreadable`],
+/// and the file is left alone. An unparsable file is renamed to
+/// `frecency.json.corrupt` under the lock (once a re-read confirms it is
+/// still unparsable) and is an empty history plus [`Problem::Corrupt`].
 #[must_use]
 pub fn load(dir: &Path) -> (History, Option<Problem>) {
     let path = frecency_file(dir);
-    match read(&path) {
+    let read_now = read(&path);
+    let read_now = match read_now {
+        Read::Corrupt(_) => {
+            let _lock = lock(dir);
+            let again = read(&path);
+            if matches!(again, Read::Corrupt(_)) {
+                quarantine(&path);
+            }
+            again
+        }
+        other => other,
+    };
+    match read_now {
         Read::Missing => (History::default(), None),
         Read::Loaded(history) => (history, None),
         Read::UnknownVersion(version) => (
             History::default(),
             Some(Problem::UnknownVersion { path, version }),
         ),
-        Read::Corrupt(reason) => {
-            quarantine(&path);
-            (History::default(), Some(Problem::Corrupt { path, reason }))
-        }
+        Read::Unreadable(reason) => (
+            History::default(),
+            Some(Problem::Unreadable { path, reason }),
+        ),
+        Read::Corrupt(reason) => (History::default(), Some(Problem::Corrupt { path, reason })),
     }
 }
 
@@ -195,10 +215,10 @@ fn lock(dir: &Path) -> Option<fs::File> {
 /// writes the result atomically, so concurrent `work` processes never lose
 /// each other's accesses.
 ///
-/// A file of unknown version is never overwritten: nothing is written and
-/// the result is `Ok(Some(Problem::UnknownVersion))`. A file that became
-/// unreadable is quarantined first and the result carries
-/// [`Problem::Corrupt`].
+/// A file of unknown version or one that cannot be read is never
+/// overwritten: nothing is written and the result carries
+/// [`Problem::UnknownVersion`] or [`Problem::Unreadable`]. An unparsable
+/// file is quarantined first and the result carries [`Problem::Corrupt`].
 ///
 /// # Errors
 ///
@@ -216,6 +236,7 @@ pub fn record(
         Read::UnknownVersion(version) => {
             return Ok(Some(Problem::UnknownVersion { path, version }));
         }
+        Read::Unreadable(reason) => return Ok(Some(Problem::Unreadable { path, reason })),
         Read::Corrupt(reason) => {
             quarantine(&path);
             (
@@ -311,6 +332,24 @@ mod tests {
             "{not json"
         );
         assert!(!frecency_file(dir.path()).exists());
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_left_alone_and_read_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = frecency_file(dir.path());
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("keep"), "history").unwrap();
+        let (h, problem) = load(dir.path());
+        assert_eq!(h, History::default());
+        assert_matches!(problem, Some(Problem::Unreadable { .. }));
+        let recorded = record(dir.path(), t(NOW), |h| {
+            h.frecency.record(&slug("api"), t(NOW));
+        })
+        .unwrap();
+        assert_matches!(recorded, Some(Problem::Unreadable { .. }));
+        assert_eq!(fs::read_to_string(path.join("keep")).unwrap(), "history");
+        assert!(!dir.path().join("frecency.json.corrupt").exists());
     }
 
     #[test]

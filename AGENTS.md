@@ -38,7 +38,7 @@ Clippy runs with `-D warnings`, so any warning fails the build.
 ## Key Constraints
 
 - Shell out to `git` for all git operations (no libgit2, gix, or go-git).
-- Shell out to `gh` for every GitHub API call (`gh api --hostname <domain>`) and for git credentials (`gh auth git-credential`, scoped to the repo's domain). `work` never reads, stores, or forwards a token. Do not extend the token code still in `src/auth/`; Wave 7.1 removes it.
+- Shell out to `gh` for every GitHub API call (`gh api --hostname <domain>`) and for git credentials (`gh auth git-credential`, scoped to the repo's domain). `work` never reads, stores, or forwards a token.
 - stdout carries only command output and the one path line that `sh-cd`/`sh-on` print for the shell wrapper (data, never shell code). All progress, spinners, prompts, and warnings go to stderr.
 - Error messages are single-line. Don't embed `\n` in error text. Put actionable hints inline with parentheses instead. Sole exception: an error that lists repos/matches (e.g. ambiguous query) prints its one-line summary followed by one `  - item` line per entry, rendered from a `Vec` the error carries (never from `\n` in the message).
 - Internal program state is separate from terminal output. The terminal has ONE owner (`ui::Ui`), and it is responsible for all updates/output. From Wave 8, `clippy.toml` enforces this: printing macros, `std::io::stdout`/`stderr`, and `std::process::Command::new` are disallowed everywhere except `Ui::new`, `main`, `proc::command`, and test code.

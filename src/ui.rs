@@ -1,13 +1,9 @@
 //! The terminal owner.
 //!
-//! [`Ui`] is created once, in `lib::run`, and is the only thing that writes
-//! to stdout or stderr. stdout carries only command output (and `sh-*`
-//! scripts); progress, pickers, prompts and warnings go to stderr. Methods
-//! that draw take `&mut self`, so the borrow checker keeps a picker, a
-//! progress display and a stdout write from interleaving.
-//!
-//! `impl Ui` is split across files: `ui/terminal.rs` (`terminal`) and
-//! `ui/interact.rs` (`interact`).
+//! [`Ui`] is created once and is the only thing that writes to stdout or
+//! stderr. stdout carries only command output; progress, pickers, prompts
+//! and warnings go to stderr. Methods that draw take `&mut self`, so a
+//! picker, a progress display and a stdout write cannot interleave.
 
 pub mod interact;
 pub mod picker;

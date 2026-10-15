@@ -240,8 +240,6 @@ fn prepare_domain(plan: &FetchPlan<'_>, dp: &DomainPlan<'_>, gh: &dyn Gh) -> Res
         favorites: dp.favorites,
         all_orgs: plan.all_orgs,
     });
-    // Collaborator-only owners the global filters reject are handled by
-    // `merge`, which applies the filters itself.
     let mut deselected: Vec<Org> = Vec::new();
     for org in member.into_iter().chain(dp.extra.iter().cloned()) {
         let known = |list: &[Org]| list.iter().any(|o| o.eq_ignore_case(&org));
