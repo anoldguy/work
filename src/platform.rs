@@ -8,7 +8,7 @@ use std::process::{Command, ExitStatus, Stdio};
 
 use crate::domain::HtmlUrl;
 use crate::env::EnvSnapshot;
-use crate::proc;
+use crate::proc::{self, Interactive};
 
 /// The shell used to run the editor, by absolute path so a restricted
 /// `PATH` cannot hide it.
@@ -44,7 +44,7 @@ impl EditorCmd {
     /// Builds `sh -c '<editor> "$@"' sh <path>`, so the path is an argument
     /// and never interpolated into the shell text.
     fn command(&self, path: &Path) -> Command {
-        let mut cmd = Command::new(SH);
+        let mut cmd = proc::command(SH);
         cmd.arg("-c")
             .arg(format!("{} \"$@\"", self.0))
             .arg("sh")
@@ -59,18 +59,20 @@ impl EditorCmd {
     }
 }
 
-/// Runs `sh -c '<editor> "$@"' sh <path>` with stdio inherited, and waits.
-///
-/// Flush `Ui` before calling: the editor inherits stdout (see
-/// [`proc::run_inherit`]).
+/// Runs `sh -c '<editor> "$@"' sh <path>` on `term`, and waits.
 ///
 /// # Errors
 ///
 /// [`PlatformError::Spawn`] or [`PlatformError::Failed`].
-pub fn spawn_editor(editor: &EditorCmd, path: &Path) -> Result<(), PlatformError> {
+pub fn spawn_editor(
+    term: &mut Interactive<'_>,
+    editor: &EditorCmd,
+    path: &Path,
+) -> Result<(), PlatformError> {
     let program = editor.as_str();
-    let status =
-        proc::run_inherit(&mut editor.command(path)).map_err(|source| PlatformError::Spawn {
+    let status = term
+        .run(&mut editor.command(path))
+        .map_err(|source| PlatformError::Spawn {
             program: SH.to_owned(),
             source,
         })?;
@@ -105,7 +107,7 @@ pub fn open_dir(path: &Path) -> Result<(), PlatformError> {
 
 /// `OPENER <arg>`.
 fn opener_command(arg: OsString) -> Command {
-    let mut cmd = Command::new(OPENER);
+    let mut cmd = proc::command(OPENER);
     cmd.arg(arg);
     cmd
 }
@@ -121,8 +123,7 @@ fn dash_safe(path: &Path) -> PathBuf {
 
 /// Starts `cmd` with all stdio closed and does not wait for it.
 fn spawn_detached(mut cmd: Command) -> Result<(), PlatformError> {
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
+    cmd.stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .map(drop)
@@ -157,6 +158,8 @@ pub enum PlatformError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{ScriptedInteraction, SharedBuf};
+    use crate::ui::Ui;
     use std::assert_matches;
 
     fn args(cmd: &Command) -> Vec<String> {
@@ -217,9 +220,15 @@ mod tests {
     #[test]
     fn spawn_editor_reports_exit_status_with_harmless_binaries() {
         let path = Path::new("/dev/null");
-        spawn_editor(&EditorCmd("true".into()), path).unwrap();
+        let mut ui = Ui::for_test(
+            Box::new(SharedBuf::new()),
+            Box::new(SharedBuf::new()),
+            Box::new(ScriptedInteraction::new(false, vec![])),
+        );
+        let mut term = Interactive::new(&mut ui).expect("flush");
+        spawn_editor(&mut term, &EditorCmd("true".into()), path).unwrap();
         assert_matches!(
-            spawn_editor(&EditorCmd("false".into()), path),
+            spawn_editor(&mut term, &EditorCmd("false".into()), path),
             Err(PlatformError::Failed { .. })
         );
     }

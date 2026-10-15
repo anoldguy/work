@@ -1,8 +1,7 @@
 //! `config [--edit] [path | default [domain]]`.
 //!
-//! `path` and `--edit` run in stage 1 with only `Locations`, so they work
-//! (and `--edit` can repair the file) when the config is broken. The summary
-//! and `default` run with an `App`.
+//! `path` and `--edit` take only `Locations`, so they work (and `--edit` can
+//! repair the file) when the config is broken.
 
 use std::fs;
 use std::path::Path;
@@ -14,6 +13,7 @@ use crate::domain::{Domain, Org};
 use crate::env::EnvSnapshot;
 use crate::error::Error;
 use crate::platform::{self, EditorCmd};
+use crate::proc::Interactive;
 use crate::ui::{Ui, UiError};
 
 /// `config path`: prints the config file's path and whether it exists.
@@ -38,13 +38,10 @@ fn file_state(file: &Path) -> &'static str {
 /// file in the editor chain (`$WORK_EDITOR`, `$EDITOR`, `vi`) with stdio
 /// inherited.
 ///
-/// Prints nothing itself, so there is no buffered `Ui` output to flush
-/// before the editor takes the terminal (it takes no `Ui`).
-///
 /// # Errors
 ///
 /// [`Error::CreateDir`] or an editor failure.
-pub fn edit(env: &EnvSnapshot, locations: &Locations) -> Result<ExitCode, Error> {
+pub fn edit(env: &EnvSnapshot, locations: &Locations, ui: &mut Ui) -> Result<ExitCode, Error> {
     let file = &locations.config_file;
     if let Some(dir) = file.parent() {
         fs::create_dir_all(dir).map_err(|source| Error::CreateDir {
@@ -52,7 +49,7 @@ pub fn edit(env: &EnvSnapshot, locations: &Locations) -> Result<ExitCode, Error>
             source,
         })?;
     }
-    platform::spawn_editor(&EditorCmd::from_env(env), file)?;
+    platform::spawn_editor(&mut Interactive::new(ui)?, &EditorCmd::from_env(env), file)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -61,12 +58,9 @@ pub fn edit(env: &EnvSnapshot, locations: &Locations) -> Result<ExitCode, Error>
 /// # Errors
 ///
 /// A broken pipe.
-pub fn show(app: &mut App) -> Result<ExitCode, Error> {
+pub fn show(app: &App, ui: &mut Ui) -> Result<ExitCode, Error> {
     let App {
-        locations,
-        config,
-        ui,
-        ..
+        locations, config, ..
     } = app;
     let file = &locations.config_file;
     let mut lines = vec![
@@ -111,12 +105,9 @@ pub fn show(app: &mut App) -> Result<ExitCode, Error> {
 ///
 /// `ConfigError::UnknownDomain` or `NoDomains`, picker failures, or config
 /// write failures.
-pub fn set_default(app: &mut App, domain: Option<Domain>) -> Result<ExitCode, Error> {
+pub fn set_default(app: &App, ui: &mut Ui, domain: Option<Domain>) -> Result<ExitCode, Error> {
     let App {
-        locations,
-        config,
-        ui,
-        ..
+        locations, config, ..
     } = app;
     let picked = match domain {
         Some(domain) => Some(domain),

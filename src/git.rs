@@ -4,7 +4,7 @@
 //! `GIT_OPTIONAL_LOCKS=0` and `-c protocol.ext.allow=never`; clone and fetch
 //! authenticate through `gh auth git-credential`, scoped to the repo's
 //! domain (see [`runner::ProcessGit`]). git's stderr goes through
-//! `proc::one_line` before it can reach an error.
+//! `proc::stderr_summary` before it can reach an error.
 
 pub mod runner;
 pub mod status;

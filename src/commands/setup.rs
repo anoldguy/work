@@ -11,7 +11,9 @@ use crate::config::{self, ConfigDoc};
 use crate::domain::{Domain, Org};
 use crate::error::Error;
 use crate::gh::GhError;
+use crate::proc::Interactive;
 use crate::text::plural;
+use crate::ui::Ui;
 use crate::ui::UiError;
 
 /// The domain set up when none is named.
@@ -28,8 +30,8 @@ const DEFAULT_DOMAIN: &str = "github.com";
 ///
 /// `UiError::NotInteractive` without a TTY, a missing gh, or config write
 /// failures.
-pub fn run(app: &mut App, args: &SetupArgs) -> Result<ExitCode, Error> {
-    if !app.ui.interact().is_interactive() {
+pub fn run(mut app: App, ui: &mut Ui, args: &SetupArgs) -> Result<ExitCode, Error> {
+    if !ui.interact().is_interactive() {
         return Err(UiError::NotInteractive { what: "setup" }.into());
     }
     let fallback: Domain;
@@ -42,43 +44,42 @@ pub fn run(app: &mut App, args: &SetupArgs) -> Result<ExitCode, Error> {
 
     let mut doc = ConfigDoc::open(&app.locations.config_file)?;
     let default_dir = display_dir(app.config.work_dir(), &app.locations.home);
-    let typed = ask_work_dir(app, &default_dir)?;
+    let typed = ask_work_dir(&app, ui, &default_dir)?;
     // An unchanged answer leaves an existing file's spelling alone.
     if typed != default_dir || !app.locations.config_file.exists() {
         doc.set_work_dir(&typed)?;
     }
 
-    let logged_in = ensure_login(app, domain)?;
+    let logged_in = ensure_login(&app, ui, domain)?;
 
     // The first domain becomes the default; a later one never changes it.
     let is_first = app.config.domains().is_empty();
     doc.add_domain(domain, is_first)?;
     doc.save()?;
     app.config = config::store::load(&app.locations)?;
-    app.ui
-        .stderr_line(&format!("Saved {}", app.locations.config_file.display()))?;
+    ui.stderr_line(&format!("Saved {}", app.locations.config_file.display()))?;
 
-    if logged_in && app.ui.interact().confirm("Fetch repositories now?", true)? {
-        let cache = load_or_refresh(app, Freshness::Force { all_orgs: false })?;
+    if logged_in && ui.interact().confirm("Fetch repositories now?", true)? {
+        let cache = load_or_refresh(&app, ui, Freshness::Force { all_orgs: false })?;
         let repos = cache.repos.len();
         let noun = plural(repos, "repository", "repositories");
-        app.ui.stderr_line(&format!("Cached {repos} {noun}"))?;
+        ui.stderr_line(&format!("Cached {repos} {noun}"))?;
     }
     Ok(ExitCode::SUCCESS)
 }
 
 /// Prompts until the answer is a valid `work_dir` (the config loader's own
 /// rules), so what `setup` writes always loads. Empty takes `default_dir`.
-fn ask_work_dir(app: &mut App, default_dir: &str) -> Result<String, Error> {
+fn ask_work_dir(app: &App, ui: &mut Ui, default_dir: &str) -> Result<String, Error> {
     loop {
-        let Some(typed) = app.ui.interact().input("Work directory", default_dir)? else {
+        let Some(typed) = ui.interact().input("Work directory", default_dir)? else {
             return Err(UiError::Interrupted.into());
         };
         let typed = typed.trim();
         let typed = if typed.is_empty() { default_dir } else { typed };
         match ExpandedPath::expand(typed, "work_dir", &app.locations.home) {
             Ok(_) => return Ok(typed.to_owned()),
-            Err(err) => app.ui.stderr_line(&err.to_string())?,
+            Err(err) => ui.stderr_line(&err.to_string())?,
         }
     }
 }
@@ -87,26 +88,22 @@ fn ask_work_dir(app: &mut App, default_dir: &str) -> Result<String, Error> {
 /// `gh auth login` when the check fails and checking again afterwards.
 /// `Ok(false)` when the domain should still be saved but gh could not reach
 /// it (declined, still failing).
-fn ensure_login(app: &mut App, domain: &Domain) -> Result<bool, Error> {
-    let mut check = check_login(app, domain)?;
+fn ensure_login(app: &App, ui: &mut Ui, domain: &Domain) -> Result<bool, Error> {
+    let mut check = check_login(app, ui, domain)?;
     if let Err(err) = &check {
         let question = format!("gh could not reach {domain} ({err}). Run 'gh auth login' now?");
-        if app.ui.interact().confirm(&question, true)? {
-            // gh inherits stdio, so nothing of ours may still be buffered.
-            app.ui.flush()?;
-            app.gh.login(domain)?;
-            check = check_login(app, domain)?;
+        if ui.interact().confirm(&question, true)? {
+            app.gh.login(&mut Interactive::new(ui)?, domain)?;
+            check = check_login(app, ui, domain)?;
         }
     }
     match check {
         Ok(login) => {
-            app.ui
-                .stderr_line(&format!("Authenticated to {domain} as {login}"))?;
+            ui.stderr_line(&format!("Authenticated to {domain} as {login}"))?;
             Ok(true)
         }
         Err(err) => {
-            app.ui
-                .warn(&format!("gh is not logged in to {domain}: {err}"));
+            ui.warn(&format!("gh is not logged in to {domain}: {err}"));
             Ok(false)
         }
     }
@@ -114,11 +111,9 @@ fn ensure_login(app: &mut App, domain: &Domain) -> Result<bool, Error> {
 
 /// Asks gh for the viewer under a spinner. The inner `Err` is gh's own
 /// one-line reason; a missing or unstartable `gh` is the outer error.
-fn check_login(app: &mut App, domain: &Domain) -> Result<Result<Org, GhError>, Error> {
+fn check_login(app: &App, ui: &mut Ui, domain: &Domain) -> Result<Result<Org, GhError>, Error> {
     let gh = &*app.gh;
-    let result = app
-        .ui
-        .with_progress("Checking gh login", |_| gh.viewer(domain));
+    let result = ui.with_progress("Checking gh login", |_| gh.viewer(domain));
     match result {
         Err(err @ (GhError::NotInstalled | GhError::Spawn { .. })) => Err(err.into()),
         other => Ok(other),
@@ -165,7 +160,9 @@ mod tests {
 
     struct Harness {
         _dir: tempfile::TempDir,
-        app: App,
+        app: Option<App>,
+        locations: Locations,
+        ui: Ui,
         log: PromptLog,
         err: SharedBuf,
     }
@@ -196,10 +193,12 @@ mod tests {
                 gh: Box::new(gh),
             };
             let now = StoredTime::from_unix_seconds(1_700_000_000).expect("time");
-            let app = App::with_parts(env, locations, loaded, ui, adapters, now);
+            let app = App::with_parts(env, locations.clone(), loaded, adapters, now);
             Self {
                 _dir: dir,
-                app,
+                app: Some(app),
+                locations,
+                ui,
                 log,
                 err,
             }
@@ -207,7 +206,8 @@ mod tests {
 
         fn run(&mut self, domain: Option<&str>) -> Result<ExitCode, Error> {
             run(
-                &mut self.app,
+                self.app.take().expect("one run per harness"),
+                &mut self.ui,
                 &SetupArgs {
                     domain: domain.map(dom),
                 },
@@ -215,7 +215,7 @@ mod tests {
         }
 
         fn config_text(&self) -> String {
-            fs::read_to_string(&self.app.locations.config_file).expect("config file")
+            fs::read_to_string(&self.locations.config_file).expect("config file")
         }
     }
 
@@ -231,7 +231,7 @@ mod tests {
         let err = h.run(None).expect_err("not interactive");
         assert_matches!(err, Error::Ui(UiError::NotInteractive { what: "setup" }));
         assert!(!err.to_string().contains('\n'));
-        assert!(!h.app.locations.config_file.exists());
+        assert!(!h.locations.config_file.exists());
     }
 
     #[test]
@@ -275,7 +275,10 @@ mod tests {
         assert!(out.contains("[domains.\"ghe.example.com\"]"), "{out}");
         assert_eq!(out.matches("is_default = true").count(), 1, "{out}");
         assert_eq!(
-            h.app.config.default_domain().map(Domain::as_str),
+            config::store::load(&h.locations)
+                .expect("config")
+                .default_domain()
+                .map(Domain::as_str),
             Some("github.com")
         );
     }
@@ -371,7 +374,7 @@ mod tests {
         let text = h.config_text();
         assert!(text.contains("work_dir = \"~/ok\""), "{text}");
         assert!(!text.contains("relative"), "{text}");
-        assert!(config::store::load(&h.app.locations).is_ok());
+        assert!(config::store::load(&h.locations).is_ok());
     }
 
     #[test]
@@ -379,6 +382,6 @@ mod tests {
         let mut h = Harness::new(None, true, vec![Answer::Input(None)], logged_in());
         let err = h.run(None).expect_err("cancelled");
         assert_matches!(err, Error::Ui(UiError::Interrupted));
-        assert!(!h.app.locations.config_file.exists());
+        assert!(!h.locations.config_file.exists());
     }
 }

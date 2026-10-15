@@ -1,4 +1,4 @@
-//! [`App`]: the context every stage-2 command runs with.
+//! [`App`]: the context every command that needs a config runs with.
 
 use crate::config::{self, Config, Locations};
 use crate::domain::StoredTime;
@@ -6,10 +6,8 @@ use crate::env::EnvSnapshot;
 use crate::error::Error;
 use crate::gh::{Gh, ProcessGh};
 use crate::git::{Git, ProcessGit};
-use crate::ui::Ui;
 
-/// Process-wide context with public, disjoint fields, so a command can
-/// borrow `app.ui` mutably while sharing `&*app.gh` with workers.
+/// Immutable process-wide context. Commands take `&mut Ui` next to it.
 ///
 /// `now` is read once here and passed down; nothing else reads the clock.
 #[derive(Debug)]
@@ -20,8 +18,6 @@ pub struct App {
     pub locations: Locations,
     /// The validated configuration.
     pub config: Config,
-    /// The sole terminal owner.
-    pub ui: Ui,
     /// The git seam.
     pub git: Box<dyn Git>,
     /// The gh seam: every GitHub API call and `gh auth`.
@@ -40,16 +36,16 @@ pub struct Adapters {
 }
 
 impl App {
-    /// Builds the real context: the config at `locations.config_file`
-    /// (implicit `github.com` when none), `ProcessGit`, `ProcessGh`, and
-    /// `StoredTime::now()`.
-    /// `lib::run` computes `locations` once and also uses it for stage-1
-    /// commands.
+    /// Builds the real context: `Locations` from `env`, the config at
+    /// `locations.config_file` (implicit `github.com` when none),
+    /// `ProcessGit`, `ProcessGh`, and `StoredTime::now()`.
     ///
     /// # Errors
     ///
-    /// The config file is unreadable or invalid.
-    pub fn new(env: EnvSnapshot, locations: Locations, ui: Ui) -> Result<Self, Error> {
+    /// The locations cannot be derived (no `HOME`), or the config file is
+    /// unreadable or invalid.
+    pub fn load(env: EnvSnapshot) -> Result<Self, Error> {
+        let locations = Locations::from_env(&env)?;
         let config = config::store::load(&locations)?;
         let adapters = Adapters {
             git: Box::new(ProcessGit::new()),
@@ -59,19 +55,17 @@ impl App {
             env,
             locations,
             config,
-            ui,
             adapters,
             StoredTime::now(),
         ))
     }
 
-    /// Assembles a context from parts (tests, and `new` itself).
+    /// Assembles a context from parts (tests, and `load` itself).
     #[must_use]
     pub fn with_parts(
         env: EnvSnapshot,
         locations: Locations,
         config: Config,
-        ui: Ui,
         adapters: Adapters,
         now: StoredTime,
     ) -> Self {
@@ -80,7 +74,6 @@ impl App {
             env,
             locations,
             config,
-            ui,
             git,
             gh,
             now,
@@ -95,7 +88,7 @@ mod tests {
 
     use super::*;
     use crate::config::ConfigError;
-    use crate::testing::{FakeGh, FakeGit, ScriptedInteraction, SharedBuf};
+    use crate::testing::{FakeGh, FakeGit};
 
     fn env_with_home(home: &Path) -> EnvSnapshot {
         EnvSnapshot {
@@ -104,20 +97,11 @@ mod tests {
         }
     }
 
-    fn test_ui() -> Ui {
-        Ui::for_test(
-            Box::new(SharedBuf::new()),
-            Box::new(SharedBuf::new()),
-            Box::new(ScriptedInteraction::new(false, vec![])),
-        )
-    }
-
     #[test]
     fn new_without_config_uses_implicit_github() {
         let dir = tempfile::tempdir().expect("tempdir");
         let env = env_with_home(dir.path());
-        let locations = Locations::from_env(&env).expect("locations");
-        let app = App::new(env, locations, test_ui()).expect("app");
+        let app = App::load(env).expect("app");
         assert_eq!(
             app.config
                 .default_domain()
@@ -135,7 +119,7 @@ mod tests {
         let parent = locations.config_file.parent().expect("parent");
         std::fs::create_dir_all(parent).expect("mkdir");
         std::fs::write(&locations.config_file, "[domains.github.com]\n").expect("write");
-        let err = App::new(env, locations, test_ui()).expect_err("invalid");
+        let err = App::load(env).expect_err("invalid");
         assert_matches!(err, Error::Config(ConfigError::NestedDomainTable { .. }));
     }
 
@@ -150,7 +134,7 @@ mod tests {
             git: Box::new(FakeGit::new()),
             gh: Box::new(FakeGh::new()),
         };
-        let app = App::with_parts(env, locations.clone(), config, test_ui(), adapters, now);
+        let app = App::with_parts(env, locations.clone(), config, adapters, now);
         assert_eq!(app.now, now);
         assert_eq!(app.locations, locations);
     }

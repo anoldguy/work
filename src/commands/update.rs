@@ -9,17 +9,18 @@ use crate::cache::refresh::{Freshness, load_or_refresh};
 use crate::cli::UpdateArgs;
 use crate::error::Error;
 use crate::text::plural;
+use crate::ui::Ui;
 
 /// Forces a refresh, then prints `Cached N repositories across D domains`.
 ///
 /// # Errors
 ///
 /// `CacheError::AllFailed` or store failures.
-pub fn run(app: &mut App, args: &UpdateArgs) -> Result<ExitCode, Error> {
+pub fn run(app: &App, ui: &mut Ui, args: &UpdateArgs) -> Result<ExitCode, Error> {
     let all_orgs = args.all_orgs;
     let freshness = Freshness::Force { all_orgs };
-    let cache = load_or_refresh(app, freshness)?;
-    app.ui.stdout_line(&summary(&cache))?;
+    let cache = load_or_refresh(app, ui, freshness)?;
+    ui.stdout_line(&summary(&cache))?;
     Ok(ExitCode::SUCCESS)
 }
 
