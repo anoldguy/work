@@ -1,10 +1,4 @@
 //! Tiered matching and combined scoring (pure).
-//!
-//! The query's slash count picks what it is compared against (name,
-//! `org/name`, or the full slug). Tiers: exact 100, substring 50, fuzzy
-//! `1..=49` relative to the query's self-match. The final score is the tier
-//! plus repo frecency, sorted descending, ties broken by slug ascending, and
-//! cut at [`RESULT_LIMIT`] (exact matches always survive the cut).
 
 use std::borrow::Cow;
 
@@ -12,8 +6,7 @@ use nucleo_matcher::{Utf32Str, chars};
 
 use crate::domain::{NameError, QueryKey, Repo, Slug};
 
-/// The most results [`search`] returns, and so the most candidates a picker
-/// or ambiguity error ever shows.
+/// The most results [`search`] returns.
 pub const RESULT_LIMIT: usize = 20;
 
 /// What part of a slug a query is compared against, set by its slash count.
@@ -113,12 +106,11 @@ pub struct SearchResult {
 
 /// Ranks `repos` against `q`.
 ///
-/// `frecency` supplies each repo's frecency score (usually
-/// `|s| history.frecency.score(s, now)`). Returns results best first, cut at
-/// [`RESULT_LIMIT`]. Every `Exact` hit survives the cut, so `resolve` can
-/// always see the exact match: a dropped exact evicts the lowest-ranked
-/// non-exact. With more than [`RESULT_LIMIT`] exact matches, the top
-/// [`RESULT_LIMIT`] of them are kept, in rank order.
+/// `frecency` supplies each repo's frecency score. Returns results best
+/// first (score descending, then slug ascending), cut at [`RESULT_LIMIT`].
+/// Every `Exact` hit survives the cut, evicting the lowest-ranked non-exact.
+/// With more than [`RESULT_LIMIT`] exact matches, the top [`RESULT_LIMIT`] of
+/// them are kept, in rank order.
 #[must_use]
 pub fn search(repos: &[Repo], q: &Query, frecency: impl Fn(&Slug) -> f64) -> Vec<SearchResult> {
     let needle = q.key().as_str();
@@ -216,9 +208,9 @@ fn normalize(raw: u16, self_score: Option<u16>) -> u8 {
     u8::try_from(scaled.clamp(1, 49)).unwrap_or(49)
 }
 
-/// `list --filter`: case-insensitive substring match on the full slug, with
-/// no fuzzy tier and no frecency. The needle is trimmed like a query.
-/// Returns indices into `repos` in slug order.
+/// Case-insensitive substring match on the full slug, with no fuzzy tier and
+/// no frecency. The needle is trimmed. Returns indices into `repos` in slug
+/// order.
 #[must_use]
 pub fn filter(repos: &[Repo], needle: &str) -> Vec<usize> {
     let needle = needle.trim().to_lowercase();
@@ -232,9 +224,7 @@ pub fn filter(repos: &[Repo], needle: &str) -> Vec<usize> {
     hits
 }
 
-/// Thin wrapper over nucleo-matcher. It owns the matcher and its UTF-32
-/// conversion buffers, so they are allocated once per search rather than
-/// once per repo.
+/// A reusable nucleo-matcher with its UTF-32 conversion buffers.
 #[derive(Debug)]
 pub struct FuzzyMatcher {
     matcher: nucleo_matcher::Matcher,
@@ -258,8 +248,7 @@ impl FuzzyMatcher {
     pub fn score(&mut self, haystack: &str, needle: &str) -> Option<u16> {
         // nucleo folds the haystack's case and accents but expects a needle
         // that is already folded; haystack case also changes its camel-case
-        // bonus, so both are lowercased. `search` passes lowercase text, so
-        // ASCII input allocates nothing there.
+        // bonus, so both are lowercased.
         let haystack = lowercase(haystack);
         let needle: Cow<'_, str> = if needle.is_ascii() {
             lowercase(needle)

@@ -1,5 +1,5 @@
 //! Learned query-to-repo associations and the "do we need to ask?" decision
-//! (pure). See `specs/query-frecency.md` and PLAN §10 Q5.
+//! (pure).
 
 use std::collections::BTreeMap;
 
@@ -27,15 +27,12 @@ fn dominates(score: f64, runner_up: f64) -> bool {
 }
 
 /// Per-query repo frecency: `{"foo": {"github.com/acme/foobar": {...}}}`.
-///
-/// Reuses [`Frecency`] so there is one scoring formula.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct QueryFrecency(BTreeMap<QueryKey, Frecency>);
 
 impl QueryFrecency {
-    /// Counts one resolution of `k` to `s` at `now`. Called only after an
-    /// `Auto` decision or a pick.
+    /// Counts one resolution of `k` to `s` at `now`.
     pub fn record(&mut self, k: &QueryKey, s: &Slug, now: StoredTime) {
         if let Some(history) = self.0.get_mut(k) {
             history.record(s, now);
@@ -65,11 +62,10 @@ impl QueryFrecency {
 /// What the shared pipeline should do with a set of search results.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
-    /// A clean resolve (one result, or one exact match). Repo index; query
-    /// frecency is not recorded.
+    /// A clean resolve (one result, or one exact match), holding the repo
+    /// index.
     Unique(usize),
-    /// Auto-resolved from query history. Repo index; query frecency is
-    /// recorded.
+    /// Auto-resolved from query history, holding the repo index.
     Auto(usize),
     /// The user must pick from these repo indices (rank order).
     Ask(Vec<usize>),
@@ -77,8 +73,8 @@ pub enum Decision {
     NotFound,
 }
 
-/// Turns the caller's `core::resolve::resolve` result into a decision,
-/// using query history to settle ambiguity.
+/// Turns a [`Resolution`] into a decision, using query history to settle
+/// ambiguity.
 ///
 /// `Unique` and `NotFound` pass through. `Ambiguous(results)` auto-resolves
 /// when the top history entry for `key` has at least [`MIN_QUERY_ACCESSES`],
@@ -86,9 +82,6 @@ pub enum Decision {
 /// is none or it scores 0), and is among `results`; otherwise it is `Ask`
 /// with every result's index in rank order. `repos` maps result indices to
 /// slugs.
-///
-/// `--pick` is not handled here: with more than one search result the
-/// pipeline asks without consulting history.
 #[must_use]
 pub fn decide(
     repos: &[Repo],
