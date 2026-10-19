@@ -10,6 +10,9 @@ use crate::domain::{CloneUrl, Domain, HtmlUrl, NameError, Org, Repo, RepoName, S
 /// The `--jq` filter every repo listing uses: one object per line.
 pub const REPO_JQ: &str = ".[] | {name, owner: .owner.login, clone_url, html_url}";
 
+/// The `--jq` filter for a single repo: [`REPO_JQ`]'s object.
+pub const REPO_OBJECT_JQ: &str = "{name, owner: .owner.login, clone_url, html_url}";
+
 /// One line as gh prints it.
 #[derive(Debug, Deserialize)]
 struct RepoLine {

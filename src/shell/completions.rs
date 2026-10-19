@@ -12,11 +12,15 @@ const RESOLVING: [&str; 8] = [
     "cd", "on", "edit", "clone", "browse", "open", "pull", "list",
 ];
 
+/// The subcommand whose argument slot completes adopted repo names only.
+const FORGET: &str = "forget";
+
 fn fish_hook() -> String {
     format!(
         "
 # Repo names from the cache for commands that resolve a repo.
 complete -c work -n '__fish_seen_subcommand_from {}' -f -a '(work list --complete 2>/dev/null)'
+complete -c work -n '__fish_seen_subcommand_from {FORGET}' -f -a '(work list --complete --adopted 2>/dev/null)'
 complete -c work -n '__fish_work_using_subcommand completions' -f -a 'bash zsh fish'
 ",
         RESOLVING.join(" ")
@@ -36,8 +40,10 @@ _work_with_repos() {{
                     [[ "${{COMP_WORDS[i]}}" != -* ]] && positional=1
                 done
                 if [[ $positional -eq 0 ]]; then
+                    local only=
+                    [[ "${{COMP_WORDS[1]}}" == {FORGET} ]] && only=--adopted
                     local IFS=$'\n'
-                    COMPREPLY=( $(compgen -W "$(work list --complete 2>/dev/null)" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "$(work list --complete $only 2>/dev/null)" -- "$cur") )
                     return 0
                 fi
             fi
@@ -47,7 +53,7 @@ _work_with_repos() {{
 }}
 
 "#,
-        RESOLVING.join("|")
+        [RESOLVING.as_slice(), &[FORGET]].concat().join("|")
     )
 }
 
@@ -63,8 +69,9 @@ _work() {{
                     [[ "$w" != -* ]] && positional=1
                 done
                 if (( positional == 0 )); then
-                    local -a repos
-                    repos=(${{(f)"$(work list --complete 2>/dev/null)"}})
+                    local -a repos only
+                    [[ "$words[2]" == {FORGET} ]] && only=(--adopted)
+                    repos=(${{(f)"$(work list --complete $only 2>/dev/null)"}})
                     compadd -a repos
                     return
                 fi
@@ -75,7 +82,7 @@ _work() {{
 }}
 
 "#,
-        RESOLVING.join("|")
+        [RESOLVING.as_slice(), &[FORGET]].concat().join("|")
     )
 }
 

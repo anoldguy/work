@@ -14,6 +14,7 @@ use crate::gh::GhError;
 use crate::git::GitError;
 use crate::platform::PlatformError;
 use crate::shell::ShellError;
+use crate::state_file::StateError;
 use crate::sync::SyncError;
 use crate::text::one_line;
 use crate::ui::UiError;
@@ -48,6 +49,9 @@ pub enum Error {
     /// The terminal.
     #[error(transparent)]
     Ui(#[from] UiError),
+    /// A state file such as `adopted.json`.
+    #[error(transparent)]
+    State(#[from] StateError),
     /// External programs.
     #[error(transparent)]
     Platform(#[from] PlatformError),

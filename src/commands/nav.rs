@@ -9,9 +9,11 @@ use std::process::ExitCode;
 
 use crate::app::App;
 use crate::cache::Cache;
-use crate::cache::refresh::{Freshness, load_or_refresh};
+use crate::cache::refresh::Freshness;
 use crate::cli::{CdArgs, ResolveArgs};
-use crate::commands::resolve::{Target, ensure_cloned, record_access, resolve_target};
+use crate::commands::resolve::{
+    Reach, Target, ensure_cloned, load_known, record_access, resolve_target,
+};
 use crate::env::EnvSnapshot;
 use crate::error::Error;
 use crate::platform::{self, EditorCmd};
@@ -159,8 +161,8 @@ fn require_wrapper(app: &App, via: Invocation) -> Result<(), ShellError> {
 }
 
 fn resolve(app: &App, ui: &mut Ui, query: &str, pick: bool) -> Result<(Cache, Target), Error> {
-    let cache = load_or_refresh(app, ui, Freshness::AutoUpdate)?;
-    let target = resolve_target(app, ui, &cache, query, pick)?;
+    let mut cache = load_known(app, ui, Freshness::AutoUpdate)?;
+    let target = resolve_target(app, ui, &mut cache, query, pick, Reach::Readable)?;
     Ok((cache, target))
 }
 

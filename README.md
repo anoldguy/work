@@ -88,6 +88,8 @@ work browse myrepo
 
 Repository lists are cached locally and refresh automatically when stale. Hitting the GitHub API on every typo would be excessive, and typos happen more than anyone wants to admit. You never need to think about the cache -- it refreshes itself (under a spinner, in the foreground; there is no daemon) the first time a command notices it's stale. If you're impatient, `work update` forces a refresh, but you probably won't need it.
 
+The cache lists your own repos and those of your orgs. Any other repo you can read (a public repo elsewhere, or an internal repo on your enterprise server) is one `org/repo` away: when nothing matches it exactly, `work` asks GitHub, and remembers the repo once found. `work forget <query>` drops one again.
+
 ## Search & Frecency
 
 Search ranks repositories by match quality and usage patterns. The repo you fat-finger every morning beats the exact match you haven't touched since Q2. This is called frecency scoring (frequency + recency) and it works better than pretending all matches are equally important.
@@ -121,6 +123,7 @@ Type to filter, Backspace to edit what you typed. Arrow keys or Ctrl-n/Ctrl-p mo
 | `work config path` | Show the config file location and whether it exists (path on stdout, existence on stderr) |
 | `work config --edit` | Open the config file in your editor (`$WORK_EDITOR`, then `$EDITOR`, then `vi`) |
 | `work config default [domain]` | Set the default domain (asks when omitted) |
+| `work forget <query>` | Stop remembering a repository found on GitHub rather than in your listings |
 | `work favorite [domain]` | Pick favourite organisations for a domain (only cache repos from orgs you care about) |
 | `work setup [domain]` | Interactive first-time setup (default domain: `github.com`) |
 | `work auth login [--domain <domain>]` | Log in with `gh` (default domain: `github.com`) |

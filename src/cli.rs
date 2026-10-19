@@ -41,6 +41,8 @@ pub enum Command {
     Update(UpdateArgs),
     /// Pick favourite organisations for a domain
     Favorite(FavoriteArgs),
+    /// Stop remembering a repository adopted from GitHub
+    Forget(ResolveArgs),
     /// Interactive first-time setup
     Setup(SetupArgs),
     /// Show or change configuration
@@ -114,6 +116,9 @@ pub struct ListArgs {
     /// Offline completion candidates (name and org/name); silent on failure
     #[arg(long, hide = true, conflicts_with_all = ["query", "filter"])]
     pub complete: bool,
+    /// With `--complete`: adopted repositories only, on any domain
+    #[arg(long, hide = true, requires = "complete")]
+    pub adopted: bool,
 }
 
 /// `update [--all-orgs]`.

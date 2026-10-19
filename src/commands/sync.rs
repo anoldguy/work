@@ -4,10 +4,10 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use crate::app::App;
-use crate::cache::refresh::{Freshness, load_or_refresh};
+use crate::cache::refresh::Freshness;
 use crate::cli::{ResolveArgs, SyncArgs};
 use crate::commands::resolve::{
-    ResolveError, is_cloned, record_access, resolve_target, short_name,
+    Reach, ResolveError, is_cloned, load_known, record_access, resolve_target, short_name,
 };
 use crate::core::paths::repo_path;
 use crate::core::sync_outcome::SyncOutcome;
@@ -29,8 +29,8 @@ const SYNC_TITLE: &str = "Syncing repositories";
 ///
 /// Only on a broken `Target` invariant.
 pub fn pull(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Error> {
-    let cache = load_or_refresh(app, ui, Freshness::NoUpdate)?;
-    let target = resolve_target(app, ui, &cache, &args.query, args.pick)?;
+    let mut cache = load_known(app, ui, Freshness::NoUpdate)?;
+    let target = resolve_target(app, ui, &mut cache, &args.query, args.pick, Reach::Known)?;
     let slug = &target.repo(&cache.repos).slug;
     let name = short_name(slug, app.config.default_domain());
     if !is_cloned(&target.path) {
@@ -58,7 +58,7 @@ pub fn pull(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Erro
 /// `CacheError::Missing`, or `SyncError::SomeFailed` (after every line is
 /// printed).
 pub fn sync(app: &App, ui: &mut Ui, args: &SyncArgs) -> Result<ExitCode, Error> {
-    let cache = load_or_refresh(app, ui, Freshness::NoUpdate)?;
+    let cache = load_known(app, ui, Freshness::NoUpdate)?;
     let work_dir = app.config.work_dir().to_path_buf();
     let default = app.config.default_domain();
     // `repo_path` under an empty root is the path relative to `work_dir`.

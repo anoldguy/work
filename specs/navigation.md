@@ -36,13 +36,13 @@ Clone a repository and print its path.
 
 - Resolves the query to one repository.
 - If it is already cloned (`.git` exists at the target path), does nothing.
-- Otherwise, clones it with git from the clone URL in the cache. git authenticates through `gh` (see [authentication.md](authentication.md)).
+- Otherwise, clones it with git from the clone URL in the cache or the adopted repositories. git authenticates through `gh` (see [authentication.md](authentication.md)).
 
 ### work browse \<query\>
 
 Open a repository's GitHub page in the default web browser.
 
-- Resolves the repo and opens its web URL from the cache.
+- Resolves the repo and opens its web URL from the cache or the adopted repositories.
 - Never clones.
 - Uses the platform's "open URL" mechanism (`xdg-open` on Linux, `open` on macOS).
 
@@ -70,3 +70,5 @@ Every navigation command records an access once its action succeeds. A failed cl
 ### Query resolution
 
 Every command resolves its query with the search system (exact → substring → fuzzy, combined with frecency). See [search-resolution.md](search-resolution.md).
+
+An `org/repo` or `domain/org/repo` query with no exact match is looked up on GitHub, so every command here reaches any repository the user can read, cached or not. See [search-resolution.md](search-resolution.md#lookup-on-github).

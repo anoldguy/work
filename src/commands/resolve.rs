@@ -4,15 +4,19 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::adopted::{self, same_slug};
 use crate::app::App;
 use crate::cache::Cache;
+use crate::cache::refresh::{Freshness, load_or_refresh};
+use crate::commands::lookup::{Answer, Probe};
 use crate::core::paths::repo_path;
 use crate::core::query_frecency::{Decision, decide};
 use crate::core::resolve::resolve;
-use crate::core::search::{Query, search};
+use crate::core::search::{MatchTier, Query, SearchResult, search};
 use crate::domain::{Domain, QueryKey, Repo, Slug};
 use crate::error::Error;
 use crate::frecency::{self, History, Problem};
+use crate::state_file::StateError;
 use crate::ui::Ui;
 use crate::ui::UiError;
 
@@ -43,6 +47,15 @@ impl Target {
     }
 }
 
+/// Which repos a query can resolve to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// Only the known repos it is given.
+    Known,
+    /// Also any repo the viewer can read, looked up on GitHub.
+    Readable,
+}
+
 /// What [`ensure_cloned`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloneStatus {
@@ -52,26 +65,76 @@ pub enum CloneStatus {
     Cloned,
 }
 
-/// Resolves `query` against `cache`, ranking by frecency and showing the
-/// picker on a TTY when needed (always when `pick` and several repos match).
+/// The cache, loaded or refreshed as `freshness` requires, with the
+/// adopted repos on configured domains appended to `repos`. Never save the
+/// result: the cache file holds listings only.
 ///
 /// # Errors
 ///
-/// An invalid query; [`ResolveError::NotFound`]; [`ResolveError::Ambiguous`]
-/// without a TTY or when the picker is cancelled; `UiError::NotInteractive`
-/// for `--pick` without a TTY; `UiError::Interrupted` on Ctrl-C.
+/// As for [`load_or_refresh`].
+pub fn load_known(app: &App, ui: &mut Ui, freshness: Freshness) -> Result<Cache, Error> {
+    let mut cache = load_or_refresh(app, ui, freshness)?;
+    let (adopted, problem) = adopted::load(app.config.cache_dir());
+    if let Some(problem) = problem {
+        ui.warn(&problem.to_string());
+    }
+    adopted::extend_known(&mut cache.repos, adopted, &app.config.effective_domains());
+    Ok(cache)
+}
+
+/// Resolves `query` against `cache`, ranking by frecency and showing the
+/// picker on a TTY when needed (always when `pick` and several repos match).
+///
+/// With [`Reach::Readable`], an `org/repo` or `domain/org/repo` query with no
+/// exact match is looked up on GitHub first; a repo found there is appended
+/// to `cache.repos`, and adopted once selected.
+///
+/// # Errors
+///
+/// An invalid query; [`ResolveError::NotFound`], [`ResolveError::Denied`] or
+/// [`ResolveError::LookupFailed`]; [`ResolveError::Ambiguous`] without a TTY
+/// or when the picker is cancelled; `UiError::NotInteractive` for `--pick`
+/// without a TTY; `UiError::Interrupted` on Ctrl-C.
 pub fn resolve_target(
     app: &App,
     ui: &mut Ui,
-    cache: &Cache,
+    cache: &mut Cache,
     query: &str,
     pick: bool,
+    reach: Reach,
 ) -> Result<Target, Error> {
     let query = Query::parse(query)?;
-    let history = listed_history(app, ui, cache);
+    let mut history = load_history(app, ui);
     let interactive = ui.interact().is_interactive();
     let now = app.now;
-    let results = search(&cache.repos, &query, |s| history.frecency.score(s, now));
+    let known = cache.repos.len();
+    let mut results = search(&cache.repos, &query, |s| history.frecency.score(s, now));
+    let probe = match reach {
+        Reach::Readable if !results.iter().any(|r| r.tier == MatchTier::Exact) => {
+            Probe::plan(&app.config, &query)
+        }
+        _ => None,
+    };
+    if let Some(probe) = probe {
+        let gh = &*app.gh;
+        let title = format!("looking up {}", query.key());
+        let mut found = Vec::new();
+        let mut misses = Vec::new();
+        for (domain, answer) in ui.with_progress(&title, |_| probe.run(gh)) {
+            match answer {
+                Answer::Found(repo) => found.push(repo),
+                miss => misses.push((domain, miss)),
+            }
+        }
+        if !found.is_empty() {
+            results = found_results(cache, found, |s| history.frecency.score(s, now));
+        } else if results.is_empty() || misses.iter().any(|(_, a)| matches!(a, Answer::Denied(_))) {
+            return Err(lookup_error(&probe, &query, misses).into());
+        } else {
+            warn_failed(ui, &probe, &misses);
+        }
+    }
+    restrict(&mut history, &cache.repos);
     let key = query.key();
     let decision = if pick && results.len() > 1 {
         if !interactive {
@@ -89,25 +152,135 @@ pub fn resolve_target(
     };
     let (index, picked) = match decision {
         Decision::Unique(index) => (index, false),
-        Decision::NotFound => return Err(ResolveError::NotFound { query: key.clone() }.into()),
+        Decision::NotFound => {
+            return Err(ResolveError::NotFound {
+                query: key.clone(),
+                looked_up: Vec::new(),
+            }
+            .into());
+        }
         Decision::Auto(index) => (index, true),
         Decision::Ask(candidates) => (ask(ui, cache, key, &candidates, interactive)?, true),
     };
+    if index >= known {
+        adopt(app, ui, &cache.repos[index]);
+    }
     let mut target = target_for(app, cache, index);
     target.picked_for = picked.then(|| key.clone());
     Ok(target)
 }
 
-/// The frecency history restricted to the slugs `cache` lists. The file
-/// keeps the other entries; they count again when their repo returns.
-pub(crate) fn listed_history(app: &App, ui: &mut Ui, cache: &Cache) -> History {
-    let (mut history, problem) = frecency::load(app.config.cache_dir());
+/// The repos found on GitHub as exact results, best first, appending to
+/// `cache.repos` those it does not already hold.
+fn found_results(
+    cache: &mut Cache,
+    found: Vec<Repo>,
+    frecency: impl Fn(&Slug) -> f64,
+) -> Vec<SearchResult> {
+    let mut results: Vec<SearchResult> = Vec::new();
+    for repo in found {
+        let held = cache
+            .repos
+            .iter()
+            .position(|r| same_slug(&r.slug, &repo.slug));
+        let index = held.unwrap_or_else(|| {
+            cache.repos.push(repo);
+            cache.repos.len() - 1
+        });
+        if results.iter().all(|r| r.index != index) {
+            let tier = MatchTier::Exact;
+            let score = tier.score() + frecency(&cache.repos[index].slug);
+            results.push(SearchResult { index, tier, score });
+        }
+    }
+    results.sort_by(|a, b| b.score.total_cmp(&a.score));
+    results
+}
+
+/// Why a lookup that found nothing fails: refused access first, then any
+/// other failure, else not found. `answers` holds each looked-up domain's
+/// answer, none of them `Found`, in domain order.
+fn lookup_error(probe: &Probe, query: &Query, answers: Vec<(Domain, Answer)>) -> ResolveError {
+    let mut failed = None;
+    for (domain, answer) in answers {
+        match answer {
+            Answer::Denied(detail) => {
+                return ResolveError::Denied {
+                    slug: probe.slug_on(&domain),
+                    detail: gh_message(&detail),
+                    domain,
+                };
+            }
+            Answer::Failed(detail) if failed.is_none() => failed = Some((domain, detail)),
+            Answer::Found(_) | Answer::NotFound | Answer::Failed(_) => {}
+        }
+    }
+    match failed {
+        Some((domain, detail)) => ResolveError::LookupFailed {
+            slug: probe.slug_on(&domain),
+            detail: gh_message(&detail),
+        },
+        None => ResolveError::NotFound {
+            query: query.key().clone(),
+            looked_up: probe.domains().to_vec(),
+        },
+    }
+}
+
+/// One warning per lookup that failed for a reason other than "not found".
+fn warn_failed(ui: &mut Ui, probe: &Probe, answers: &[(Domain, Answer)]) {
+    for (domain, answer) in answers {
+        if let Answer::Denied(detail) | Answer::Failed(detail) = answer {
+            let slug = probe.slug_on(domain);
+            ui.warn(&format!("could not look up {slug}: {}", gh_message(detail)));
+        }
+    }
+}
+
+/// gh's message without its `gh: ` prefix.
+fn gh_message(detail: &str) -> String {
+    detail.strip_prefix("gh: ").unwrap_or(detail).to_owned()
+}
+
+/// Adds `repo` to the adopted repos, saying so the first time. Failures are
+/// warnings: the repo still resolves for this run.
+fn adopt(app: &App, ui: &mut Ui, repo: &Repo) {
+    match adopted::update(app.config.cache_dir(), |a| a.add(repo.clone())) {
+        Ok((added, problem)) => {
+            if let Some(problem) = problem {
+                ui.warn(&problem.to_string());
+            }
+            if added {
+                let _ = ui.stderr_line(&format!("adopted {}", repo.slug));
+            }
+        }
+        // Loading the known repos already warned about these.
+        Err(StateError::ReadOnly(_)) => {}
+        Err(err) => ui.warn(&err.to_string()),
+    }
+}
+
+/// The frecency history, warning once about a problem with the file.
+fn load_history(app: &App, ui: &mut Ui) -> History {
+    let (history, problem) = frecency::load(app.config.cache_dir());
     if let Some(problem) = problem {
         ui.warn(&problem.to_string());
     }
-    let listed: HashSet<&Slug> = cache.repos.iter().map(|r| &r.slug).collect();
+    history
+}
+
+/// Drops the entries for slugs `repos` does not hold. The file keeps them;
+/// they count again when their repo returns.
+fn restrict(history: &mut History, repos: &[Repo]) {
+    let listed: HashSet<&Slug> = repos.iter().map(|r| &r.slug).collect();
     history.frecency.retain(|s, _| listed.contains(s));
     history.query_frecency.retain(|s, _| listed.contains(s));
+}
+
+/// The frecency history restricted to the slugs `cache` holds.
+pub(crate) fn listed_history(app: &App, ui: &mut Ui, cache: &Cache) -> History {
+    let mut history = load_history(app, ui);
+    restrict(&mut history, &cache.repos);
     history
 }
 
@@ -247,8 +420,37 @@ pub fn record_access(app: &App, ui: &mut Ui, cache: &Cache, target: &Target) {
 #[derive(Debug, thiserror::Error)]
 pub enum ResolveError {
     /// No repo matched.
-    #[error("repository not found: {query}")]
+    #[error("repository not found: {query}{}", access_hint(.looked_up))]
     NotFound {
+        /// The normalised query.
+        query: QueryKey,
+        /// The domains GitHub was asked, in order; empty when it was not.
+        looked_up: Vec<Domain>,
+    },
+    /// GitHub refused access (HTTP 401 or 403).
+    #[error(
+        "cannot read {slug}: {detail} (check 'gh auth status --hostname {domain}'{})",
+        sso_hint(.detail)
+    )]
+    Denied {
+        /// The repo asked for.
+        slug: Slug,
+        /// The domain that refused.
+        domain: Domain,
+        /// gh's message, one line.
+        detail: String,
+    },
+    /// Asking GitHub failed for another reason.
+    #[error("cannot look up {slug}: {detail}")]
+    LookupFailed {
+        /// The repo asked for.
+        slug: Slug,
+        /// gh's message, one line.
+        detail: String,
+    },
+    /// `forget` matched no adopted repo.
+    #[error("no adopted repository matches: {query}")]
+    NotAdopted {
         /// The normalised query.
         query: QueryKey,
     },
@@ -266,4 +468,25 @@ pub enum ResolveError {
         /// The repo as shown to the user, e.g. `acme/foo`.
         repo: String,
     },
+}
+
+/// ` (if it exists, check ...)` naming the one domain looked up, or plain
+/// `gh auth status` for several; empty when nothing was looked up.
+fn access_hint(looked_up: &[Domain]) -> String {
+    match looked_up {
+        [] => String::new(),
+        [domain] => {
+            format!(" (if it exists, check you can read it: gh auth status --hostname {domain})")
+        }
+        _ => " (if it exists, check you can read it: gh auth status)".to_owned(),
+    }
+}
+
+/// The SAML SSO part of the access hint, when gh's message is about SSO.
+fn sso_hint(detail: &str) -> &'static str {
+    if detail.contains("SAML") {
+        "; for SAML SSO, authorize the token for the organization"
+    } else {
+        ""
+    }
 }

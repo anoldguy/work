@@ -5,6 +5,7 @@
     reason = "tests drive the binary and fixtures directly"
 )]
 
+mod adopt;
 mod ambiguity;
 mod clone;
 mod commands;

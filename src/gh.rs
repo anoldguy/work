@@ -2,7 +2,7 @@
 
 pub mod repo_line;
 
-pub use repo_line::{REPO_JQ, parse_repo_line};
+pub use repo_line::{REPO_JQ, REPO_OBJECT_JQ, parse_repo_line};
 
 use std::ffi::OsStr;
 use std::fmt::Debug;
@@ -11,7 +11,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::process::Command;
 use std::thread;
 
-use crate::domain::{Domain, Org, Repo};
+use crate::domain::{Domain, Org, Repo, RepoName};
 use crate::proc::{self, Interactive};
 use crate::text;
 
@@ -54,6 +54,16 @@ pub trait Gh: Sync + Debug {
         org: &Org,
         on_repo: &mut dyn FnMut(Repo),
     ) -> Result<u32, GhError>;
+
+    /// `gh api --hostname <host> repos/<org>/<name>`: the repo under its
+    /// current owner and name (gh follows redirects), validated like a
+    /// listing entry.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Gh::viewer`], for every failure other than HTTP 401, 403 or
+    /// 404, and for an answer that fails validation.
+    fn repo(&self, host: &Domain, org: &Org, name: &RepoName) -> Result<Lookup, GhError>;
 
     /// `gh auth status --hostname <host>` on `term`, so gh prints its own
     /// report.
@@ -103,6 +113,10 @@ impl Gh for ProcessGh {
         on_repo: &mut dyn FnMut(Repo),
     ) -> Result<u32, GhError> {
         repos_via(OsStr::new(GH), host, &org_repos_path(org), on_repo)
+    }
+
+    fn repo(&self, host: &Domain, org: &Org, name: &RepoName) -> Result<Lookup, GhError> {
+        repo_via(OsStr::new(GH), host, org, name)
     }
 
     fn auth_status(&self, term: &mut Interactive<'_>, host: &Domain) -> Result<(), GhError> {
@@ -282,6 +296,66 @@ fn repos_via(
     Ok(skipped)
 }
 
+fn repo_via(program: &OsStr, host: &Domain, org: &Org, name: &RepoName) -> Result<Lookup, GhError> {
+    let path = format!("repos/{org}/{name}");
+    let mut lines = Vec::new();
+    let answered = api_lines(
+        program,
+        host,
+        &[&path, "--jq", REPO_OBJECT_JQ],
+        &mut |line| {
+            lines.push(line.to_vec());
+        },
+    );
+    match answered {
+        Ok(()) => {}
+        Err(GhError::Api { detail, host }) => {
+            return match http_status(&detail) {
+                Some(404) => Ok(Lookup::NotFound),
+                Some(401 | 403) if !is_rate_limit(&detail) => Ok(Lookup::Denied(detail)),
+                _ => Err(GhError::Api { host, detail }),
+            };
+        }
+        Err(err) => return Err(err),
+    }
+    lines
+        .iter()
+        .find(|line| !line.iter().all(u8::is_ascii_whitespace))
+        .and_then(|line| parse_repo_line(line, host))
+        .map(Lookup::Found)
+        .ok_or_else(|| GhError::Api {
+            host: host.clone(),
+            detail: format!("gh returned an unusable answer for {path}"),
+        })
+}
+
+/// The last `HTTP NNN` in gh's error text: gh prints `<message> (HTTP 404)`
+/// when the body carries a message, and plain `HTTP 404` otherwise.
+fn http_status(detail: &str) -> Option<u16> {
+    detail
+        .match_indices("HTTP ")
+        .filter(|&(i, _)| {
+            !detail[..i]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_alphanumeric)
+        })
+        .filter_map(|(i, word)| {
+            let rest = &detail[i + word.len()..];
+            let code = rest.get(..3)?;
+            let bounded = !rest[3..].starts_with(|c: char| c.is_ascii_alphanumeric());
+            (bounded && code.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| code.parse().ok())
+                .flatten()
+        })
+        .last()
+}
+
+/// A 403 for a primary or secondary rate limit is not about access.
+fn is_rate_limit(detail: &str) -> bool {
+    detail.to_ascii_lowercase().contains("rate limit")
+}
+
 fn interactive_via(
     term: &mut Interactive<'_>,
     program: &OsStr,
@@ -300,6 +374,17 @@ fn interactive_via(
             detail: status.to_string(),
         })
     }
+}
+
+/// What [`Gh::repo`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lookup {
+    /// The repo, under its current owner and name.
+    Found(Repo),
+    /// HTTP 404: no such repo, or the viewer cannot see it.
+    NotFound,
+    /// HTTP 401 or 403; gh's message, one line.
+    Denied(String),
 }
 
 /// A failure running `gh`.
@@ -332,4 +417,28 @@ pub enum GhError {
         /// gh's stderr reduced to one line.
         detail: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::http_status;
+
+    #[test]
+    fn http_status_is_read_with_or_without_a_message() {
+        assert_eq!(http_status("gh: Not Found (HTTP 404)"), Some(404));
+        assert_eq!(http_status("gh: HTTP 404"), Some(404));
+        assert_eq!(
+            http_status(
+                "gh: Resource protected by SAML enforcement. (HTTP 403) Authorize in your web browser: https://x"
+            ),
+            Some(403)
+        );
+        assert_eq!(
+            http_status("gh: HTTP 502: Bad Gateway (https://x)"),
+            Some(502)
+        );
+        assert_eq!(http_status("gh: HTTPS 404"), None);
+        assert_eq!(http_status("gh: HTTP 4040"), None);
+        assert_eq!(http_status("could not resolve host"), None);
+    }
 }

@@ -1,7 +1,5 @@
 //! `frecency.json`: repo and query frecency on disk.
 
-use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -10,8 +8,9 @@ use serde::{Deserialize, Serialize};
 use crate::core::frecency::{Frecency, FrecencyData};
 use crate::core::query_frecency::QueryFrecency;
 use crate::domain::{Slug, StoredTime};
-use crate::fsutil::atomic_write;
-use crate::text::one_line;
+use crate::state_file::{StateError, StateFile};
+
+pub use crate::state_file::Problem;
 
 /// File name inside the cache directory.
 pub const FRECENCY_FILE: &str = "frecency.json";
@@ -44,115 +43,21 @@ impl History {
     }
 }
 
-/// The file as written.
-#[derive(Serialize)]
-struct FileOut<'a> {
-    version: u32,
-    #[serde(flatten)]
-    history: &'a History,
-}
+/// `frecency.json`.
+pub static FRECENCY: StateFile = StateFile {
+    name: FRECENCY_FILE,
+    version: FRECENCY_VERSION,
+    noun: "frecency",
+    fresh: "a new history",
+};
 
-/// Just the version, read first so another version is not mistaken for a
-/// corrupt file. A file without one is corrupt.
-#[derive(Deserialize)]
-struct Peek {
-    version: u32,
-}
-
-/// Something wrong with `frecency.json`, reported as one warning. Paths
-/// render with `{:?}` to stay on one line.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum Problem {
-    /// The file has a version this build does not know; it is left alone.
-    #[error("{path:?} has unknown version {version}; frecency is read-only for this run")]
-    UnknownVersion {
-        /// The file.
-        path: PathBuf,
-        /// The version it declares.
-        version: u32,
-    },
-    /// The file exists but cannot be read; it is left alone.
-    #[error("cannot read {path:?} ({reason}); frecency is read-only for this run")]
-    Unreadable {
-        /// The file.
-        path: PathBuf,
-        /// Why (one line).
-        reason: String,
-    },
-    /// The file is not valid frecency JSON; it was moved aside (best effort)
-    /// and history starts empty.
-    #[error(
-        "{path:?} is unparsable ({reason}); moved it to {FRECENCY_FILE}.corrupt and started a new history"
-    )]
-    Corrupt {
-        /// The file.
-        path: PathBuf,
-        /// Why (one line).
-        reason: String,
-    },
-}
-
-/// Saving `frecency.json` failed. Paths render with `{:?}` to stay on one
-/// line.
-#[derive(Debug, thiserror::Error)]
-pub enum FrecencyError {
-    /// Writing the file failed.
-    #[error("cannot save frecency {path:?}: {source}")]
-    Write {
-        /// The file.
-        path: PathBuf,
-        /// The I/O error.
-        source: io::Error,
-    },
-    /// Serialising failed.
-    #[error("cannot encode frecency: {source}")]
-    Encode {
-        /// The `serde_json` error (single-line).
-        source: serde_json::Error,
-    },
-}
-
-/// What reading the file found.
-enum Read {
-    Missing,
-    Loaded(History),
-    UnknownVersion(u32),
-    Unreadable(String),
-    Corrupt(String),
-}
+/// Saving `frecency.json` failed.
+pub type FrecencyError = StateError;
 
 /// `{dir}/frecency.json`.
 #[must_use]
 pub fn frecency_file(dir: &Path) -> PathBuf {
-    dir.join(FRECENCY_FILE)
-}
-
-fn read(path: &Path) -> Read {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Read::Missing,
-        Err(e) => return Read::Unreadable(one_line(&e.to_string())),
-    };
-    let parsed = serde_json::from_slice::<Peek>(&bytes).and_then(|Peek { version }| {
-        if version == FRECENCY_VERSION {
-            serde_json::from_slice::<History>(&bytes).map(Read::Loaded)
-        } else {
-            Ok(Read::UnknownVersion(version))
-        }
-    });
-    parsed.unwrap_or_else(|e| Read::Corrupt(one_line(&e.to_string())))
-}
-
-/// Renames a corrupt file to `frecency.json.corrupt`, replacing an earlier
-/// one. Best effort: if the rename fails, the next write replaces the file.
-fn quarantine(path: &Path) {
-    let mut to = path.as_os_str().to_owned();
-    to.push(".corrupt");
-    let to = PathBuf::from(to);
-    if fs::symlink_metadata(&to).is_ok_and(|m| m.is_dir()) {
-        let _ = fs::remove_dir_all(&to);
-    }
-    let _ = fs::rename(path, &to);
+    FRECENCY.path(dir)
 }
 
 /// The history in `dir`, and the problem to warn about, if any; any problem
@@ -160,47 +65,7 @@ fn quarantine(path: &Path) {
 /// lock, only once a re-read confirms it is still unparsable.
 #[must_use]
 pub fn load(dir: &Path) -> (History, Option<Problem>) {
-    let path = frecency_file(dir);
-    let read_now = read(&path);
-    let read_now = match read_now {
-        Read::Corrupt(_) => {
-            let _lock = lock(dir);
-            let again = read(&path);
-            if matches!(again, Read::Corrupt(_)) {
-                quarantine(&path);
-            }
-            again
-        }
-        other => other,
-    };
-    match read_now {
-        Read::Missing => (History::default(), None),
-        Read::Loaded(history) => (history, None),
-        Read::UnknownVersion(version) => (
-            History::default(),
-            Some(Problem::UnknownVersion { path, version }),
-        ),
-        Read::Unreadable(reason) => (
-            History::default(),
-            Some(Problem::Unreadable { path, reason }),
-        ),
-        Read::Corrupt(reason) => (History::default(), Some(Problem::Corrupt { path, reason })),
-    }
-}
-
-/// Takes the exclusive advisory lock on `{dir}/frecency.json.lock`, released
-/// when the file is dropped. Best effort: `None` when the lock file cannot be
-/// created or the filesystem cannot lock; the write itself is still atomic.
-fn lock(dir: &Path) -> Option<fs::File> {
-    fs::create_dir_all(dir).ok()?;
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(dir.join(format!("{FRECENCY_FILE}.lock")))
-        .ok()?;
-    file.lock().ok()?;
-    Some(file)
+    FRECENCY.load(dir)
 }
 
 /// Records into `{dir}/frecency.json`: under the lock, reloads the file,
@@ -219,37 +84,15 @@ pub fn record(
     now: StoredTime,
     f: impl FnOnce(&mut History),
 ) -> Result<Option<Problem>, FrecencyError> {
-    let _lock = lock(dir);
-    let path = frecency_file(dir);
-    let (mut history, problem) = match read(&path) {
-        Read::Missing => (History::default(), None),
-        Read::Loaded(history) => (history, None),
-        Read::UnknownVersion(version) => {
-            return Ok(Some(Problem::UnknownVersion { path, version }));
-        }
-        Read::Unreadable(reason) => return Ok(Some(Problem::Unreadable { path, reason })),
-        Read::Corrupt(reason) => {
-            quarantine(&path);
-            (
-                History::default(),
-                Some(Problem::Corrupt {
-                    path: path.clone(),
-                    reason,
-                }),
-            )
-        }
-    };
-    f(&mut history);
-    history.prune(now);
-    let file = FileOut {
-        version: FRECENCY_VERSION,
-        history: &history,
-    };
-    let mut json =
-        serde_json::to_vec_pretty(&file).map_err(|source| FrecencyError::Encode { source })?;
-    json.push(b'\n');
-    atomic_write(&path, &json).map_err(|source| FrecencyError::Write { path, source })?;
-    Ok(problem)
+    let updated = FRECENCY.update(dir, |history: &mut History| {
+        f(history);
+        history.prune(now);
+    });
+    match updated {
+        Ok(((), problem)) => Ok(problem),
+        Err(StateError::ReadOnly(problem)) => Ok(Some(problem)),
+        Err(err) => Err(err),
+    }
 }
 
 #[cfg(test)]

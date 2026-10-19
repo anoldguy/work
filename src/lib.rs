@@ -1,5 +1,6 @@
 //! `work`: navigate and sync your GitHub repositories.
 
+pub mod adopted;
 pub mod app;
 pub mod cache;
 pub mod cli;
@@ -18,6 +19,7 @@ pub mod pool;
 pub mod proc;
 pub mod progress;
 pub mod shell;
+pub mod state_file;
 pub mod sync;
 pub mod text;
 pub mod ui;
@@ -34,8 +36,8 @@ use app::App;
 use cli::{AuthAction, Cli, Command, ConfigAction};
 use commands::nav::Invocation;
 use commands::{
-    about, auth as auth_cmd, completions, config as config_cmd, favorite, list, meta, nav, setup,
-    sync as sync_cmd, update,
+    about, auth as auth_cmd, completions, config as config_cmd, favorite, forget, list, meta, nav,
+    setup, sync as sync_cmd, update,
 };
 use config::Locations;
 
@@ -96,7 +98,7 @@ fn dispatch(command: Command, env: env::EnvSnapshot, ui: &mut ui::Ui) -> Result<
             // Completion candidates: no failure, including a failed flush,
             // may print an error.
             let code = Locations::from_env(&env).map_or(ExitCode::SUCCESS, |locations| {
-                list::complete(&locations, ui)
+                list::complete(&locations, ui, args.adopted)
             });
             let _ = ui.flush();
             return Ok(code);
@@ -114,6 +116,7 @@ fn dispatch(command: Command, env: env::EnvSnapshot, ui: &mut ui::Ui) -> Result<
         Command::Sync(args) => sync_cmd::sync(&App::load(env)?, ui, &args),
         Command::Update(args) => update::run(&App::load(env)?, ui, &args),
         Command::Favorite(args) => favorite::run(&App::load(env)?, ui, &args),
+        Command::Forget(args) => forget::run(&App::load(env)?, ui, &args),
         Command::Setup(args) => setup::run(App::load(env)?, ui, &args),
         Command::Auth(args) => match args.action {
             AuthAction::Login(arg) => auth_cmd::login(&gh::ProcessGh, ui, &arg.domain),
