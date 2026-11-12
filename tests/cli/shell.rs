@@ -126,6 +126,62 @@ fn fish_wrapper_navigates() {
     wrapper_navigates("fish");
 }
 
+/// What Tab offers in `shell` for `work cd f`, with the script that
+/// `work completions` prints loaded next to the wrapper.
+fn completes_repos(shell: &str, body: &str) {
+    let Some(program) = find_shell(shell) else {
+        return;
+    };
+    let (env, _) = setup();
+    let out = run(&env, shell, &program, body);
+    assert_eq!(text(&out.stdout), "foo\n", "{shell}: {}", text(&out.stderr));
+}
+
+#[test]
+fn bash_completes_repos() {
+    completes_repos(
+        "bash",
+        r#"source <(work completions bash)
+COMP_WORDS=(work cd f) COMP_CWORD=2
+_work
+printf '%s\n' "${COMPREPLY[@]}""#,
+    );
+}
+
+#[test]
+fn fish_completes_repos() {
+    completes_repos(
+        "fish",
+        "work completions fish | source\ncomplete -C 'work cd f'",
+    );
+}
+
+/// zsh only completes on a terminal, so this covers how the script loads:
+/// evaluated after `compinit`, and autoloaded from the installed file. Both
+/// must end up with the function that asks `work` for candidates.
+#[test]
+fn zsh_registers_the_completion_evaluated_or_installed() {
+    let Some(program) = find_shell("zsh") else {
+        return;
+    };
+    let (env, _) = setup();
+    let ask = r#"[[ "$(functions _work)" == *'sh-complete zsh'* ]] && echo asks"#;
+    for load in [
+        r#"autoload -U compinit; compinit -D; eval "$(work completions zsh)""#,
+        r#"work completions zsh --install 2>/dev/null
+fpath=("$XDG_DATA_HOME/zsh/site-functions" $fpath); autoload -U compinit; compinit -D
+autoload +X _work"#,
+    ] {
+        let out = run(
+            &env,
+            "zsh",
+            &program,
+            &format!("{load}\necho $_comps[work]; {ask}"),
+        );
+        assert_eq!(text(&out.stdout), "_work\nasks\n", "{}", text(&out.stderr));
+    }
+}
+
 #[test]
 fn sh_cd_on_a_stale_cache_prints_only_the_path() {
     let env = TestEnv::new();

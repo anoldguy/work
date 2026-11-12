@@ -64,7 +64,7 @@ fn auth_status_checks_every_domain_and_fails_if_one_is_logged_out() {
 }
 
 #[test]
-fn completions_print_and_install_without_hidden_commands() {
+fn completions_install_the_script_they_print() {
     let env = TestEnv::new();
     let out = env
         .command()
@@ -73,8 +73,7 @@ fn completions_print_and_install_without_hidden_commands() {
         .expect("run");
     assert!(out.status.success(), "{}", text(&out.stderr));
     let script = text(&out.stdout);
-    assert!(script.contains("browse"), "{script}");
-    assert!(!script.contains("sh-cd"), "{script}");
+    assert!(script.contains("complete -F"), "{script}");
 
     let out = env
         .command()

@@ -2,6 +2,7 @@
 
 pub mod about;
 pub mod auth;
+pub mod complete;
 pub mod completions;
 pub mod config;
 pub mod favorite;

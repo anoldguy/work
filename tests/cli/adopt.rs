@@ -396,18 +396,20 @@ fn completions_offer_adopted_repos_and_forget_offers_only_those() {
     readable(&env, "github.com", "other/lib", "other/lib");
     assert!(browse(&env, "other/lib").status.success());
 
-    let complete = |extra: &[&str]| {
-        let out = env
-            .command()
-            .args(["list", "--complete"])
-            .args(extra)
-            .output()
-            .expect("run");
+    let complete = |args: &[&str]| {
+        let out = env.command().args(args).output().expect("run");
         assert!(out.status.success());
         text(&out.stdout)
     };
-    assert_eq!(complete(&[]), "acme/app\napp\nlib\nother/lib\n");
-    assert_eq!(complete(&["--adopted"]), "lib\nother/lib\n");
+    let typed = |command| ["sh-complete", "bash", "--", command, ""];
+    // `lib` was just browsed, so it ranks first.
+    assert_eq!(complete(&typed("browse")), "lib\napp\n");
+    assert_eq!(complete(&typed("forget")), "lib\n");
+
+    // Completion scripts installed by older releases call these.
+    let old = ["list", "--complete", "--adopted"];
+    assert_eq!(complete(&old[..2]), "acme/app\napp\nlib\nother/lib\n");
+    assert_eq!(complete(&old), "lib\nother/lib\n");
 }
 
 #[test]

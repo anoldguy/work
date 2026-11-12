@@ -68,6 +68,14 @@ work completions fish --install
 
 For zsh, `--install` also prints an `fpath` hint on stderr, because a child process can't see your `fpath`; follow it. Tab completion turns `work cd my<TAB>` into something useful. Without it you're just typing full repo names like an animal.
 
+What Tab knows about:
+
+- **Repositories**, from the local cache (no network, ever), with the ones you use most listed first. `my<TAB>` completes names, `acme/<TAB>` completes `org/name`, and `github.com/<TAB>` completes full slugs. Case doesn't matter. `work forget <TAB>` offers only the repos you adopted.
+- **Domains** from your config, wherever a command takes one (`work favorite`, `work auth login --domain`).
+- **Subcommands and flags**, with their descriptions in zsh and fish.
+
+The installed script is a few lines that ask `work` itself what fits, so it never goes stale: upgrade `work` and completion follows. If you installed completions with v1.1 or earlier, run `--install` once more to get all of the above.
+
 ## Quick Start
 
 Three steps: authenticate, enable shell integration, navigate to repositories. That's it.

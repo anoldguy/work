@@ -2,6 +2,7 @@
 //! completions.
 
 pub mod activate;
+pub mod complete;
 pub mod completions;
 pub mod detect;
 
@@ -80,16 +81,6 @@ impl Shell {
 impl fmt::Display for Shell {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
-    }
-}
-
-impl From<Shell> for clap_complete::Shell {
-    fn from(value: Shell) -> Self {
-        match value {
-            Shell::Bash => Self::Bash,
-            Shell::Zsh => Self::Zsh,
-            Shell::Fish => Self::Fish,
-        }
     }
 }
 

@@ -3,11 +3,10 @@
 use std::collections::BTreeSet;
 use std::process::ExitCode;
 
-use crate::adopted;
 use crate::app::App;
 use crate::cache::refresh::Freshness;
-use crate::cache::store::{self, LoadOutcome};
 use crate::cli::ListArgs;
+use crate::commands::complete::known_repos;
 use crate::commands::resolve::{listed_history, load_known};
 use crate::config::{Locations, store as config_store};
 use crate::core::search::{Query, filter, search};
@@ -57,24 +56,16 @@ fn sorted_slugs(repos: &[Repo]) -> Vec<String> {
     slugs.into_iter().map(ToString::to_string).collect()
 }
 
-/// Prints de-duplicated `name` and `org/name` completion candidates from the
-/// cache and the adopted repos (only the adopted ones, on any domain, when
-/// `adopted_only`), without any network. Prints nothing and exits 0 on any
-/// failure, because a shell runs it on every Tab press.
+/// Prints de-duplicated `name` and `org/name` candidates for the completion
+/// scripts that releases before `sh-complete` installed, which still call
+/// `list --complete`. Prints nothing and exits 0 on any failure.
 #[must_use]
 pub fn complete(locations: &Locations, ui: &mut Ui, adopted_only: bool) -> ExitCode {
-    let Ok(config) = config_store::load(locations) else {
+    let Some(repos) = config_store::load(locations)
+        .ok()
+        .and_then(|config| known_repos(&config, adopted_only))
+    else {
         return ExitCode::SUCCESS;
-    };
-    let (adopted, _) = adopted::load(config.cache_dir());
-    let repos = if adopted_only {
-        adopted.repos
-    } else {
-        let LoadOutcome::Loaded(mut cache) = store::load(config.cache_dir()) else {
-            return ExitCode::SUCCESS;
-        };
-        adopted::extend_known(&mut cache.repos, adopted, &config.effective_domains());
-        cache.repos
     };
     let entries: BTreeSet<String> = repos
         .iter()

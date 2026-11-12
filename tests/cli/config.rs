@@ -35,7 +35,7 @@ fn invalid_config_fails_cd_in_one_line_but_not_config_free_commands() {
         .output()
         .expect("run");
     assert!(out.status.success(), "{}", text(&out.stderr));
-    assert!(text(&out.stdout).contains("browse"));
+    assert!(text(&out.stdout).contains("complete -F"));
 
     let out = env
         .command()

@@ -3,9 +3,7 @@
 use std::fs;
 use std::process::ExitCode;
 
-use clap::CommandFactory;
-
-use crate::cli::{Cli, CompletionsArgs};
+use crate::cli::CompletionsArgs;
 use crate::config::Locations;
 use crate::env::EnvSnapshot;
 use crate::error::Error;
@@ -28,7 +26,7 @@ pub fn run(
 ) -> Result<ExitCode, Error> {
     let &CompletionsArgs { shell, install } = args;
     let shell = shell.unwrap_or_else(|| detect(env));
-    let script = completion_script(shell, &mut Cli::command());
+    let script = completion_script(shell);
     if !install {
         ui.stdout_line(script.trim_end_matches('\n'))?;
         return Ok(ExitCode::SUCCESS);

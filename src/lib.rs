@@ -36,8 +36,8 @@ use app::App;
 use cli::{AuthAction, Cli, Command, ConfigAction};
 use commands::nav::Invocation;
 use commands::{
-    about, auth as auth_cmd, completions, config as config_cmd, favorite, forget, list, meta, nav,
-    setup, sync as sync_cmd, update,
+    about, auth as auth_cmd, complete, completions, config as config_cmd, favorite, forget, list,
+    meta, nav, setup, sync as sync_cmd, update,
 };
 use config::Locations;
 
@@ -100,6 +100,12 @@ fn dispatch(command: Command, env: env::EnvSnapshot, ui: &mut ui::Ui) -> Result<
             let code = Locations::from_env(&env).map_or(ExitCode::SUCCESS, |locations| {
                 list::complete(&locations, ui, args.adopted)
             });
+            let _ = ui.flush();
+            return Ok(code);
+        }
+        Command::ShComplete(args) => {
+            // As above: a Tab press never prints an error.
+            let code = complete::run(&env, ui, &args);
             let _ = ui.flush();
             return Ok(code);
         }

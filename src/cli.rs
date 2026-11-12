@@ -66,6 +66,9 @@ pub enum Command {
     /// Editor on the current directory, for the shell wrapper's `on`
     #[command(name = "sh-editor", hide = true)]
     ShEditor,
+    /// Completion candidates, for the scripts `completions` prints
+    #[command(name = "sh-complete", hide = true)]
+    ShComplete(ShCompleteArgs),
 }
 
 /// `<query> [--pick]`, shared by every command that resolves one repo.
@@ -113,7 +116,8 @@ pub struct ListArgs {
     /// Plain substring match on the full slug, without frecency
     #[arg(long)]
     pub filter: bool,
-    /// Offline completion candidates (name and org/name); silent on failure
+    /// Offline candidates (name and org/name) for completion scripts
+    /// installed before `sh-complete`; silent on failure
     #[arg(long, hide = true, conflicts_with_all = ["query", "filter"])]
     pub complete: bool,
     /// With `--complete`: adopted repositories only, on any domain
@@ -203,6 +207,16 @@ pub struct CompletionsArgs {
     /// Write the script to the shell's completion directory
     #[arg(long)]
     pub install: bool,
+}
+
+/// `sh-complete <shell> -- [words]`.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct ShCompleteArgs {
+    /// The shell whose script is asking
+    pub shell: Shell,
+    /// The words after `work`, up to and including the one under the cursor
+    #[arg(last = true)]
+    pub words: Vec<String>,
 }
 
 /// `activate [shell]`.

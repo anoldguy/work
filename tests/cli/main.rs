@@ -9,6 +9,7 @@ mod adopt;
 mod ambiguity;
 mod clone;
 mod commands;
+mod complete;
 mod config;
 mod frecency;
 mod shell;
