@@ -57,7 +57,9 @@ trap restore EXIT
 if [[ $current != "$version" ]]; then
     step "Version $current -> $version"
     sed -i "0,/^version = \".*\"$/s//version = \"$version\"/" Cargo.toml
-    cargo metadata --quiet --offline --format-version 1 >/dev/null
+    # Not `cargo metadata`: it downloads every platform's crates, Windows-only
+    # ones included, and nothing here builds for Windows.
+    cargo update --quiet --offline --workspace
 fi
 
 step "Checks"
