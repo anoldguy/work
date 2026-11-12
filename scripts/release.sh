@@ -29,8 +29,11 @@ tag=v$version
 cd "$(git rev-parse --show-toplevel)"
 
 step "Preflight"
-for tool in git gh cargo rustup zig cargo-zigbuild tar xz sha256sum; do
-    command -v "$tool" >/dev/null || die "$tool is not on PATH (zig and cargo-zigbuild: run 'mise install')"
+for tool in git gh cargo rustup tar xz sha256sum; do
+    command -v "$tool" >/dev/null || die "$tool is not on PATH"
+done
+for tool in zig cargo-zigbuild cargo-nextest cargo-deny cargo-audit cargo-machete; do
+    command -v "$tool" >/dev/null || die "$tool is not on PATH (run 'mise install')"
 done
 [[ $(git branch --show-current) == "$BRANCH" ]] || die "releases are cut from $BRANCH (on '$(git branch --show-current)')"
 [[ -z $(git status --porcelain) ]] || die "the working tree has uncommitted changes"
