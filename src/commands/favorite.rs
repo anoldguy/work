@@ -109,6 +109,29 @@ fn select_domain(
     }
 }
 
+/// Builds the sorted, case-insensitively deduplicated candidate list from
+/// `orgs` (API/extra, spelling wins) and `current` (configured favourites),
+/// paired with whether each entry is currently a favourite.
+fn merge_candidates(orgs: &[Org], current: &[Org]) -> (Vec<Org>, Vec<bool>) {
+    let mut candidates: Vec<Org> = Vec::with_capacity(orgs.len() + current.len());
+    for org in orgs.iter().chain(current) {
+        if !candidates.iter().any(|seen| seen.eq_ignore_case(org)) {
+            candidates.push(org.clone());
+        }
+    }
+    candidates.sort_by(|a, b| {
+        a.as_str()
+            .to_ascii_lowercase()
+            .cmp(&b.as_str().to_ascii_lowercase())
+            .then_with(|| a.cmp(b))
+    });
+    let selected = candidates
+        .iter()
+        .map(|o| current.iter().any(|fav| fav.eq_ignore_case(o)))
+        .collect();
+    (candidates, selected)
+}
+
 /// Picks over the union of `orgs` and `current`, so a favourite the API no
 /// longer lists is not silently dropped.
 fn choose_favorites(
@@ -117,14 +140,11 @@ fn choose_favorites(
     orgs: &[Org],
     current: &[Org],
 ) -> Result<Choice, UiError> {
-    let mut candidates: Vec<Org> = orgs.iter().chain(current).cloned().collect();
-    candidates.sort();
-    candidates.dedup();
+    let (candidates, selected) = merge_candidates(orgs, current);
     if candidates.is_empty() {
         return Ok(Choice::NoOrgs);
     }
     let names: Vec<&str> = candidates.iter().map(Org::as_str).collect();
-    let selected: Vec<bool> = candidates.iter().map(|o| current.contains(o)).collect();
     let prompt = format!("Favorite organizations for {domain}");
     let Some(chosen) = ui.pick_many(&prompt, &names, &selected)? else {
         return Ok(Choice::Cancelled);
@@ -136,4 +156,24 @@ fn choose_favorites(
             .filter_map(|(org, keep)| keep.then_some(org))
             .collect(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_candidates;
+    use crate::domain::Org;
+
+    fn org(s: &str) -> Org {
+        s.parse().expect("valid org")
+    }
+
+    #[test]
+    fn favorite_candidates_deduplicate_and_preselect_case_insensitively() {
+        let orgs = [org("Acme"), org("beta")];
+        let current = [org("acme"), org("Legacy")];
+        let (candidates, selected) = merge_candidates(&orgs, &current);
+        let names: Vec<&str> = candidates.iter().map(Org::as_str).collect();
+        assert_eq!(names, ["Acme", "beta", "Legacy"]);
+        assert_eq!(selected, [true, false, true]);
+    }
 }
