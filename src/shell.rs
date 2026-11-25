@@ -1,18 +1,41 @@
 //! Shell integration: detection, the `sh-*` path line, activation, and
 //! completions.
 
-pub mod activate;
 pub mod complete;
 pub mod completions;
-pub mod detect;
 
-pub use activate::activation_script;
 pub use completions::{completion_script, install_path};
-pub use detect::detect;
 
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
+
+use crate::env::EnvSnapshot;
+
+/// The shell named by `$SHELL`; bash when unset or unrecognised.
+#[must_use]
+pub fn detect(env: &EnvSnapshot) -> Shell {
+    let name = env
+        .shell
+        .as_deref()
+        .and_then(|s| Path::new(s).file_name())
+        .and_then(|n| n.to_str());
+    match name {
+        Some("zsh") => Shell::Zsh,
+        Some("fish") => Shell::Fish,
+        _ => Shell::Bash,
+    }
+}
+
+/// The embedded wrapper script printed by `work activate` for `shell`.
+#[must_use]
+pub const fn activation_script(shell: Shell) -> &'static str {
+    match shell {
+        Shell::Bash => include_str!("../shell/work.bash"),
+        Shell::Zsh => include_str!("../shell/work.zsh"),
+        Shell::Fish => include_str!("../shell/work.fish"),
+    }
+}
 
 /// The line `sh-cd`/`sh-on` print for `path`: the path made absolute.
 ///
@@ -118,14 +141,6 @@ pub enum ShellError {
     CurrentDir {
         /// The I/O error.
         source: io::Error,
-    },
-    /// `about --style` with an unknown name.
-    #[error("unknown style {given:?} (valid styles are listed below)")]
-    UnknownStyle {
-        /// The name given.
-        given: String,
-        /// Every registered style, in registry order.
-        valid: Vec<&'static str>,
     },
     /// Writing the completion file failed.
     #[error("cannot install completions to {path:?}: {source}")]

@@ -6,7 +6,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cli::AboutArgs;
 use crate::error::Error;
-use crate::shell::ShellError;
 use crate::ui::splash::logo::{LOGO, footer, footer_pad};
 use crate::ui::splash::rng::Rng;
 use crate::ui::splash::{STYLES, Style, find_style, style_names};
@@ -21,7 +20,7 @@ const STYLE_SALT: u64 = 0xA076_1D64_78BD_642F;
 ///
 /// # Errors
 ///
-/// `ShellError::UnknownStyle`, or terminal failures.
+/// `Error::UnknownStyle`, or terminal failures.
 pub fn run(ui: &mut Ui, args: &AboutArgs) -> Result<ExitCode, Error> {
     let AboutArgs { style } = args;
     let seed = entropy_seed();
@@ -44,9 +43,9 @@ fn entropy_seed() -> u64 {
     nanos ^ u64::from(std::process::id())
 }
 
-fn pick_style(name: Option<&str>, seed: u64) -> Result<&'static dyn Style, ShellError> {
+fn pick_style(name: Option<&str>, seed: u64) -> Result<&'static dyn Style, Error> {
     if let Some(given) = name {
-        return find_style(given).ok_or_else(|| ShellError::UnknownStyle {
+        return find_style(given).ok_or_else(|| Error::UnknownStyle {
             given: given.to_owned(),
             valid: style_names(),
         });

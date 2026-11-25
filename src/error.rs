@@ -43,7 +43,7 @@ pub enum Error {
     /// `pull`/`sync`.
     #[error(transparent)]
     Sync(#[from] SyncError),
-    /// Shell integration and `about` styles.
+    /// Shell integration.
     #[error(transparent)]
     Shell(#[from] ShellError),
     /// The terminal.
@@ -58,6 +58,14 @@ pub enum Error {
     /// A command-line usage error; exits 2.
     #[error("{0}")]
     Usage(String),
+    /// `about --style` with an unknown name.
+    #[error("unknown style {given:?} (valid styles are listed below)")]
+    UnknownStyle {
+        /// The name given.
+        given: String,
+        /// Every registered style, in registry order.
+        valid: Vec<&'static str>,
+    },
     /// Creating a directory failed.
     #[error("cannot create directory {path:?}: {source}")]
     CreateDir {
@@ -69,16 +77,10 @@ pub enum Error {
 }
 
 impl Error {
-    /// Reduces a clap usage error to a one-line [`Error::Usage`]. Not for
-    /// `DisplayHelp`/`DisplayVersion`.
+    /// Reduces a clap usage error to a one-line [`Error::Usage`], with the
+    /// help hint naming `command_path`. Not for `DisplayHelp`/`DisplayVersion`.
     #[must_use]
-    pub fn from_clap(err: &clap::Error) -> Self {
-        Self::from_clap_in(err, "work")
-    }
-
-    /// [`Error::from_clap`] with the help hint naming `command_path`.
-    #[must_use]
-    pub fn from_clap_in(err: &clap::Error, command_path: &str) -> Self {
+    pub(crate) fn from_clap_in(err: &clap::Error, command_path: &str) -> Self {
         let arg = || context(err, ContextKind::InvalidArg).unwrap_or_default();
         let value = || context(err, ContextKind::InvalidValue).unwrap_or_default();
         // Built from clap's structured context rather than its rendering, so
@@ -141,9 +143,7 @@ impl Error {
                 .iter()
                 .map(|path| one_line(&path.to_string_lossy()))
                 .collect(),
-            Self::Shell(ShellError::UnknownStyle { valid, .. }) => {
-                valid.iter().map(|name| one_line(name)).collect()
-            }
+            Self::UnknownStyle { valid, .. } => valid.iter().map(|name| one_line(name)).collect(),
             _ => Vec::new(),
         }
     }
