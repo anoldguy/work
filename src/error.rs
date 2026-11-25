@@ -93,9 +93,7 @@ impl Error {
             ),
             ErrorKind::InvalidValue => format!("invalid value '{}' for '{}'", value(), arg()),
             ErrorKind::ValueValidation => {
-                let reason = std::error::Error::source(err)
-                    .map(ToString::to_string)
-                    .unwrap_or_default();
+                let reason = std::error::Error::source(err).map_or_default(ToString::to_string);
                 format!("invalid value '{}' for '{}': {reason}", value(), arg())
             }
             ErrorKind::MissingRequiredArgument => {
@@ -156,7 +154,6 @@ impl Error {
 
     /// The process exit code: 0 for a broken stdout pipe, 2 for usage
     /// errors, 130 for Ctrl-C, otherwise 1.
-    #[must_use]
     pub fn exit_code(&self) -> ExitCode {
         match self {
             Self::Ui(UiError::BrokenPipe) => ExitCode::SUCCESS,

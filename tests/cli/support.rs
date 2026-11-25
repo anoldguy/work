@@ -291,8 +291,7 @@ impl TestEnv {
     pub fn calls(&self, name: &str) -> Vec<String> {
         let name = if name == "opener" { OPENER } else { name };
         fs::read_to_string(self.root().join(format!("{name}.log")))
-            .map(|text| text.lines().map(str::to_owned).collect())
-            .unwrap_or_default()
+            .map_or_default(|text| text.lines().map(str::to_owned).collect())
     }
 
     fn fixture(&self, host: &str, path: &str, ext: &str) -> PathBuf {

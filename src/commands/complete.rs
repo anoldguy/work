@@ -21,7 +21,6 @@ use crate::ui::Ui;
 /// no network, and no refresh of a stale cache. Prints only what it could
 /// work out and exits 0 on any failure, because a shell runs it on every
 /// Tab press.
-#[must_use]
 pub fn run(env: &EnvSnapshot, ui: &mut Ui, args: &ShCompleteArgs) -> ExitCode {
     let mut cmd = Cli::command();
     cmd.build();

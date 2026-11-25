@@ -138,8 +138,7 @@ impl<'c> Cursor<'c> {
                     .strip_prefix("--")
                     .and_then(|name| self.long(name))
                     .filter(|arg| takes_value(arg))
-                    .map(|arg| self.values(arg, &format!("{flag}="), partial))
-                    .unwrap_or_default();
+                    .map_or_default(|arg| self.values(arg, &format!("{flag}="), partial));
             }
             return Slot {
                 fixed: self.flags(current),
@@ -150,8 +149,7 @@ impl<'c> Cursor<'c> {
             .cmd
             .get_positionals()
             .find(|arg| arg.get_index() == Some(self.positionals + 1))
-            .map(|arg| self.values(arg, "", current))
-            .unwrap_or_default();
+            .map_or_default(|arg| self.values(arg, "", current));
         if !self.literal && self.positionals == 0 {
             let subcommands = self
                 .cmd

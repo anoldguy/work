@@ -59,7 +59,6 @@ fn sorted_slugs(repos: &[Repo]) -> Vec<String> {
 /// Prints de-duplicated `name` and `org/name` candidates for the completion
 /// scripts that releases before `sh-complete` installed, which still call
 /// `list --complete`. Prints nothing and exits 0 on any failure.
-#[must_use]
 pub fn complete(locations: &Locations, ui: &mut Ui, adopted_only: bool) -> ExitCode {
     let Some(repos) = config_store::load(locations)
         .ok()
