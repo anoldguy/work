@@ -81,9 +81,8 @@ fn host_brackets_ok(host: &str) -> bool {
 
 /// A URL that is safe to pass to `git clone` as an argument.
 ///
-/// Invariant: `https://`, `ssh://`, scp-like (`git@host:org/repo.git`), or
-/// `file://` (local test fixtures). It never starts with `-` and is never an
-/// `ext::` transport.
+/// Invariant: `https://`, `ssh://`, or scp-like (`git@host:org/repo.git`).
+/// It never starts with `-` and is never an `ext::` transport.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct CloneUrl(String);
@@ -117,8 +116,8 @@ fn clone_url_problem(s: &str) -> Option<&'static str> {
         return match o.scheme {
             "https" | "ssh" if o.host.is_empty() => Some("missing host"),
             "https" | "ssh" if o.host.starts_with('-') => Some("host cannot start with '-'"),
-            "https" | "ssh" | "file" => None,
-            _ => Some("only https, ssh, scp-like and file URLs are allowed"),
+            "https" | "ssh" => None,
+            _ => Some("only https, ssh and scp-like URLs are allowed"),
         };
     }
     if s.contains("://") {
@@ -136,7 +135,7 @@ fn clone_url_problem(s: &str) -> Option<&'static str> {
                 None
             }
         }
-        _ => Some("only https, ssh, scp-like and file URLs are allowed"),
+        _ => Some("only https, ssh and scp-like URLs are allowed"),
     }
 }
 
@@ -249,13 +248,12 @@ mod tests {
     }
 
     #[test]
-    fn clone_url_accepts_https_ssh_scp_and_file() {
+    fn clone_url_accepts_https_ssh_and_scp() {
         for ok in [
             "https://github.com/acme/x.git",
             "ssh://git@github.com/acme/x.git",
             "git@github.com:acme/x.git",
             "github.com:acme/x.git",
-            "file:///tmp/fixture/x.git",
         ] {
             assert_eq!(clone(ok).unwrap().as_str(), ok);
         }
@@ -270,6 +268,7 @@ mod tests {
             "ext::sh -c evil",
             "ext::sh%20evil",
             "EXT::evil",
+            "file:///tmp/fixture/x.git",
             "http://github.com/acme/x.git",
             "git://github.com/acme/x.git",
             "ftp://github.com/x",

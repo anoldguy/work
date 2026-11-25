@@ -33,9 +33,8 @@ pub fn parse_repo_line(line: &[u8], domain: &Domain) -> Option<Repo> {
 impl RepoLine {
     /// Validates the entry into a [`Repo`] on `domain`. Stricter than the
     /// domain types: API data must have an `https://` `clone_url` and
-    /// `html_url`, both on `domain` (`file://`/`ssh://` clone URLs exist only
-    /// for local fixtures, and an API response must not be able to point
-    /// `git clone` at a local path).
+    /// `html_url`, both on `domain` (so an API response cannot point
+    /// `git clone` at another host or transport).
     fn into_repo(self, domain: &Domain) -> Result<Repo, NameError> {
         let org = Org::try_from(self.owner)?;
         let name = RepoName::try_from(self.name)?;

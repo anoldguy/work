@@ -1,6 +1,7 @@
 //! Line prompts: pure reducers over decoded [`PickerKey`]s plus a one-line
 //! render.
 
+use crate::text::char_width;
 use crate::ui::picker::PickerKey;
 
 /// What the caller does after a key.
@@ -102,8 +103,39 @@ impl<'a> Confirm<'a> {
     }
 }
 
-/// The last `w` characters of `s`.
+/// The longest suffix of `s` that fits in `w` display columns.
 fn fit_tail(s: &str, w: usize) -> String {
-    let skip = s.chars().count().saturating_sub(w);
-    s.chars().skip(skip).collect()
+    let mut used = 0;
+    let mut kept: Vec<char> = s
+        .chars()
+        .rev()
+        .take_while(|&c| {
+            let cw = char_width(c);
+            if used + cw <= w {
+                used += cw;
+                true
+            } else {
+                false
+            }
+        })
+        .collect();
+    kept.reverse();
+    kept.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fit_tail;
+    use crate::text::char_width;
+
+    #[test]
+    fn fit_tail_respects_display_width_of_wide_characters() {
+        // Each CJK char is 2 columns: "ab漢字cd" is 1+1+2+2+1+1 = 8 columns.
+        let tail = fit_tail("ab漢字cd", 5);
+        assert_eq!(tail, "字cd");
+        let width: usize = tail.chars().map(char_width).sum();
+        assert!(width <= 5);
+        assert_eq!(fit_tail("漢字", 1), "");
+        assert_eq!(fit_tail("hello", 10), "hello");
+    }
 }
