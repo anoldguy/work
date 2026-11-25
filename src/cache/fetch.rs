@@ -4,13 +4,13 @@ use std::collections::{BTreeMap, HashSet};
 use std::num::NonZeroUsize;
 
 use crate::cache::merge::{DomainOutcome, OrgOutcome};
+use crate::cache::org_filter::{OrgSelection, passes_filters, select_orgs};
 use crate::config::Config;
-use crate::core::org_filter::{OrgSelection, passes_filters, select_orgs};
 use crate::domain::{Domain, Org, Repo, Slug};
-use crate::gh::Gh;
+use crate::gh;
 use crate::pool::run_bounded;
-use crate::progress::{Noun, Tasks, Verb, group};
 use crate::text::plural;
+use crate::ui::progress::{Noun, Tasks, Verb, group};
 
 /// Listing jobs in flight at once, across all domains.
 pub const FETCH_JOBS: NonZeroUsize = NonZeroUsize::new(8).expect("8 is non-zero");
@@ -125,12 +125,12 @@ struct Gathered {
 /// the others; then every listing job, across all domains, shares one pool of
 /// [`FETCH_JOBS`] workers.
 #[must_use]
-pub fn fetch_all(plan: &FetchPlan<'_>, gh: &dyn Gh, tasks: &Tasks) -> Vec<DomainOutcome> {
+pub fn fetch_all(plan: &FetchPlan<'_>, tasks: &Tasks) -> Vec<DomainOutcome> {
     // Each result carries its own domain (cloned to cross the worker
     // boundary), so nothing depends on the pool's result order.
     let prepared: Vec<Prepared> = run_bounded(&plan.domains, FETCH_JOBS, |dp| {
         let domain = dp.domain.clone();
-        match prepare_domain(plan, dp, gh) {
+        match prepare_domain(plan, dp) {
             Ok(ready) => Prepared::Ready { domain, ready },
             Err(cause) => Prepared::Failed { domain, cause },
         }
@@ -168,7 +168,7 @@ pub fn fetch_all(plan: &FetchPlan<'_>, gh: &dyn Gh, tasks: &Tasks) -> Vec<Domain
     }
 
     let mut gathered: BTreeMap<Domain, Gathered> = BTreeMap::new();
-    for (key, outcome) in run_bounded(&jobs, FETCH_JOBS, |job| run_job(job, gh, tasks)) {
+    for (key, outcome) in run_bounded(&jobs, FETCH_JOBS, |job| run_job(job, tasks)) {
         let entry = gathered.entry(key.domain).or_default();
         match key.kind {
             JobKind::Personal => entry.personal = Some(outcome),
@@ -179,7 +179,7 @@ pub fn fetch_all(plan: &FetchPlan<'_>, gh: &dyn Gh, tasks: &Tasks) -> Vec<Domain
     prepared
         .into_iter()
         .map(|p| match p {
-            Prepared::Failed { domain, cause } => DomainOutcome::Failed { domain, cause },
+            Prepared::Failed { domain, .. } => DomainOutcome::Failed { domain },
             Prepared::Ready {
                 domain,
                 ready:
@@ -194,8 +194,7 @@ pub fn fetch_all(plan: &FetchPlan<'_>, gh: &dyn Gh, tasks: &Tasks) -> Vec<Domain
                 // Every ready domain queued a personal job. Should its result
                 // ever be missing, it counts as a failed listing, which
                 // carries the previous repos forward.
-                let personal =
-                    personal.unwrap_or_else(|| OrgOutcome::Failed("not fetched".to_owned()));
+                let personal = personal.unwrap_or(OrgOutcome::Failed);
                 let personal = filter_personal(personal, &viewer, &orgs, plan);
                 DomainOutcome::Fetched {
                     domain,
@@ -220,10 +219,10 @@ fn in_selection_order(
 
 /// The domain phase for one domain, on a pool worker. It reports nothing, so
 /// warnings can be emitted in domain order.
-fn prepare_domain(plan: &FetchPlan<'_>, dp: &DomainPlan<'_>, gh: &dyn Gh) -> Result<Ready, String> {
+fn prepare_domain(plan: &FetchPlan<'_>, dp: &DomainPlan<'_>) -> Result<Ready, String> {
     let domain = &dp.domain;
-    let viewer = gh.viewer(domain).map_err(|e| e.to_string())?;
-    let member = gh.member_orgs(domain).map_err(|e| e.to_string())?;
+    let viewer = gh::viewer(domain).map_err(|e| e.to_string())?;
+    let member = gh::member_orgs(domain).map_err(|e| e.to_string())?;
     let orgs = select_orgs(&OrgSelection {
         member: &member,
         extra: dp.extra,
@@ -247,7 +246,7 @@ fn prepare_domain(plan: &FetchPlan<'_>, dp: &DomainPlan<'_>, gh: &dyn Gh) -> Res
 }
 
 /// Runs one job on a pool worker and returns its result under its key.
-fn run_job(job: &JobKey, gh: &dyn Gh, tasks: &Tasks) -> (JobKey, OrgOutcome) {
+fn run_job(job: &JobKey, tasks: &Tasks) -> (JobKey, OrgOutcome) {
     let label = job.label();
     let task = tasks.start(&label);
     let mut repos: Vec<Repo> = Vec::new();
@@ -261,8 +260,8 @@ fn run_job(job: &JobKey, gh: &dyn Gh, tasks: &Tasks) -> (JobKey, OrgOutcome) {
         ));
     };
     let listing = match &job.kind {
-        JobKind::Personal => gh.user_repos(&job.domain, &mut on_repo),
-        JobKind::Org(org) => gh.org_repos(&job.domain, org, &mut on_repo),
+        JobKind::Personal => gh::user_repos(&job.domain, &mut on_repo),
+        JobKind::Org(org) => gh::org_repos(&job.domain, org, &mut on_repo),
     };
     let outcome = match listing {
         Ok(skipped) => {
@@ -279,7 +278,7 @@ fn run_job(job: &JobKey, gh: &dyn Gh, tasks: &Tasks) -> (JobKey, OrgOutcome) {
             let reason = err.to_string();
             tasks.warn(format!("cannot fetch {label}: {reason}"));
             task.fail(&reason);
-            OrgOutcome::Failed(reason)
+            OrgOutcome::Failed
         }
     };
     (job.clone(), outcome)
@@ -301,7 +300,7 @@ fn filter_personal(
         .iter()
         .filter_map(|(_, outcome)| match outcome {
             OrgOutcome::Fetched(repos) => Some(repos),
-            OrgOutcome::Failed(_) => None,
+            OrgOutcome::Failed => None,
         })
         .flatten()
         .map(|repo| &repo.slug)

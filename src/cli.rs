@@ -4,6 +4,7 @@ use std::num::NonZeroUsize;
 
 use clap::{Args, Parser, Subcommand};
 
+use crate::config::IMPLICIT_DOMAIN;
 use crate::domain::Domain;
 use crate::shell::Shell;
 
@@ -191,11 +192,11 @@ pub enum AuthAction {
     Status,
 }
 
-/// `--domain <domain>`, defaulting to `github.com`.
+/// `--domain <domain>`, defaulting to [`IMPLICIT_DOMAIN`].
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct DomainArg {
     /// GitHub host
-    #[arg(long, default_value = "github.com")]
+    #[arg(long, default_value = IMPLICIT_DOMAIN)]
     pub domain: Domain,
 }
 

@@ -62,8 +62,7 @@ fn refresh(
     let all_orgs = matches!(freshness, Freshness::Force { all_orgs: true });
     let plan = FetchPlan::from_config(&app.config, all_orgs);
     let domains: Vec<Domain> = plan.domains.iter().map(|d| d.domain.clone()).collect();
-    let gh = &*app.gh;
-    let outcomes = ui.with_progress(PROGRESS_TITLE, |tasks| fetch_all(&plan, gh, tasks));
+    let outcomes = ui.with_progress(PROGRESS_TITLE, |tasks| fetch_all(&plan, tasks));
 
     if all_failed(&outcomes) {
         return match (freshness, previous) {

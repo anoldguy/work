@@ -56,6 +56,10 @@ impl<'ui> Interactive<'ui> {
         clippy::disallowed_methods,
         reason = "the only child that gets the terminal, while holding the Ui"
     )]
+    #[expect(
+        clippy::unused_self,
+        reason = "borrowing Interactive proves exclusive terminal ownership"
+    )]
     pub fn run(&mut self, cmd: &mut Command) -> io::Result<ExitStatus> {
         cmd.stdin(Stdio::inherit())
             .stdout(Stdio::inherit())

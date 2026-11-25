@@ -212,11 +212,7 @@ impl ConfigDoc {
     }
 
     /// Sets `work_dir` to `raw` as typed (it may start with `~`).
-    ///
-    /// # Errors
-    ///
-    /// [`ConfigError::Edit`].
-    pub fn set_work_dir(&mut self, raw: &str) -> Result<(), ConfigError> {
+    pub fn set_work_dir(&mut self, raw: &str) {
         let root = self.doc.as_table_mut();
         let is_new = !root.contains_key("work_dir");
         set_value(root, "work_dir", raw.into());
@@ -242,7 +238,6 @@ impl ConfigDoc {
                 table.decor_mut().set_prefix("\n");
             }
         }
-        Ok(())
     }
 
     /// Writes the document atomically, creating the directory if needed.

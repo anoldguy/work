@@ -8,7 +8,6 @@ use std::fs;
 use std::process::ExitCode;
 
 use crate::app::App;
-use crate::cache::Cache;
 use crate::cache::refresh::Freshness;
 use crate::cli::{CdArgs, ResolveArgs};
 use crate::commands::resolve::{
@@ -85,11 +84,11 @@ pub fn sh_editor(env: &EnvSnapshot, ui: &mut Ui) -> Result<ExitCode, Error> {
 }
 
 fn wrapped_target(app: &App, ui: &mut Ui, query: &str, pick: bool) -> Result<ExitCode, Error> {
-    let (cache, target) = resolve(app, ui, query, pick)?;
+    let target = resolve(app, ui, query, pick)?;
     // Check the path can be printed before cloning anything.
     let line = shell::path_line(&target.path)?;
-    ensure_cloned(app, ui, &cache, &target)?;
-    record_access(app, ui, &cache, &target);
+    ensure_cloned(app, ui, &target)?;
+    record_access(app, ui, &target);
     ui.stdout_line(&line)?;
     Ok(ExitCode::SUCCESS)
 }
@@ -100,13 +99,13 @@ fn wrapped_target(app: &App, ui: &mut Ui, query: &str, pick: bool) -> Result<Exi
 ///
 /// Resolution, clone, editor, or cache failures.
 pub fn edit(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Error> {
-    let (cache, target) = prepare(app, ui, args, Local::Clone)?;
+    let target = prepare(app, ui, args, Local::Clone)?;
     platform::spawn_editor(
         &mut Interactive::new(ui)?,
         &EditorCmd::from_env(&app.env),
         &target.path,
     )?;
-    record_access(app, ui, &cache, &target);
+    record_access(app, ui, &target);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -116,8 +115,8 @@ pub fn edit(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Erro
 ///
 /// Resolution, clone, or cache failures.
 pub fn clone(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Error> {
-    let (cache, target) = prepare(app, ui, args, Local::Clone)?;
-    record_access(app, ui, &cache, &target);
+    let target = prepare(app, ui, args, Local::Clone)?;
+    record_access(app, ui, &target);
     ui.stdout_line(&target.path.display().to_string())?;
     Ok(ExitCode::SUCCESS)
 }
@@ -127,14 +126,10 @@ pub fn clone(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Err
 /// # Errors
 ///
 /// Resolution, opener, or cache failures.
-///
-/// # Panics
-///
-/// Only on a broken [`Target`] invariant.
 pub fn browse(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Error> {
-    let (cache, target) = prepare(app, ui, args, Local::NotNeeded)?;
-    platform::open_url(&target.repo(&cache.repos).html_url)?;
-    record_access(app, ui, &cache, &target);
+    let target = prepare(app, ui, args, Local::NotNeeded)?;
+    platform::open_url(&target.repo.html_url)?;
+    record_access(app, ui, &target);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -144,9 +139,9 @@ pub fn browse(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Er
 ///
 /// Resolution, clone, opener, or cache failures.
 pub fn open(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Error> {
-    let (cache, target) = prepare(app, ui, args, Local::Clone)?;
+    let target = prepare(app, ui, args, Local::Clone)?;
     platform::open_dir(&target.path)?;
-    record_access(app, ui, &cache, &target);
+    record_access(app, ui, &target);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -160,21 +155,15 @@ fn require_wrapper(app: &App, via: Invocation) -> Result<(), ShellError> {
     }
 }
 
-fn resolve(app: &App, ui: &mut Ui, query: &str, pick: bool) -> Result<(Cache, Target), Error> {
-    let mut cache = load_known(app, ui, Freshness::AutoUpdate)?;
-    let target = resolve_target(app, ui, &mut cache, query, pick, Reach::Readable)?;
-    Ok((cache, target))
+fn resolve(app: &App, ui: &mut Ui, query: &str, pick: bool) -> Result<Target, Error> {
+    let repos = load_known(app, ui, Freshness::AutoUpdate)?;
+    resolve_target(app, ui, &repos, query, pick, Reach::Readable)
 }
 
-fn prepare(
-    app: &App,
-    ui: &mut Ui,
-    args: &ResolveArgs,
-    local: Local,
-) -> Result<(Cache, Target), Error> {
-    let (cache, target) = resolve(app, ui, &args.query, args.pick)?;
+fn prepare(app: &App, ui: &mut Ui, args: &ResolveArgs, local: Local) -> Result<Target, Error> {
+    let target = resolve(app, ui, &args.query, args.pick)?;
     if local == Local::Clone {
-        ensure_cloned(app, ui, &cache, &target)?;
+        ensure_cloned(app, ui, &target)?;
     }
-    Ok((cache, target))
+    Ok(target)
 }

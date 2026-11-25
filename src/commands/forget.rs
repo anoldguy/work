@@ -4,7 +4,6 @@ use std::process::ExitCode;
 
 use crate::adopted;
 use crate::app::App;
-use crate::cache::{CACHE_VERSION, Cache};
 use crate::cli::ResolveArgs;
 use crate::commands::resolve::{Reach, ResolveError, resolve_target};
 use crate::error::Error;
@@ -23,19 +22,21 @@ pub fn run(app: &App, ui: &mut Ui, args: &ResolveArgs) -> Result<ExitCode, Error
     if let Some(problem) = problem {
         ui.warn(&problem.to_string());
     }
-    let mut known = Cache {
-        version: CACHE_VERSION,
-        updated_at: app.now,
-        repos: adopted.repos,
-    };
-    let target = resolve_target(app, ui, &mut known, &args.query, args.pick, Reach::Known)
-        .map_err(|err| match err {
-            Error::Resolve(ResolveError::NotFound { query, .. }) => {
-                ResolveError::NotAdopted { query }.into()
-            }
-            other => other,
-        })?;
-    let slug = &target.repo(&known.repos).slug;
+    let target = resolve_target(
+        app,
+        ui,
+        &adopted.repos,
+        &args.query,
+        args.pick,
+        Reach::Known,
+    )
+    .map_err(|err| match err {
+        Error::Resolve(ResolveError::NotFound { query, .. }) => {
+            ResolveError::NotAdopted { query }.into()
+        }
+        other => other,
+    })?;
+    let slug = &target.repo.slug;
     let (_, problem) = adopted::update(dir, |a| a.remove(slug))?;
     if let Some(problem) = problem {
         ui.warn(&problem.to_string());

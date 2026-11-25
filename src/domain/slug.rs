@@ -54,6 +54,15 @@ impl Slug {
     pub const fn name(&self) -> &RepoName {
         &self.name
     }
+
+    /// Whether two slugs name the same repository: GitHub compares owner and
+    /// name ignoring ASCII case, and domains are already lowercase.
+    #[must_use]
+    pub fn eq_ignore_case(&self, other: &Self) -> bool {
+        self.domain == other.domain
+            && self.org.eq_ignore_case(&other.org)
+            && self.name.eq_ignore_case(&other.name)
+    }
 }
 
 impl TryFrom<String> for Slug {

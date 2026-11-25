@@ -1,4 +1,8 @@
-//! Tiered matching and combined scoring (pure).
+//! Tiered matching, combined scoring, and ambiguity resolution (pure).
+
+pub mod decide;
+
+pub use decide::{Decision, decide};
 
 use std::borrow::Cow;
 
@@ -182,6 +186,9 @@ fn match_tier(
     self_score: Option<u16>,
 ) -> Option<MatchTier> {
     let needle = q.key().as_str();
+    if q.specificity() == Specificity::Name && slug.name().as_str().eq_ignore_ascii_case(needle) {
+        return Some(MatchTier::Exact);
+    }
     let full = slug.to_string().to_lowercase();
     let level = level_text(&full, q.specificity());
     if level == needle {
@@ -226,7 +233,7 @@ pub fn filter(repos: &[Repo], needle: &str) -> Vec<usize> {
 
 /// A reusable nucleo-matcher with its UTF-32 conversion buffers.
 #[derive(Debug)]
-pub struct FuzzyMatcher {
+struct FuzzyMatcher {
     matcher: nucleo_matcher::Matcher,
     hay_buf: Vec<char>,
     needle_buf: Vec<char>,
@@ -235,7 +242,7 @@ pub struct FuzzyMatcher {
 impl FuzzyMatcher {
     /// A matcher with nucleo's default configuration (which ignores case).
     #[must_use]
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             matcher: nucleo_matcher::Matcher::new(nucleo_matcher::Config::DEFAULT),
             hay_buf: Vec::new(),
@@ -245,7 +252,7 @@ impl FuzzyMatcher {
 
     /// Raw subsequence score of `needle` in `haystack`, or `None` when it does
     /// not match. Both are compared case-insensitively.
-    pub fn score(&mut self, haystack: &str, needle: &str) -> Option<u16> {
+    fn score(&mut self, haystack: &str, needle: &str) -> Option<u16> {
         // nucleo folds the haystack's case and accents but expects a needle
         // that is already folded; haystack case also changes its camel-case
         // bonus, so both are lowercased.
@@ -276,19 +283,15 @@ fn lowercase(s: &str) -> Cow<'_, str> {
     }
 }
 
-impl Default for FuzzyMatcher {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
 
-    use super::{MatchTier, Query, RESULT_LIMIT, Specificity, filter, normalize, search};
-    use crate::core::resolve::{Resolution, resolve};
-    use crate::domain::{CloneUrl, HtmlUrl, Repo, Slug};
+    use super::{
+        Decision, MatchTier, Query, RESULT_LIMIT, Specificity, decide, filter, normalize, search,
+    };
+    use crate::domain::{CloneUrl, HtmlUrl, Repo, Slug, StoredTime};
+    use crate::frecency::QueryFrecency;
 
     fn repo(slug: &str) -> Repo {
         Repo {
@@ -428,14 +431,19 @@ mod tests {
                 0.0
             }
         };
-        let results = search(&rs, &q("foo"), busy);
+        let query = q("foo");
+        let results = search(&rs, &query, busy);
         assert_eq!(results.len(), RESULT_LIMIT);
         assert_matches!(
             results.last(),
             Some(r) if r.index == 25 && r.tier == MatchTier::Exact
         );
         assert!(results.windows(2).all(|w| w[0].score >= w[1].score));
-        assert_matches!(resolve(results), Resolution::Unique(25));
+        let now = StoredTime::from_unix_seconds(0).expect("time");
+        assert_matches!(
+            decide(&rs, &results, &QueryFrecency::default(), query.key(), now),
+            Decision::Unique(25)
+        );
     }
 
     #[test]

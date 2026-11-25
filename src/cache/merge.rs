@@ -1,8 +1,8 @@
 //! Folding fetch results into the previous cache (pure, infallible).
 
+use crate::cache::org_filter::passes_filters;
 use crate::cache::{CACHE_VERSION, Cache};
 use crate::config::Filters;
-use crate::core::org_filter::passes_filters;
 use crate::domain::{Domain, Org, Repo, StoredTime};
 
 /// The result of fetching one org's repos (or a domain's personal repos).
@@ -10,19 +10,17 @@ use crate::domain::{Domain, Org, Repo, StoredTime};
 pub enum OrgOutcome {
     /// The repos fetched.
     Fetched(Vec<Repo>),
-    /// Why it failed (one line).
-    Failed(String),
+    /// Fetching failed (a warning was already emitted).
+    Failed,
 }
 
 /// The result of refreshing one domain.
 #[derive(Debug)]
 pub enum DomainOutcome {
-    /// The domain could not be refreshed at all.
+    /// The domain could not be refreshed at all (a warning was already emitted).
     Failed {
         /// The domain.
         domain: Domain,
-        /// Why (one line).
-        cause: String,
     },
     /// The org phase ran.
     Fetched {
@@ -53,7 +51,7 @@ pub fn all_failed(outcomes: &[DomainOutcome]) -> bool {
 
 impl OrgOutcome {
     const fn is_failed(&self) -> bool {
-        matches!(self, Self::Failed(_))
+        matches!(self, Self::Failed)
     }
 }
 
@@ -153,7 +151,7 @@ pub fn merge(
                             org_repos.extend(repos);
                             fetched.push(org);
                         }
-                        OrgOutcome::Failed(_) => failed.push(org),
+                        OrgOutcome::Failed => failed.push(org),
                     }
                 }
                 let personal_failed = match personal {
@@ -161,7 +159,7 @@ pub fn merge(
                         personal_repos.extend(repos);
                         false
                     }
-                    OrgOutcome::Failed(_) => true,
+                    OrgOutcome::Failed => true,
                 };
                 rules.push((
                     domain,
@@ -254,7 +252,7 @@ mod tests {
     }
 
     fn failed() -> OrgOutcome {
-        OrgOutcome::Failed("boom".to_owned())
+        OrgOutcome::Failed
     }
 
     fn domain_ok(d: &str, personal: OrgOutcome, orgs: Vec<(&str, OrgOutcome)>) -> DomainOutcome {
@@ -277,10 +275,7 @@ mod tests {
     }
 
     fn domain_failed(d: &str) -> DomainOutcome {
-        DomainOutcome::Failed {
-            domain: dom(d),
-            cause: "no token".to_owned(),
-        }
+        DomainOutcome::Failed { domain: dom(d) }
     }
 
     fn prev(slugs: &[&str]) -> Cache {

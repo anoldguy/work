@@ -142,12 +142,11 @@ pub(crate) fn pick_domain(
     if domains.is_empty() {
         return Err(ConfigError::NoDomains.into());
     }
-    let interact = ui.interact();
-    if !interact.is_interactive() {
+    if !ui.is_interactive() {
         return Err(UiError::NotInteractive { what }.into());
     }
     let labels: Vec<&str> = domains.iter().map(|d| d.as_str()).collect();
-    let picked = interact.pick_one(prompt, &labels)?;
+    let picked = ui.pick_one(prompt, &labels)?;
     Ok(picked
         .and_then(|index| domains.get(index))
         .map(|d| (*d).clone()))

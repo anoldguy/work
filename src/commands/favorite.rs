@@ -8,9 +8,9 @@ use crate::commands::config::pick_domain;
 use crate::config::{ConfigDoc, ConfigError};
 use crate::domain::{Domain, Org};
 use crate::error::Error;
+use crate::gh;
 use crate::text::plural;
-use crate::ui::Ui;
-use crate::ui::{Interaction, UiError};
+use crate::ui::{Ui, UiError};
 
 const PROGRESS_TITLE: &str = "Fetching organizations";
 
@@ -33,7 +33,7 @@ enum Choice {
 /// `UiError::NotInteractive` without a TTY, unknown domain, gh, or
 /// config write failures.
 pub fn run(app: &App, ui: &mut Ui, args: &FavoriteArgs) -> Result<ExitCode, Error> {
-    if !ui.interact().is_interactive() {
+    if !ui.is_interactive() {
         return Err(UiError::NotInteractive { what: "favorite" }.into());
     }
     let FavoriteArgs { domain } = args;
@@ -48,11 +48,10 @@ pub fn run(app: &App, ui: &mut Ui, args: &FavoriteArgs) -> Result<ExitCode, Erro
             domain: domain.clone(),
         })?;
 
-    let gh = &*app.gh;
-    let mut orgs = ui.with_progress(PROGRESS_TITLE, |_| gh.member_orgs(&domain))?;
+    let mut orgs = ui.with_progress(PROGRESS_TITLE, |_| gh::member_orgs(&domain))?;
     orgs.extend_from_slice(&cfg.extra_orgs);
 
-    match choose_favorites(ui.interact(), &domain, &orgs, &cfg.favorite_orgs)? {
+    match choose_favorites(ui, &domain, &orgs, &cfg.favorite_orgs)? {
         Choice::NoOrgs => {
             ui.warn(&format!("no organizations found for {domain}"));
         }
@@ -113,7 +112,7 @@ fn select_domain(
 /// Picks over the union of `orgs` and `current`, so a favourite the API no
 /// longer lists is not silently dropped.
 fn choose_favorites(
-    interact: &mut dyn Interaction,
+    ui: &mut Ui,
     domain: &Domain,
     orgs: &[Org],
     current: &[Org],
@@ -127,7 +126,7 @@ fn choose_favorites(
     let names: Vec<&str> = candidates.iter().map(Org::as_str).collect();
     let selected: Vec<bool> = candidates.iter().map(|o| current.contains(o)).collect();
     let prompt = format!("Favorite organizations for {domain}");
-    let Some(chosen) = interact.pick_many(&prompt, &names, &selected)? else {
+    let Some(chosen) = ui.pick_many(&prompt, &names, &selected)? else {
         return Ok(Choice::Cancelled);
     };
     Ok(Choice::Selected(

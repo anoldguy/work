@@ -3,7 +3,7 @@
 use std::fmt;
 use std::io::{self, Write};
 use std::panic;
-use std::sync::{Arc, Mutex, Once, PoisonError, TryLockError};
+use std::sync::{Mutex, Once, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use crossterm::cursor::{Hide, Show};
@@ -22,62 +22,8 @@ pub enum Screen {
     Alternate,
 }
 
-/// The process-wide terminal calls a guard makes.
-pub(crate) trait Backend: Send + Sync {
-    fn enable_raw(&self) -> io::Result<()>;
-    fn disable_raw(&self) -> io::Result<()>;
-    /// Waits up to `timeout` for any input event.
-    fn poll(&self, timeout: Duration) -> io::Result<Option<Event>>;
-    /// `(columns, rows)`.
-    fn size(&self) -> io::Result<(u16, u16)>;
-    /// Where the panic hook writes the restore sequence.
-    fn panic_writer(&self) -> Box<dyn Write>;
-}
-
-pub(crate) struct Crossterm {
-    err: io::Stderr,
-}
-
-impl Crossterm {
-    pub(crate) const fn new(err: io::Stderr) -> Self {
-        Self { err }
-    }
-}
-
-impl Backend for Crossterm {
-    fn enable_raw(&self) -> io::Result<()> {
-        terminal::enable_raw_mode()
-    }
-
-    fn disable_raw(&self) -> io::Result<()> {
-        terminal::disable_raw_mode()
-    }
-
-    fn poll(&self, timeout: Duration) -> io::Result<Option<Event>> {
-        if event::poll(timeout)? {
-            event::read().map(Some)
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn size(&self) -> io::Result<(u16, u16)> {
-        terminal::size()
-    }
-
-    fn panic_writer(&self) -> Box<dyn Write> {
-        Box::new(self.err.lock())
-    }
-}
-
-/// The session the panic hook must restore, while a guard is alive.
-struct Active {
-    backend: Arc<dyn Backend>,
-    screen: Screen,
-}
-
 /// Set by `acquire`, cleared by `Drop` (or taken by the panic hook).
-static ACTIVE: Mutex<Option<Active>> = Mutex::new(None);
+static ACTIVE: Mutex<Option<Screen>> = Mutex::new(None);
 
 /// Installs (once per process) the panic hook that restores the active
 /// guard session, if any, and then chains to the previous hook, so its
@@ -86,19 +32,23 @@ static ACTIVE: Mutex<Option<Active>> = Mutex::new(None);
 /// A panic on any thread restores the terminal, even from under a guard
 /// owned by another thread; that guard's `Drop` then restores again,
 /// harmlessly.
-pub(super) fn install_panic_hook() {
+fn install_panic_hook() {
     static HOOK: Once = Once::new();
     HOOK.call_once(|| {
         let previous = panic::take_hook();
         panic::set_hook(Box::new(move |info| {
-            let active = match ACTIVE.try_lock() {
+            let screen = match ACTIVE.try_lock() {
                 Ok(mut slot) => slot.take(),
                 Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner().take(),
                 Err(TryLockError::WouldBlock) => None,
             };
-            if let Some(active) = active {
-                let mut out = active.backend.panic_writer();
-                restore(&mut *out, active.screen, &*active.backend);
+            if let Some(screen) = screen {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "panic hook restores the terminal while Ui may be inaccessible"
+                )]
+                let mut out = io::stderr().lock();
+                restore(&mut out, screen);
             }
             previous(info);
         }));
@@ -107,13 +57,13 @@ pub(super) fn install_panic_hook() {
 
 /// Leaves the alternate screen (if entered), shows the cursor and leaves raw
 /// mode, ignoring errors. Safe to repeat.
-fn restore(mut out: &mut dyn Write, screen: Screen, backend: &dyn Backend) {
+fn restore(mut out: &mut dyn Write, screen: Screen) {
     if screen == Screen::Alternate {
         let _ = queue!(&mut out, LeaveAlternateScreen);
     }
     let _ = queue!(&mut out, Show);
     let _ = out.flush();
-    let _ = backend.disable_raw();
+    let _ = terminal::disable_raw_mode();
 }
 
 /// RAII over a raw-mode session on stderr: raw mode, hidden cursor, and
@@ -122,24 +72,19 @@ fn restore(mut out: &mut dyn Write, screen: Screen, backend: &dyn Backend) {
 /// Restores the terminal on `Drop`, and on panic through a process-wide
 /// panic hook. Only one guard may be alive at a time.
 pub struct TerminalGuard<'a> {
-    out: &'a mut (dyn Write + Send),
+    out: &'a mut io::Stderr,
     screen: Screen,
-    backend: Arc<dyn Backend>,
 }
 
 impl<'a> TerminalGuard<'a> {
-    /// Enters raw mode through `backend`, on `out` (and the alternate screen
-    /// if asked), and hides the cursor. `out` is flushed first.
+    /// Enters raw mode on `out` (and the alternate screen if asked), and hides
+    /// the cursor. `out` is flushed first.
     ///
     /// # Errors
     ///
     /// [`UiError::Io`] when the terminal refuses, or when another guard is
     /// already alive.
-    pub(crate) fn acquire(
-        out: &'a mut (dyn Write + Send),
-        screen: Screen,
-        backend: Arc<dyn Backend>,
-    ) -> Result<Self, UiError> {
+    pub(crate) fn acquire(out: &'a mut io::Stderr, screen: Screen) -> Result<Self, UiError> {
         let io_err = |source| UiError::Io { source };
         out.flush().map_err(io_err)?;
         install_panic_hook();
@@ -150,17 +95,10 @@ impl<'a> TerminalGuard<'a> {
         {
             return Err(io_err(io::Error::other("the terminal is already in use")));
         }
-        backend.enable_raw().map_err(io_err)?;
+        terminal::enable_raw_mode().map_err(io_err)?;
         // From here on `Drop` restores whatever was entered.
-        let mut guard = Self {
-            out,
-            screen,
-            backend,
-        };
-        *ACTIVE.lock().unwrap_or_else(PoisonError::into_inner) = Some(Active {
-            backend: Arc::clone(&guard.backend),
-            screen,
-        });
+        let mut guard = Self { out, screen };
+        *ACTIVE.lock().unwrap_or_else(PoisonError::into_inner) = Some(screen);
         let entered = if screen == Screen::Alternate {
             queue!(guard, EnterAlternateScreen, Hide)
         } else {
@@ -175,15 +113,20 @@ impl<'a> TerminalGuard<'a> {
     /// # Errors
     ///
     /// [`UiError::Io`].
+    #[expect(
+        clippy::unused_self,
+        reason = "borrowing TerminalGuard proves raw mode is active"
+    )]
     pub fn read_key(&mut self, timeout: Duration) -> Result<Option<KeyEvent>, UiError> {
         let deadline = Instant::now() + timeout;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
-            match self
-                .backend
-                .poll(left)
-                .map_err(|source| UiError::Io { source })?
-            {
+            let polled = if event::poll(left).map_err(|source| UiError::Io { source })? {
+                Some(event::read().map_err(|source| UiError::Io { source })?)
+            } else {
+                None
+            };
+            match polled {
                 Some(Event::Key(key)) if key.kind != KeyEventKind::Release => {
                     return Ok(Some(key));
                 }
@@ -199,39 +142,16 @@ impl<'a> TerminalGuard<'a> {
     /// # Errors
     ///
     /// [`UiError::Io`].
+    #[expect(
+        clippy::unused_self,
+        reason = "borrowing TerminalGuard ties size queries to the active session"
+    )]
     pub fn size(&self) -> Result<(u16, u16), UiError> {
-        match self.backend.size() {
+        match terminal::size() {
             Ok((w, h)) if w > 0 && h > 0 => Ok((w, h)),
             Ok(_) => Ok((80, 24)),
             Err(source) => Err(UiError::Io { source }),
         }
-    }
-}
-
-/// A writer that can wait for a key and report its size.
-pub(crate) trait Term: Write {
-    /// Waits up to `timeout` for a key press. `Ok(None)` on timeout.
-    ///
-    /// # Errors
-    ///
-    /// [`UiError::Io`].
-    fn read_key(&mut self, timeout: Duration) -> Result<Option<KeyEvent>, UiError>;
-
-    /// `(columns, rows)`.
-    ///
-    /// # Errors
-    ///
-    /// [`UiError::Io`].
-    fn size(&self) -> Result<(u16, u16), UiError>;
-}
-
-impl Term for TerminalGuard<'_> {
-    fn read_key(&mut self, timeout: Duration) -> Result<Option<KeyEvent>, UiError> {
-        TerminalGuard::read_key(self, timeout)
-    }
-
-    fn size(&self) -> Result<(u16, u16), UiError> {
-        TerminalGuard::size(self)
     }
 }
 
@@ -248,7 +168,7 @@ impl Write for TerminalGuard<'_> {
 impl Drop for TerminalGuard<'_> {
     fn drop(&mut self) {
         ACTIVE.lock().unwrap_or_else(PoisonError::into_inner).take();
-        restore(self.out, self.screen, &*self.backend);
+        restore(self.out, self.screen);
     }
 }
 
@@ -271,22 +191,12 @@ impl Ui {
     /// if pending stdout cannot be flushed because its reader went away, or
     /// [`UiError::Io`].
     pub fn terminal(&mut self, screen: Screen) -> Result<TerminalGuard<'_>, UiError> {
-        let backend = Arc::clone(&self.backend);
-        self.terminal_with(screen, backend)
-    }
-
-    /// [`Ui::terminal`] over an explicit backend.
-    pub(crate) fn terminal_with(
-        &mut self,
-        screen: Screen,
-        backend: Arc<dyn Backend>,
-    ) -> Result<TerminalGuard<'_>, UiError> {
         if self.mode == Mode::Plain {
             return Err(UiError::NotInteractive {
                 what: "this screen",
             });
         }
         self.flush()?;
-        TerminalGuard::acquire(&mut *self.err, screen, backend)
+        TerminalGuard::acquire(&mut self.err, screen)
     }
 }

@@ -201,6 +201,12 @@ impl RepoName {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// ASCII case-insensitive comparison.
+    #[must_use]
+    pub fn eq_ignore_case(&self, other: &Self) -> bool {
+        self.0.eq_ignore_ascii_case(&other.0)
+    }
 }
 
 impl TryFrom<String> for RepoName {

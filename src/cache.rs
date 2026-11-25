@@ -3,10 +3,11 @@
 pub mod fetch;
 pub mod merge;
 pub mod model;
+pub mod org_filter;
 pub mod refresh;
 pub mod store;
 
-pub use model::{CACHE_FILE, CACHE_VERSION, Cache, STALE_AFTER};
+pub use model::{CACHE_FILE, CACHE_VERSION, Cache};
 
 use std::io;
 use std::path::PathBuf;

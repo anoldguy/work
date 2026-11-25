@@ -1,12 +1,12 @@
 //! The typed configuration and its invariants (pure).
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
 use crate::config::{ConfigError, ExpandedPath, Locations};
-use crate::domain::{Domain, Org};
+use crate::domain::{Domain, Org, Slug};
 
 /// The domain used when none is configured.
 pub const IMPLICIT_DOMAIN: &str = "github.com";
@@ -161,9 +161,44 @@ impl Config {
 
     /// The default domain: the one marked `is_default`, or
     /// [`IMPLICIT_DOMAIN`] when no domains are configured, else `None`.
+    #[cfg(test)]
     #[must_use]
     pub const fn default_domain(&self) -> Option<&Domain> {
         self.default.as_ref()
+    }
+
+    /// `{org}/{repo}` when `slug`'s domain is the default, otherwise
+    /// `{domain}/{org}/{repo}`.
+    ///
+    /// The org and repo keep the API's casing, so on a case-insensitive
+    /// filesystem (macOS) `Acme/foo` and `acme/foo` name the same directory.
+    #[must_use]
+    pub fn relative_repo_path(&self, slug: &Slug) -> PathBuf {
+        let mut path = PathBuf::new();
+        if self.default.as_ref() != Some(slug.domain()) {
+            path.push(slug.domain().as_str());
+        }
+        path.push(slug.org().as_str());
+        path.push(slug.name().as_str());
+        path
+    }
+
+    /// Where `slug` lives on disk under `work_dir`:
+    /// `{work_dir}/{org}/{repo}` for the default domain, otherwise
+    /// `{work_dir}/{domain}/{org}/{repo}`.
+    #[must_use]
+    pub fn repo_path(&self, slug: &Slug) -> PathBuf {
+        self.work_dir.as_path().join(self.relative_repo_path(slug))
+    }
+
+    /// `org/name` for the default domain, the full slug otherwise.
+    #[must_use]
+    pub fn short_name(&self, slug: &Slug) -> String {
+        if self.default.as_ref() == Some(slug.domain()) {
+            format!("{}/{}", slug.org(), slug.name())
+        } else {
+            slug.to_string()
+        }
     }
 }
 
@@ -289,5 +324,26 @@ mod tests {
     fn marked_domain_is_the_default() {
         let c = build(with_domains(&[("a.com", false), ("b.com", true)])).expect("config");
         assert_eq!(c.default_domain(), Some(&domain("b.com")));
+    }
+
+    #[test]
+    fn repo_path_omits_default_domain_and_includes_others() {
+        let c = build(with_domains(&[("github.com", true)])).expect("config");
+        let default_slug: Slug = "github.com/acme/widgets".parse().expect("slug");
+        let other_slug: Slug = "github.enterprise.com/acme/widgets".parse().expect("slug");
+        assert_eq!(
+            c.repo_path(&default_slug),
+            Path::new("/home/u/code/acme/widgets")
+        );
+        assert_eq!(
+            c.repo_path(&other_slug),
+            Path::new("/home/u/code/github.enterprise.com/acme/widgets")
+        );
+
+        let no_default = build(with_domains(&[("github.com", false)])).expect("config");
+        assert_eq!(
+            no_default.repo_path(&default_slug),
+            Path::new("/home/u/code/github.com/acme/widgets")
+        );
     }
 }

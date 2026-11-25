@@ -1,13 +1,9 @@
-//! Learned query-to-repo associations and the "do we need to ask?" decision
+//! Turns ranked search results and query history into a concrete decision
 //! (pure).
 
-use std::collections::BTreeMap;
-
-use serde::{Deserialize, Serialize};
-
-use crate::core::frecency::{Frecency, FrecencyData};
-use crate::core::resolve::Resolution;
-use crate::domain::{QueryKey, Repo, Slug, StoredTime};
+use crate::domain::{QueryKey, Repo, StoredTime};
+use crate::frecency::QueryFrecency;
+use crate::search::{MatchTier, SearchResult};
 
 /// The top history entry needs at least this many accesses to auto-resolve.
 pub const MIN_QUERY_ACCESSES: u32 = 3;
@@ -26,40 +22,7 @@ fn dominates(score: f64, runner_up: f64) -> bool {
     score >= DOMINANCE_RATIO * runner_up * (1.0 - DOMINANCE_EPSILON)
 }
 
-/// Per-query repo frecency: `{"foo": {"github.com/acme/foobar": {...}}}`.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct QueryFrecency(BTreeMap<QueryKey, Frecency>);
-
-impl QueryFrecency {
-    /// Counts one resolution of `k` to `s` at `now`.
-    pub fn record(&mut self, k: &QueryKey, s: &Slug, now: StoredTime) {
-        if let Some(history) = self.0.get_mut(k) {
-            history.record(s, now);
-        } else {
-            let mut history = Frecency::default();
-            history.record(s, now);
-            self.0.insert(k.clone(), history);
-        }
-    }
-
-    /// Keeps only the entries for which `keep` returns true, then drops
-    /// queries left with no entries.
-    pub fn retain(&mut self, mut keep: impl FnMut(&Slug, &FrecencyData) -> bool) {
-        for history in self.0.values_mut() {
-            history.retain(&mut keep);
-        }
-        self.0.retain(|_, history| !history.is_empty());
-    }
-
-    /// The history recorded for `k`, if any.
-    #[must_use]
-    pub fn get(&self, k: &QueryKey) -> Option<&Frecency> {
-        self.0.get(k)
-    }
-}
-
-/// What the shared pipeline should do with a set of search results.
+/// What resolution should do with a set of ranked search results.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     /// A clean resolve (one result, or one exact match), holding the repo
@@ -73,29 +36,33 @@ pub enum Decision {
     NotFound,
 }
 
-/// Turns a [`Resolution`] into a decision, using query history to settle
+/// Turns ranked `results` into a [`Decision`], using query history to settle
 /// ambiguity.
 ///
-/// `Unique` and `NotFound` pass through. `Ambiguous(results)` auto-resolves
-/// when the top history entry for `key` has at least [`MIN_QUERY_ACCESSES`],
-/// scores at least [`DOMINANCE_RATIO`] times the runner-up (passes when there
-/// is none or it scores 0), and is among `results`; otherwise it is `Ask`
-/// with every result's index in rank order. `repos` maps result indices to
-/// slugs.
+/// Zero results is `NotFound`; one result, or exactly one `Exact` match among
+/// several, is `Unique`. Otherwise, it auto-resolves when the top history
+/// entry for `key` has at least [`MIN_QUERY_ACCESSES`], scores at least
+/// [`DOMINANCE_RATIO`] times the runner-up (passes when there is none or it
+/// scores 0), and is among `results`; else it returns `Ask` with every
+/// result's index in rank order. `repos` maps result indices to slugs.
 #[must_use]
 pub fn decide(
     repos: &[Repo],
-    resolution: Resolution,
+    results: &[SearchResult],
     qf: &QueryFrecency,
     key: &QueryKey,
     now: StoredTime,
 ) -> Decision {
-    let results = match resolution {
-        Resolution::Unique(i) => return Decision::Unique(i),
-        Resolution::NotFound => return Decision::NotFound,
-        Resolution::Ambiguous(results) if results.is_empty() => return Decision::NotFound,
-        Resolution::Ambiguous(results) => results,
-    };
+    match results {
+        [] => return Decision::NotFound,
+        [only] => return Decision::Unique(only.index),
+        many => {
+            let mut exact = many.iter().filter(|r| r.tier == MatchTier::Exact);
+            if let (Some(hit), None) = (exact.next(), exact.next()) {
+                return Decision::Unique(hit.index);
+            }
+        }
+    }
     let auto = qf.get(key).and_then(|history| {
         let (Some((slug, data, score)), runner_up) = history.top_two(now) else {
             return None;
@@ -119,8 +86,7 @@ pub fn decide(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::search::{MatchTier, SearchResult};
-    use crate::domain::{CloneUrl, HtmlUrl};
+    use crate::domain::{CloneUrl, HtmlUrl, Slug};
 
     const DAY: i64 = 86_400;
     const NOW: i64 = 1_000 * DAY;
@@ -155,7 +121,7 @@ mod tests {
             }
         }
         let index = |name: &&str| NAMES.iter().position(|n| n == name).expect("known");
-        let results = names
+        let results: Vec<SearchResult> = names
             .iter()
             .map(|name| SearchResult {
                 index: index(name),
@@ -163,7 +129,7 @@ mod tests {
                 score: 50.0,
             })
             .collect();
-        decide(&repos, Resolution::Ambiguous(results), &qf, &key, t(NOW))
+        decide(&repos, &results, &qf, &key, t(NOW))
     }
 
     #[test]
@@ -220,13 +186,12 @@ mod tests {
     fn a_unique_result_ignores_history() {
         let repos: Vec<Repo> = NAMES.map(repo).into();
         let key = QueryKey::new("foo").expect("key");
-        let decision = decide(
-            &repos,
-            Resolution::Unique(2),
-            &QueryFrecency::default(),
-            &key,
-            t(NOW),
-        );
+        let results = vec![SearchResult {
+            index: 2,
+            tier: MatchTier::Substring,
+            score: 50.0,
+        }];
+        let decision = decide(&repos, &results, &QueryFrecency::default(), &key, t(NOW));
         assert_eq!(decision, Decision::Unique(2));
     }
 }

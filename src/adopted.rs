@@ -34,7 +34,7 @@ impl Adopted {
     /// Adds `repo` unless a repo with the same slug (ignoring case) is
     /// already there. Returns whether it was added.
     pub fn add(&mut self, repo: Repo) -> bool {
-        if self.repos.iter().any(|r| same_slug(&r.slug, &repo.slug)) {
+        if self.repos.iter().any(|r| r.slug.eq_ignore_case(&repo.slug)) {
             return false;
         }
         self.repos.push(repo);
@@ -46,18 +46,9 @@ impl Adopted {
     /// there.
     pub fn remove(&mut self, slug: &Slug) -> bool {
         let before = self.repos.len();
-        self.repos.retain(|r| !same_slug(&r.slug, slug));
+        self.repos.retain(|r| !r.slug.eq_ignore_case(slug));
         self.repos.len() != before
     }
-}
-
-/// Whether two slugs name the same repository: GitHub compares owner and
-/// name ignoring ASCII case, and domains are already lowercase.
-#[must_use]
-pub fn same_slug(a: &Slug, b: &Slug) -> bool {
-    a.domain() == b.domain()
-        && a.org().as_str().eq_ignore_ascii_case(b.org().as_str())
-        && a.name().as_str().eq_ignore_ascii_case(b.name().as_str())
 }
 
 /// The adopted repos in `dir`, and the problem to warn about, if any.
@@ -70,7 +61,7 @@ pub fn load(dir: &Path) -> (Adopted, Option<Problem>) {
 /// `known` does not already hold.
 pub fn extend_known(known: &mut Vec<Repo>, adopted: Adopted, domains: &[Domain]) {
     for repo in adopted.repos {
-        let listed = known.iter().any(|r| same_slug(&r.slug, &repo.slug));
+        let listed = known.iter().any(|r| r.slug.eq_ignore_case(&repo.slug));
         if !listed && domains.contains(repo.slug.domain()) {
             known.push(repo);
         }

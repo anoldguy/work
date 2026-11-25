@@ -5,7 +5,7 @@ pub mod model;
 pub mod store;
 
 pub use locations::{ExpandedPath, Locations};
-pub use model::{Config, ConfigFile, DomainConfig, Filters, IMPLICIT_DOMAIN};
+pub use model::{Config, ConfigFile, Filters, IMPLICIT_DOMAIN};
 pub use store::ConfigDoc;
 
 use std::io;

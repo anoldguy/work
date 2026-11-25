@@ -67,11 +67,10 @@ fn recheck_adopted(app: &App, ui: &mut Ui) {
     if repos.is_empty() {
         return;
     }
-    let gh = &*app.gh;
     let answers = ui.with_progress(RECHECK_TITLE, |_| {
         run_bounded(&repos, FETCH_JOBS, |repo| {
             let slug = &repo.slug;
-            ask(gh, slug.domain(), slug.org(), slug.name())
+            ask(slug.domain(), slug.org(), slug.name())
         })
     });
     let mut gone: Vec<&Slug> = Vec::new();

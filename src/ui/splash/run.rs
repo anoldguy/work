@@ -4,8 +4,7 @@ use std::time::{Duration, Instant};
 
 use crate::ui::splash::renderer::Renderer;
 use crate::ui::splash::{Frame, Rgb, Style, StyleRun};
-use crate::ui::terminal::Term;
-use crate::ui::{Screen, Ui, UiError};
+use crate::ui::{Screen, TerminalGuard, Ui, UiError};
 
 /// One frame at 60 fps.
 const FRAME: Duration = Duration::from_micros(16_667);
@@ -41,7 +40,7 @@ type Running = ((u16, u16), Box<dyn StyleRun>, Frame);
 /// splash started; each frame waits for a key for what is left of its
 /// budget, so a slow frame skips ahead rather than catching up.
 fn run_splash(
-    term: &mut impl Term,
+    term: &mut TerminalGuard<'_>,
     clock: &impl Fn() -> Duration,
     style: &dyn Style,
     seed: u64,

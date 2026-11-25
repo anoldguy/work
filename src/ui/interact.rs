@@ -1,15 +1,16 @@
-//! Pickers and prompts on the real terminal.
+//! Pickers and prompts on the terminal, all drawn inline on stderr.
+//!
+//! Every method that waits for input returns [`UiError::Interrupted`] on
+//! Ctrl-C.
 
-use std::fmt::{self, Write as _};
+use std::fmt::Write as _;
 use std::io::Write;
-use std::sync::Arc;
 use std::time::Duration;
 
 use crate::text::clip;
 use crate::ui::picker::{PickerKey, PickerState, PickerStep};
 use crate::ui::prompt::{Confirm, LineInput, Step};
-use crate::ui::terminal::{Backend, Term};
-use crate::ui::{Interaction, Screen, TerminalGuard, Ui, UiError};
+use crate::ui::{Screen, TerminalGuard, Ui, UiError};
 
 /// How long one `read_key` waits before the loop re-reads the terminal size
 /// (and redraws if it changed).
@@ -21,32 +22,8 @@ const MAX_PICKER_ROWS: u16 = 12;
 /// Shows the cursor while a prompt reads a line; the guard hides it.
 const SHOW_CURSOR: &str = "\x1b[?25h";
 
-/// The real [`Interaction`], drawn inline on stderr.
-///
-/// A picker over no items could only be escaped, so `pick_one` and
-/// `pick_many` with empty `items` return `Ok(None)` (cancelled) at once.
-pub struct TtyInteraction {
-    err: Box<dyn Write + Send>,
-    interactive: bool,
-    backend: Arc<dyn Backend>,
-}
-
-impl TtyInteraction {
-    /// Draws on `err` through `backend`; `interactive` says whether there is
-    /// a terminal to draw on.
-    pub(crate) fn new(
-        err: Box<dyn Write + Send>,
-        interactive: bool,
-        backend: Arc<dyn Backend>,
-    ) -> Self {
-        Self {
-            err,
-            interactive,
-            backend,
-        }
-    }
-
-    const fn require_terminal(&self, what: &'static str) -> Result<(), UiError> {
+impl Ui {
+    const fn require_interactive(&self, what: &'static str) -> Result<(), UiError> {
         if self.interactive {
             Ok(())
         } else {
@@ -54,31 +31,25 @@ impl TtyInteraction {
         }
     }
 
-    fn guard(&mut self, what: &'static str) -> Result<TerminalGuard<'_>, UiError> {
-        self.require_terminal(what)?;
-        TerminalGuard::acquire(&mut *self.err, Screen::Inline, Arc::clone(&self.backend))
-    }
-}
-
-impl fmt::Debug for TtyInteraction {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TtyInteraction")
-            .field("interactive", &self.interactive)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Interaction for TtyInteraction {
-    fn is_interactive(&self) -> bool {
-        self.interactive
+    fn inline_guard(&mut self, what: &'static str) -> Result<TerminalGuard<'_>, UiError> {
+        self.require_interactive(what)?;
+        self.flush_for_stderr();
+        TerminalGuard::acquire(&mut self.err, Screen::Inline)
     }
 
-    fn pick_one(&mut self, prompt: &str, items: &[&str]) -> Result<Option<usize>, UiError> {
-        self.require_terminal("the picker")?;
+    /// Type-to-filter single choice. `Ok(None)` when cancelled with Esc or
+    /// given no items.
+    ///
+    /// # Errors
+    ///
+    /// [`UiError::NotInteractive`], [`UiError::Interrupted`], or
+    /// [`UiError::Io`].
+    pub fn pick_one(&mut self, prompt: &str, items: &[&str]) -> Result<Option<usize>, UiError> {
+        self.require_interactive("the picker")?;
         if items.is_empty() {
             return Ok(None);
         }
-        let mut guard = self.guard("the picker")?;
+        let mut guard = self.inline_guard("the picker")?;
         let mut state = PickerState::new(items, None);
         let step = run_picker(&mut guard, prompt, &mut state)?;
         Ok(match step {
@@ -87,17 +58,24 @@ impl Interaction for TtyInteraction {
         })
     }
 
-    fn pick_many(
+    /// Type-to-filter multi choice with `selected` preselected (same length
+    /// as `items`); Tab toggles. `Ok(None)` when cancelled or given no items.
+    ///
+    /// # Errors
+    ///
+    /// [`UiError::NotInteractive`], [`UiError::Interrupted`], or
+    /// [`UiError::Io`].
+    pub fn pick_many(
         &mut self,
         prompt: &str,
         items: &[&str],
         selected: &[bool],
     ) -> Result<Option<Vec<bool>>, UiError> {
-        self.require_terminal("the picker")?;
+        self.require_interactive("the picker")?;
         if items.is_empty() {
             return Ok(None);
         }
-        let mut guard = self.guard("the picker")?;
+        let mut guard = self.inline_guard("the picker")?;
         let mut state = PickerState::new(items, Some(selected.to_vec()));
         let step = run_picker(&mut guard, prompt, &mut state)?;
         Ok(match step {
@@ -112,30 +90,30 @@ impl Interaction for TtyInteraction {
         })
     }
 
-    fn input(&mut self, prompt: &str, default: &str) -> Result<Option<String>, UiError> {
-        run_input(&mut self.guard("a prompt")?, prompt, default)
-    }
-
-    fn confirm(&mut self, prompt: &str, default: bool) -> Result<bool, UiError> {
-        run_confirm(&mut self.guard("a prompt")?, prompt, default)
-    }
-}
-
-impl Ui {
-    /// The pickers and prompts. Borrowing the Ui keeps them from
-    /// interleaving with any other output.
+    /// A line of text with `default` offered. `Ok(None)` when cancelled.
     ///
-    /// Flushes buffered stdout first, so earlier output cannot land after
-    /// the picker.
-    pub fn interact(&mut self) -> &mut dyn Interaction {
-        self.flush_for_stderr();
-        &mut *self.interact
+    /// # Errors
+    ///
+    /// [`UiError::NotInteractive`], [`UiError::Interrupted`], or
+    /// [`UiError::Io`].
+    pub fn input(&mut self, prompt: &str, default: &str) -> Result<Option<String>, UiError> {
+        run_input(&mut self.inline_guard("a prompt")?, prompt, default)
+    }
+
+    /// A yes/no question; Enter takes `default`.
+    ///
+    /// # Errors
+    ///
+    /// [`UiError::NotInteractive`], [`UiError::Interrupted`], or
+    /// [`UiError::Io`].
+    pub fn confirm(&mut self, prompt: &str, default: bool) -> Result<bool, UiError> {
+        run_confirm(&mut self.inline_guard("a prompt")?, prompt, default)
     }
 }
 
 /// Waits up to [`KEY_WAIT`] for a key the picker understands; `None` on a
 /// timeout or an ignored key, so the caller can re-check the size.
-fn next_key(term: &mut impl Term) -> Result<Option<PickerKey>, UiError> {
+fn next_key(term: &mut TerminalGuard<'_>) -> Result<Option<PickerKey>, UiError> {
     Ok(term
         .read_key(KEY_WAIT)?
         .and_then(|event| PickerKey::from_event(&event)))
@@ -156,13 +134,13 @@ fn redraw(
 }
 
 /// Usable width: one short of the terminal so a full line never wraps.
-fn width(term: &impl Term) -> Result<u16, UiError> {
+fn width(term: &TerminalGuard<'_>) -> Result<u16, UiError> {
     Ok(term.size()?.0.saturating_sub(1).max(1))
 }
 
 /// Draws the picker until it finishes, then erases it.
 fn run_picker(
-    term: &mut impl Term,
+    term: &mut TerminalGuard<'_>,
     prompt: &str,
     state: &mut PickerState<'_>,
 ) -> Result<PickerStep, UiError> {
@@ -193,7 +171,11 @@ fn run_picker(
 }
 
 /// Reads a line, leaving the answered prompt in scrollback.
-fn run_input(term: &mut impl Term, prompt: &str, default: &str) -> Result<Option<String>, UiError> {
+fn run_input(
+    term: &mut TerminalGuard<'_>,
+    prompt: &str,
+    default: &str,
+) -> Result<Option<String>, UiError> {
     let mut input = LineInput::new(prompt, default);
     let mut last = Vec::new();
     loop {
@@ -216,7 +198,7 @@ fn run_input(term: &mut impl Term, prompt: &str, default: &str) -> Result<Option
 }
 
 /// Asks yes/no, leaving the question and answer in scrollback.
-fn run_confirm(term: &mut impl Term, prompt: &str, default: bool) -> Result<bool, UiError> {
+fn run_confirm(term: &mut TerminalGuard<'_>, prompt: &str, default: bool) -> Result<bool, UiError> {
     let confirm = Confirm::new(prompt, default);
     let mut last = Vec::new();
     loop {
@@ -245,7 +227,7 @@ fn run_confirm(term: &mut impl Term, prompt: &str, default: bool) -> Result<bool
 }
 
 /// Moves past the prompt line.
-fn finish(term: &mut impl Term) -> Result<(), UiError> {
+fn finish(term: &mut TerminalGuard<'_>) -> Result<(), UiError> {
     term.write_all(b"\r\n")
         .and_then(|()| term.flush())
         .map_err(|source| UiError::Io { source })

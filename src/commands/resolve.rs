@@ -4,18 +4,15 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::adopted::{self, same_slug};
+use crate::adopted;
 use crate::app::App;
-use crate::cache::Cache;
 use crate::cache::refresh::{Freshness, load_or_refresh};
 use crate::commands::lookup::{Answer, Probe};
-use crate::core::paths::repo_path;
-use crate::core::query_frecency::{Decision, decide};
-use crate::core::resolve::resolve;
-use crate::core::search::{MatchTier, Query, SearchResult, search};
 use crate::domain::{Domain, QueryKey, Repo, Slug};
 use crate::error::Error;
 use crate::frecency::{self, History, Problem};
+use crate::git;
+use crate::search::{Decision, MatchTier, Query, SearchResult, decide, search};
 use crate::state_file::StateError;
 use crate::ui::Ui;
 use crate::ui::UiError;
@@ -25,26 +22,13 @@ const PICK_PROMPT: &str = "Select a repository";
 /// A resolved repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
-    /// Index into `cache.repos`.
-    pub index: usize,
+    /// The resolved repository.
+    pub repo: Repo,
     /// Where it lives (or will live) on disk.
     pub path: PathBuf,
     /// The query whose pick is saved to query frecency; `None` for a unique
     /// match.
     pub picked_for: Option<QueryKey>,
-}
-
-impl Target {
-    /// The resolved repo in the cache's `repos`.
-    ///
-    /// # Panics
-    ///
-    /// If `self.index` is not an index into `repos` (a [`Target`] from
-    /// [`resolve_target`] against the same cache always is).
-    #[must_use]
-    pub fn repo<'r>(&self, repos: &'r [Repo]) -> &'r Repo {
-        &repos[self.index]
-    }
 }
 
 /// Which repos a query can resolve to.
@@ -65,29 +49,28 @@ pub enum CloneStatus {
     Cloned,
 }
 
-/// The cache, loaded or refreshed as `freshness` requires, with the
-/// adopted repos on configured domains appended to `repos`. Never save the
-/// result: the cache file holds listings only.
+/// Every repo known to this run: the cache (loaded or refreshed as
+/// `freshness` requires) plus the adopted repos on configured domains.
 ///
 /// # Errors
 ///
 /// As for [`load_or_refresh`].
-pub fn load_known(app: &App, ui: &mut Ui, freshness: Freshness) -> Result<Cache, Error> {
-    let mut cache = load_or_refresh(app, ui, freshness)?;
+pub fn load_known(app: &App, ui: &mut Ui, freshness: Freshness) -> Result<Vec<Repo>, Error> {
+    let mut repos = load_or_refresh(app, ui, freshness)?.repos;
     let (adopted, problem) = adopted::load(app.config.cache_dir());
     if let Some(problem) = problem {
         ui.warn(&problem.to_string());
     }
-    adopted::extend_known(&mut cache.repos, adopted, &app.config.effective_domains());
-    Ok(cache)
+    adopted::extend_known(&mut repos, adopted, &app.config.effective_domains());
+    Ok(repos)
 }
 
-/// Resolves `query` against `cache`, ranking by frecency and showing the
+/// Resolves `query` against `repos`, ranking by frecency and showing the
 /// picker on a TTY when needed (always when `pick` and several repos match).
 ///
 /// With [`Reach::Readable`], an `org/repo` or `domain/org/repo` query with no
-/// exact match is looked up on GitHub first; a repo found there is appended
-/// to `cache.repos`, and adopted once selected.
+/// exact match is looked up on GitHub first; a repo found there is adopted
+/// once selected.
 ///
 /// # Errors
 ///
@@ -98,43 +81,57 @@ pub fn load_known(app: &App, ui: &mut Ui, freshness: Freshness) -> Result<Cache,
 pub fn resolve_target(
     app: &App,
     ui: &mut Ui,
-    cache: &mut Cache,
+    repos: &[Repo],
     query: &str,
     pick: bool,
     reach: Reach,
 ) -> Result<Target, Error> {
     let query = Query::parse(query)?;
     let mut history = load_history(app, ui);
-    let interactive = ui.interact().is_interactive();
+    let interactive = ui.is_interactive();
     let now = app.now;
-    let known = cache.repos.len();
-    let mut results = search(&cache.repos, &query, |s| history.frecency.score(s, now));
+    let results = search(repos, &query, |s| history.frecency.score(s, now));
     let probe = match reach {
         Reach::Readable if !results.iter().any(|r| r.tier == MatchTier::Exact) => {
             Probe::plan(&app.config, &query)
         }
         _ => None,
     };
+    let mut probed: Option<(Vec<Repo>, Vec<bool>, Vec<SearchResult>)> = None;
     if let Some(probe) = probe {
-        let gh = &*app.gh;
         let title = format!("looking up {}", query.key());
         let mut found = Vec::new();
         let mut misses = Vec::new();
-        for (domain, answer) in ui.with_progress(&title, |_| probe.run(gh)) {
+        for (domain, answer) in ui.with_progress(&title, |_| probe.run()) {
             match answer {
                 Answer::Found(repo) => found.push(repo),
                 miss => misses.push((domain, miss)),
             }
         }
         if !found.is_empty() {
-            results = found_results(cache, found, |s| history.frecency.score(s, now));
+            probed = Some(found_results(repos, found, |s| {
+                history.frecency.score(s, now)
+            }));
         } else if results.is_empty() || misses.iter().any(|(_, a)| matches!(a, Answer::Denied(_))) {
             return Err(lookup_error(&probe, &query, misses).into());
         } else {
             warn_failed(ui, &probe, &misses);
         }
     }
-    restrict(&mut history, &cache.repos);
+
+    let (pool, results, needs_adopt): (&[Repo], Vec<SearchResult>, Option<Vec<bool>>) =
+        if let Some((probed_repos, needs_adopt, probed_results)) = &mut probed {
+            restrict(&mut history, repos.iter().chain(probed_repos.iter()));
+            (
+                probed_repos.as_slice(),
+                std::mem::take(probed_results),
+                Some(std::mem::take(needs_adopt)),
+            )
+        } else {
+            restrict(&mut history, repos.iter());
+            (repos, results, None)
+        };
+
     let key = query.key();
     let decision = if pick && results.len() > 1 {
         if !interactive {
@@ -142,13 +139,7 @@ pub fn resolve_target(
         }
         Decision::Ask(results.iter().map(|r| r.index).collect())
     } else {
-        decide(
-            &cache.repos,
-            resolve(results),
-            &history.query_frecency,
-            key,
-            now,
-        )
+        decide(pool, &results, &history.query_frecency, key, now)
     };
     let (index, picked) = match decision {
         Decision::Unique(index) => (index, false),
@@ -160,41 +151,53 @@ pub fn resolve_target(
             .into());
         }
         Decision::Auto(index) => (index, true),
-        Decision::Ask(candidates) => (ask(ui, cache, key, &candidates, interactive)?, true),
+        Decision::Ask(candidates) => (ask(ui, pool, key, &candidates, interactive)?, true),
     };
-    if index >= known {
-        adopt(app, ui, &cache.repos[index]);
+    let repo = pool[index].clone();
+    if needs_adopt.is_some_and(|flags| flags[index]) {
+        adopt(app, ui, &repo);
     }
-    let mut target = target_for(app, cache, index);
-    target.picked_for = picked.then(|| key.clone());
-    Ok(target)
+    let path = app.config.repo_path(&repo.slug);
+    Ok(Target {
+        repo,
+        path,
+        picked_for: picked.then(|| key.clone()),
+    })
 }
 
-/// The repos found on GitHub as exact results, best first, appending to
-/// `cache.repos` those it does not already hold.
+/// The repos found on GitHub as exact results, best first. Each entry carries
+/// whether it was absent from `known` (and so should be adopted if chosen).
 fn found_results(
-    cache: &mut Cache,
+    known: &[Repo],
     found: Vec<Repo>,
     frecency: impl Fn(&Slug) -> f64,
-) -> Vec<SearchResult> {
-    let mut results: Vec<SearchResult> = Vec::new();
+) -> (Vec<Repo>, Vec<bool>, Vec<SearchResult>) {
+    let mut probed_repos: Vec<Repo> = Vec::new();
+    let mut needs_adopt: Vec<bool> = Vec::new();
     for repo in found {
-        let held = cache
-            .repos
+        let (candidate, is_new) = match known.iter().find(|r| r.slug.eq_ignore_case(&repo.slug)) {
+            Some(existing) => (existing.clone(), false),
+            None => (repo, true),
+        };
+        if probed_repos
             .iter()
-            .position(|r| same_slug(&r.slug, &repo.slug));
-        let index = held.unwrap_or_else(|| {
-            cache.repos.push(repo);
-            cache.repos.len() - 1
-        });
-        if results.iter().all(|r| r.index != index) {
-            let tier = MatchTier::Exact;
-            let score = tier.score() + frecency(&cache.repos[index].slug);
-            results.push(SearchResult { index, tier, score });
+            .all(|r| !r.slug.eq_ignore_case(&candidate.slug))
+        {
+            probed_repos.push(candidate);
+            needs_adopt.push(is_new);
         }
     }
+    let mut results: Vec<SearchResult> = probed_repos
+        .iter()
+        .enumerate()
+        .map(|(index, repo)| {
+            let tier = MatchTier::Exact;
+            let score = tier.score() + frecency(&repo.slug);
+            SearchResult { index, tier, score }
+        })
+        .collect();
     results.sort_by(|a, b| b.score.total_cmp(&a.score));
-    results
+    (probed_repos, needs_adopt, results)
 }
 
 /// Why a lookup that found nothing fails: refused access first, then any
@@ -271,27 +274,27 @@ fn load_history(app: &App, ui: &mut Ui) -> History {
 
 /// Drops the entries for slugs `repos` does not hold. The file keeps them;
 /// they count again when their repo returns.
-fn restrict(history: &mut History, repos: &[Repo]) {
-    let listed: HashSet<&Slug> = repos.iter().map(|r| &r.slug).collect();
+fn restrict<'a>(history: &mut History, repos: impl IntoIterator<Item = &'a Repo>) {
+    let listed: HashSet<&Slug> = repos.into_iter().map(|r| &r.slug).collect();
     history.frecency.retain(|s, _| listed.contains(s));
     history.query_frecency.retain(|s, _| listed.contains(s));
 }
 
-/// The frecency history restricted to the slugs `cache` holds.
-pub(crate) fn listed_history(app: &App, ui: &mut Ui, cache: &Cache) -> History {
+/// The frecency history restricted to the slugs `repos` holds.
+pub(crate) fn listed_history(app: &App, ui: &mut Ui, repos: &[Repo]) -> History {
     let mut history = load_history(app, ui);
-    restrict(&mut history, &cache.repos);
+    restrict(&mut history, repos);
     history
 }
 
 fn ask(
     ui: &mut Ui,
-    cache: &Cache,
+    repos: &[Repo],
     key: &QueryKey,
     candidates: &[usize],
     interactive: bool,
 ) -> Result<usize, Error> {
-    let slugs: Vec<&Slug> = candidates.iter().map(|&i| &cache.repos[i].slug).collect();
+    let slugs: Vec<&Slug> = candidates.iter().map(|&i| &repos[i].slug).collect();
     let ambiguous = || ResolveError::Ambiguous {
         query: key.clone(),
         candidates: slugs.iter().map(|&s| s.clone()).collect(),
@@ -301,22 +304,12 @@ fn ask(
     }
     let labels: Vec<String> = slugs.iter().map(ToString::to_string).collect();
     let items: Vec<&str> = labels.iter().map(String::as_str).collect();
-    match ui.interact().pick_one(PICK_PROMPT, &items)? {
+    match ui.pick_one(PICK_PROMPT, &items)? {
         Some(chosen) => candidates
             .get(chosen)
             .copied()
             .ok_or_else(|| ambiguous().into()),
         None => Err(ambiguous().into()),
-    }
-}
-
-fn target_for(app: &App, cache: &Cache, index: usize) -> Target {
-    let slug = &cache.repos[index].slug;
-    let path = repo_path(app.config.work_dir(), app.config.default_domain(), slug);
-    Target {
-        index,
-        path,
-        picked_for: None,
     }
 }
 
@@ -326,35 +319,17 @@ pub(crate) fn is_cloned(path: &Path) -> bool {
     path.join(".git").exists()
 }
 
-/// `org/name` for the default domain, the full slug otherwise.
-pub(crate) fn short_name(slug: &Slug, default: Option<&Domain>) -> String {
-    if default == Some(slug.domain()) {
-        format!("{}/{}", slug.org(), slug.name())
-    } else {
-        slug.to_string()
-    }
-}
-
 /// Clones the target unless `.git` exists. When the clone fails, the parent
 /// directories it created are removed again if still empty.
 ///
 /// # Errors
 ///
 /// [`Error::CreateDir`] or the git failure.
-///
-/// # Panics
-///
-/// If `target` was not resolved against `cache`.
-pub fn ensure_cloned(
-    app: &App,
-    ui: &mut Ui,
-    cache: &Cache,
-    target: &Target,
-) -> Result<CloneStatus, Error> {
+pub fn ensure_cloned(app: &App, ui: &mut Ui, target: &Target) -> Result<CloneStatus, Error> {
     if is_cloned(&target.path) {
         return Ok(CloneStatus::Already);
     }
-    let repo = target.repo(&cache.repos);
+    let repo = &target.repo;
     let domain = repo.slug.domain();
     let created = match target.path.parent() {
         Some(parent) => {
@@ -367,13 +342,9 @@ pub fn ensure_cloned(
         }
         None => Vec::new(),
     };
-    let title = format!(
-        "cloning {}",
-        short_name(&repo.slug, app.config.default_domain())
-    );
-    let git = &*app.git;
+    let title = format!("cloning {}", app.config.short_name(&repo.slug));
     let dest = target.path.as_path();
-    let cloned = ui.with_progress(&title, |_| git.clone_repo(&repo.clone_url, dest, domain));
+    let cloned = ui.with_progress(&title, |_| git::clone_repo(&repo.clone_url, dest, domain));
     if cloned.is_err() {
         // Best effort: `remove_dir` refuses a directory that is not empty,
         // so nothing that was already there (or appeared since) is lost.
@@ -395,13 +366,9 @@ fn missing_dirs(dir: &Path) -> Vec<PathBuf> {
 
 /// Records the access to the target, and its query pick if any. Failures
 /// are warnings, since the command itself has already succeeded.
-///
-/// # Panics
-///
-/// If `target` was not resolved against `cache`.
-pub fn record_access(app: &App, ui: &mut Ui, cache: &Cache, target: &Target) {
+pub fn record_access(app: &App, ui: &mut Ui, target: &Target) {
     let now = app.now;
-    let slug = &target.repo(&cache.repos).slug;
+    let slug = &target.repo.slug;
     let recorded = frecency::record(app.config.cache_dir(), now, |history| {
         history.frecency.record(slug, now);
         if let Some(key) = &target.picked_for {
@@ -461,12 +428,6 @@ pub enum ResolveError {
         query: QueryKey,
         /// Every candidate, in rank order.
         candidates: Vec<Slug>,
-    },
-    /// `pull` on a repo that has not been cloned.
-    #[error("{repo} is not cloned (run 'work clone {repo}')")]
-    NotCloned {
-        /// The repo as shown to the user, e.g. `acme/foo`.
-        repo: String,
     },
 }
 

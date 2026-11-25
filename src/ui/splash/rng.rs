@@ -37,14 +37,6 @@ impl Rng {
         // The high 64 bits of a product with a u32 are below `bound`.
         u32::try_from(wide >> 64).unwrap_or(0)
     }
-
-    /// A uniform value in `[0, 1)`.
-    pub fn unit(&mut self) -> f64 {
-        // Top 53 bits scaled by 2^-53 give a uniform value in [0, 1).
-        #[expect(clippy::cast_precision_loss, reason = "53-bit value is exact in f64")]
-        let v = (self.next_u64() >> 11) as f64;
-        v * (1.0 / 9_007_199_254_740_992.0)
-    }
 }
 
 /// The splitmix64 finaliser over `seed + GOLDEN`: a bijection on `u64`

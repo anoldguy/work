@@ -3,10 +3,10 @@
 
 use crate::cache::fetch::FETCH_JOBS;
 use crate::config::Config;
-use crate::core::search::{Query, Specificity};
 use crate::domain::{Domain, Org, Repo, RepoName, Slug};
-use crate::gh::{Gh, Lookup};
+use crate::gh::{self, Lookup};
 use crate::pool::run_bounded;
+use crate::search::{Query, Specificity};
 
 /// One query to look up: the same owner and name on each of `domains`.
 #[derive(Debug)]
@@ -55,17 +55,17 @@ impl Probe {
     }
 
     /// Asks every domain at once; answers come back in domain order.
-    pub(crate) fn run(&self, gh: &dyn Gh) -> Vec<(Domain, Answer)> {
+    pub(crate) fn run(&self) -> Vec<(Domain, Answer)> {
         let answers = run_bounded(&self.domains, FETCH_JOBS, |domain| {
-            ask(gh, domain, &self.org, &self.name)
+            ask(domain, &self.org, &self.name)
         });
         self.domains.iter().cloned().zip(answers).collect()
     }
 }
 
 /// Looks `org/name` up on `domain`.
-pub(crate) fn ask(gh: &dyn Gh, domain: &Domain, org: &Org, name: &RepoName) -> Answer {
-    match gh.repo(domain, org, name) {
+pub(crate) fn ask(domain: &Domain, org: &Org, name: &RepoName) -> Answer {
+    match gh::repo(domain, org, name) {
         Ok(Lookup::Found(repo)) => Answer::Found(repo),
         Ok(Lookup::NotFound) => Answer::NotFound,
         Ok(Lookup::Denied(detail)) => Answer::Denied(detail),

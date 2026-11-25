@@ -9,9 +9,9 @@ use crate::cli::ListArgs;
 use crate::commands::complete::known_repos;
 use crate::commands::resolve::{listed_history, load_known};
 use crate::config::{Locations, store as config_store};
-use crate::core::search::{Query, filter, search};
 use crate::domain::{Repo, Slug};
 use crate::error::Error;
+use crate::search::{Query, filter, search};
 use crate::ui::Ui;
 
 /// Prints every slug (sorted), ranked results, or filter results, one per
@@ -27,20 +27,20 @@ pub fn run(app: &App, ui: &mut Ui, args: &ListArgs) -> Result<ExitCode, Error> {
         complete: _,
         adopted: _,
     } = args;
-    let cache = load_known(app, ui, Freshness::AutoUpdate)?;
+    let repos = load_known(app, ui, Freshness::AutoUpdate)?;
     let lines: Vec<String> = match query {
-        None => sorted_slugs(&cache.repos),
-        Some(needle) if *substring => filter(&cache.repos, needle)
+        None => sorted_slugs(&repos),
+        Some(needle) if *substring => filter(&repos, needle)
             .into_iter()
-            .map(|i| cache.repos[i].slug.to_string())
+            .map(|i| repos[i].slug.to_string())
             .collect(),
         Some(raw) => {
             let q = Query::parse(raw)?;
-            let history = listed_history(app, ui, &cache);
+            let history = listed_history(app, ui, &repos);
             let now = app.now;
-            search(&cache.repos, &q, |s| history.frecency.score(s, now))
+            search(&repos, &q, |s| history.frecency.score(s, now))
                 .into_iter()
-                .map(|r| cache.repos[r.index].slug.to_string())
+                .map(|r| repos[r.index].slug.to_string())
                 .collect()
         }
     };

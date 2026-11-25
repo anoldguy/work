@@ -1,7 +1,37 @@
 //! Parser for `git status --porcelain=v2 --branch`.
 
-use crate::core::sync_outcome::{RepoFacts, Upstream};
 use crate::git::GitError;
+
+/// The current branch's relation to its configured upstream (`@{u}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Upstream {
+    /// No upstream configured (a local-only branch).
+    None,
+    /// Commits ahead of and behind the upstream.
+    Tracking {
+        /// Local commits not on the upstream.
+        ahead: u32,
+        /// Upstream commits not in the local branch.
+        behind: u32,
+    },
+}
+
+/// What one `git status --porcelain=v2 --branch` says about a repo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoFacts {
+    /// HEAD is detached.
+    Detached {
+        /// Any entry line (including untracked files).
+        dirty: bool,
+    },
+    /// HEAD is on a branch.
+    Branch {
+        /// Any entry line (including untracked files).
+        dirty: bool,
+        /// Relation to `@{u}`.
+        upstream: Upstream,
+    },
+}
 
 fn bad(detail: &str) -> GitError {
     GitError::Status {

@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use crate::app::App;
 use crate::domain::Domain;
 use crate::error::Error;
-use crate::gh::{Gh, GhError};
+use crate::gh::{self, GhError};
 use crate::proc::Interactive;
 use crate::ui::Ui;
 
@@ -14,8 +14,8 @@ use crate::ui::Ui;
 /// # Errors
 ///
 /// gh failures; a broken pipe.
-pub fn login(gh: &dyn Gh, ui: &mut Ui, domain: &Domain) -> Result<ExitCode, Error> {
-    gh.login(&mut Interactive::new(ui)?, domain)?;
+pub fn login(ui: &mut Ui, domain: &Domain) -> Result<ExitCode, Error> {
+    gh::login(&mut Interactive::new(ui)?, domain)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -24,8 +24,8 @@ pub fn login(gh: &dyn Gh, ui: &mut Ui, domain: &Domain) -> Result<ExitCode, Erro
 /// # Errors
 ///
 /// gh failures; a broken pipe.
-pub fn logout(gh: &dyn Gh, ui: &mut Ui, domain: &Domain) -> Result<ExitCode, Error> {
-    gh.logout(&mut Interactive::new(ui)?, domain)?;
+pub fn logout(ui: &mut Ui, domain: &Domain) -> Result<ExitCode, Error> {
+    gh::logout(&mut Interactive::new(ui)?, domain)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -39,7 +39,7 @@ pub fn status(app: &App, ui: &mut Ui) -> Result<ExitCode, Error> {
     let mut term = Interactive::new(ui)?;
     let mut failed = false;
     for domain in &app.config.effective_domains() {
-        match app.gh.auth_status(&mut term, domain) {
+        match gh::auth_status(&mut term, domain) {
             Ok(()) => {}
             Err(GhError::Failed { .. }) => failed = true,
             Err(err) => return Err(err.into()),

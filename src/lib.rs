@@ -1,28 +1,27 @@
 //! `work`: navigate and sync your GitHub repositories.
 
-pub mod adopted;
-pub mod app;
-pub mod cache;
-pub mod cli;
-pub mod commands;
-pub mod config;
-pub mod core;
+pub(crate) mod adopted;
+pub(crate) mod app;
+pub(crate) mod cache;
+pub(crate) mod cli;
+pub(crate) mod commands;
+pub(crate) mod config;
 pub mod domain;
-pub mod env;
-pub mod error;
+pub(crate) mod env;
+pub(crate) mod error;
 pub mod frecency;
 pub(crate) mod fsutil;
-pub mod gh;
-pub mod git;
-pub mod platform;
-pub mod pool;
-pub mod proc;
-pub mod progress;
-pub mod shell;
-pub mod state_file;
-pub mod sync;
+pub(crate) mod gh;
+pub(crate) mod git;
+pub(crate) mod platform;
+pub(crate) mod pool;
+pub(crate) mod proc;
+pub(crate) mod search;
+pub(crate) mod shell;
+pub(crate) mod state_file;
+pub(crate) mod sync;
 pub mod text;
-pub mod ui;
+pub(crate) mod ui;
 
 pub use error::Error;
 
@@ -125,8 +124,8 @@ fn dispatch(command: Command, env: env::EnvSnapshot, ui: &mut ui::Ui) -> Result<
         Command::Forget(args) => forget::run(&App::load(env)?, ui, &args),
         Command::Setup(args) => setup::run(App::load(env)?, ui, &args),
         Command::Auth(args) => match args.action {
-            AuthAction::Login(arg) => auth_cmd::login(&gh::ProcessGh, ui, &arg.domain),
-            AuthAction::Logout(arg) => auth_cmd::logout(&gh::ProcessGh, ui, &arg.domain),
+            AuthAction::Login(arg) => auth_cmd::login(ui, &arg.domain),
+            AuthAction::Logout(arg) => auth_cmd::logout(ui, &arg.domain),
             AuthAction::Status => auth_cmd::status(&App::load(env)?, ui),
         },
     }?;
